@@ -1,0 +1,14 @@
+{
+  "name": "kit-ahorro",
+  "description": "Kit de ahorro de tokens para Claude Code, en español.",
+  "owner": {
+    "name": "ahorro-tokens"
+  },
+  "plugins": [
+    {
+      "name": "ahorro-tokens",
+      "source": "./",
+      "description": "Kit de ahorro de tokens para Claude Code, en español."
+    }
+  ]
+}

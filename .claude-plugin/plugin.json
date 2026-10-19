@@ -1,0 +1,29 @@
+{
+  "name": "ahorro-tokens",
+  "version": "0.1.0",
+  "description": "Kit de ahorro de tokens para Claude Code: compacta salidas ruidosas, detecta bucles, mapea tu proyecto y te avisa cuándo compactar. Cero dependencias, cero instrucciones fijas en el contexto.",
+  "author": { "name": "ahorro-tokens" },
+  "license": "MIT",
+  "keywords": ["tokens", "ahorro", "contexto", "costos", "español"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "compresion": {
+      "type": "boolean",
+      "title": "Compactar salidas ruidosas",
+      "description": "Compacta la salida de tests, builds, instalaciones y logs. El original siempre queda guardado.",
+      "default": true
+    },
+    "mapaAutomatico": {
+      "type": "boolean",
+      "title": "Mapa del proyecto automático",
+      "description": "Crea o actualiza el mapa del proyecto al iniciar sesión en un repositorio git (como máximo una vez al día).",
+      "default": true
+    },
+    "acompanante": {
+      "type": "boolean",
+      "title": "Acompañante sobre el prompt",
+      "description": "Muestra el estado de la sesión y avisa cuándo conviene compactar o limpiar.",
+      "default": true
+    }
+  }
+}
