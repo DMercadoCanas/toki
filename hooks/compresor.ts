@@ -80,13 +80,18 @@ function primerPrograma(segmento: string): string {
   return programa.replace(/^.*\//, '')
 }
 
-/** ¿Vale la pena compactar la salida de este comando? */
-export function esCompactable(comando: string): boolean {
-  if (YA_FILTRADO.test(comando) || CONTENIDO_EXACTO.test(comando)) return false
+/** ¿Vale la pena compactar la salida de este comando? Devuelve el motivo si no. */
+export function porQueNoCompactable(comando: string): 'filtrado' | 'lector' | 'familia' | undefined {
+  if (YA_FILTRADO.test(comando)) return 'filtrado'
+  if (CONTENIDO_EXACTO.test(comando)) return 'lector'
   const segmentos = comando.split(/&&|\|\||;|\|/).map(s => s.trim()).filter(Boolean)
   const ultimo = segmentos[segmentos.length - 1] ?? ''
-  if (LECTORES.test(primerPrograma(ultimo))) return false
-  return RUIDOSOS.some(patron => patron.test(comando))
+  if (LECTORES.test(primerPrograma(ultimo))) return 'lector'
+  return RUIDOSOS.some(patron => patron.test(comando)) ? undefined : 'familia'
+}
+
+export function esCompactable(comando: string): boolean {
+  return porQueNoCompactable(comando) === undefined
 }
 
 const IMPORTANTE =
@@ -187,7 +192,7 @@ function seleccionar(items: Item[]): Set<number> {
 export function compactar(salida: string): Compactado | null {
   const lineas = limpiar(salida)
   while (lineas.length > 0 && lineas[lineas.length - 1] === '') lineas.pop()
-  if (lineas.length < LIMITES.minLineas && salida.length < LIMITES.minCaracteres) return null
+  if (esCorta(salida)) return null
 
   const items = agrupar(lineas)
   const elegidos = seleccionar(items)
@@ -244,6 +249,13 @@ export function citar(texto: string): string {
 /** El comando envuelto: misma salida en vivo, mismo código de salida, copia completa en `ruta`. */
 export function envolver(prefijo: string, cuerpo: string, ruta: string): string {
   return `${prefijo}( set -o pipefail; { ${cuerpo}\n} 2>&1 | tee ${citar(ruta)} )`
+}
+
+/** Salidas cortas: se dejan intactas. */
+export function esCorta(salida: string): boolean {
+  const lineas = limpiar(salida)
+  while (lineas.length > 0 && lineas[lineas.length - 1] === '') lineas.pop()
+  return lineas.length < LIMITES.minLineas && salida.length < LIMITES.minCaracteres
 }
 
 /** Estimación de tokens: ~4 caracteres por token. Siempre se muestra como aproximada. */

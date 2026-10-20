@@ -2,7 +2,7 @@
 
 **El acompañante de ahorro de tokens para Claude Code.** Lo instalas y listo: no tienes que aprender qué skill usar ni cuándo compactar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen entre sí, y nunca sacrifica calidad para ahorrar.
 
-> Versión 0.3 (prototipo). Requiere Claude Code 2.1.287 o posterior.
+> Versión 0.4 (prototipo). Requiere Claude Code 2.1.287 o posterior.
 
 ## Qué hace
 
@@ -10,6 +10,7 @@
 |---|---|---|
 | **Compactador de salidas** | Cuando corres tests, builds, instalaciones, linters o logs, Claude recibe una versión compacta: agrupa líneas repetidas y parecidas, y conserva cada error, advertencia, el inicio y el final. El original completo queda guardado. | RTK, Token Optimizer |
 | **Rescate de errores escondidos** | Claude Code recorta por la mitad las salidas largas de los comandos que fallan, y justo ahí suele estar el error. ahorro-tokens copia la salida completa mientras el comando corre y le entrega a Claude el error real, en menos espacio. | Idea propia |
+| **Memoria que sobrevive la compactación** | Toki anota en silencio la tarea actual, las decisiones que Claude va tomando, los archivos editados, los últimos comandos y errores. Cuando Claude Code compacta el contexto, se lo recuerda en una nota corta para que siga donde quedó sin volver a explorar. | Token Optimizer |
 | **Detector de bucles** | Si el mismo comando falla 3 veces seguidas, le avisa a Claude que cambie de enfoque antes de seguir reintentando. | Token Optimizer |
 | **Mapa del proyecto** | Genera un mapa de archivos, símbolos y módulos más usados, sin gastar tokens del modelo. La primera vez que Claude busca algo en la sesión, le avisa que el mapa existe. | Graphify |
 | **Toki, el acompañante** | Una barra viva sobre el prompt con una mascota que actúa lo que Claude hace (piensa, lee, ejecuta, edita, compacta, duerme), medidores de contexto, caché, ahorro y límites del plan, una frase que dice qué pasa y un botón cuando hay algo que hacer. | Token Optimizer |
@@ -58,7 +59,8 @@ En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** �
 - **`▸ más`** muestra duración, llamadas, salidas compactadas, bucles e histórico. **`−`** la deja en una sola línea. **`×`** la oculta (vuelve con `/ahorro`).
 - **En la app de escritorio, Toki es un dibujo vectorial animado** (respira, parpadea, y cambia de cara y accesorio según lo que Claude hace). En la terminal usa caras de texto.
 - **Sonidos suaves** (solo macOS): una campanita al ahorrar, un acorde al terminar con ahorro y un tono bajo al avisar. Se apagan en la configuración del plugin.
-- **Toki aprende:** si cambias de modelo a mitad de sesión con el caché caliente, te dice cuántos tokens se reprocesan y cuánto costaría, y lo guarda en "Lo que Toki notó esta sesión" dentro de `/ahorro`. Lo mismo con los comandos que fallan en bucle.
+- **Toki aprende:** te avisa (y lo guarda en "Lo que Toki notó esta sesión" dentro de `/ahorro`) cuando cambias de modelo con el caché caliente, cuando un comando falla en bucle, cuando Claude relee el mismo archivo completo una y otra vez, cuando hay varias salidas enormes seguidas (mejor un subagente con Haiku), cuando la sesión pasa de 3 horas y cuando van 3 compactaciones.
+- **Modo conciso automático:** al pasar del 50% de contexto, le pide a Claude respuestas más cortas, sin recortar código ni errores. Se añade al final del contexto, así que no rompe el caché.
 - Los porcentajes de ahorro son estimados (unos 4 caracteres por token).
 
 ## El panel `/ahorro`
@@ -71,11 +73,18 @@ No tienes que hacer nada. Además:
 
 - **`/ahorro`**: abre un reporte con lo ahorrado, qué ocupa tu contexto y sugerencias concretas.
 - **`/ahorro-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
+- **`/ahorro-por-que`**: la lista de los últimos comandos y, para cada uno, si se compactó (y cuánto ahorró) o por qué no se tocó. Si crees que Toki no está ahorrando, empieza por aquí.
 - **`/output-style`** → `ahorro-tokens:conciso`: activa las respuestas cortas.
 
 ### Configuración
 
-Con `/plugin configure ahorro-tokens@kit-ahorro` puedes apagar cualquiera de las piezas automáticas: compactador, mapa automático, acompañante y sonidos.
+Con `/plugin configure ahorro-tokens@kit-ahorro` puedes apagar cualquiera de las piezas automáticas: compactador, mapa automático, acompañante, sonidos, memoria y modo conciso.
+
+### Si crees que no está ahorrando
+
+1. Escribe `/ahorro-por-que`. Verás cada comando reciente con el motivo exacto.
+2. Los motivos más comunes: Claude usó `| tail` o `| grep` (la salida ya venía filtrada), la salida era corta, o el comando no es de una familia ruidosa.
+3. Después de actualizar el plugin, usa `/reload-plugins`. Si dice `register.tsx unchanged`, reinicia la sesión: Claude Code no recompiló el módulo.
 
 ## Resultados en el proyecto de prueba
 
@@ -94,6 +103,7 @@ Los ahorros en tokens que muestra el plugin son estimaciones (aprox. 4 caractere
 
 - La captura completa de salidas funciona con bash y zsh (macOS, Linux, WSL). En otros shells, el plugin compacta lo que entrega Claude Code sin rescatar la parte recortada.
 - Solo envuelve comandos que ya tienen permiso para ejecutarse sin preguntar. Nunca genera una solicitud de permiso nueva.
+- En cuentas de empresa (Team o Enterprise) Claude Code carga un guardia que no deja a los plugins de usuario intervenir en la compactación. Por eso la memoria usa un hook de comando (`SessionStart` con `compact`), que funciona siempre. En Windows ese hook necesita Git Bash.
 - La franja se dibuja en la terminal y en la app de escritorio. En la extensión de VS Code y en `claude -p`, el motor funciona igual pero sin franja; `/ahorro` responde con el reporte en texto.
 - El mapa es análisis de texto, no un árbol sintáctico completo: puede omitir símbolos en código poco convencional.
 

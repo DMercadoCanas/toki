@@ -12,7 +12,9 @@ import {
   encabezado,
   envolver,
   esCompactable,
+  esCorta,
   formatearTokens,
+  porQueNoCompactable,
   separarComando,
   tokensAprox,
 } from './compresor'
@@ -43,6 +45,22 @@ import type { Actividad } from './mascota'
 import { agregarLeccion, filasGrafica, leccionCambioModelo, sumarAlDia, totalDesde } from './historial'
 import type { Historial, Leccion } from './historial'
 import { tokiSvg } from './toki-svg'
+import {
+  LIMITES_MEMORIA,
+  MOTIVOS,
+  extraerDecisiones,
+  instruccionesDeCompactacion,
+  notaPostCompactacion,
+  primerError,
+  recordar,
+  registrarDecision,
+  resumenCorto,
+  vacio,
+} from './memoria'
+import type { Decision, PuntoDeControl } from './memoria'
+
+/** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
+export const VERSION = '0.4.0'
 
 type $ = EngineInterface
 
@@ -125,7 +143,90 @@ const vivo: {
   sonidos: boolean
   avisoReciente?: string
   avisoContexto?: boolean
-} = { actividad: 'tranquilo', tick: 0, bucleReciente: false, usoLeido: 0, lecciones: [], sonidos: true }
+  decisiones: Decision[]
+  memoria: PuntoDeControl
+  lecturas: Record<string, number>
+  compactaciones: number
+  nudgeConciso: boolean
+  nudgeLecturas: boolean
+  salidasGrandesEnTurno: number
+  ultimaCompactacionVista: number
+} = {
+  actividad: 'tranquilo',
+  tick: 0,
+  bucleReciente: false,
+  usoLeido: 0,
+  lecciones: [],
+  sonidos: true,
+  decisiones: [],
+  memoria: vacio(0),
+  lecturas: {},
+  compactaciones: 0,
+  nudgeConciso: false,
+  nudgeLecturas: false,
+  salidasGrandesEnTurno: 0,
+  ultimaCompactacionVista: 0,
+}
+
+/** Dos salidas enormes en un mismo turno: mejor delegar a un subagente. */
+function registrarSalidaGrande($: $, caracteres: number): void {
+  if (caracteres < 20_000) return
+  vivo.salidasGrandesEnTurno += 1
+  if (vivo.salidasGrandesEnTurno === 2) {
+    vivo.lecciones = agregarLeccion(vivo.lecciones, {
+      clave: 'subagente',
+      texto: 'Hubo varias salidas enormes (tests, builds) en un mismo turno. Aunque las compacté, delegar esas corridas a un subagente (por ejemplo con model: haiku) deja la conversación principal limpia y cuesta una fracción.',
+    })
+    $.ui.toast('Toki: varias salidas enormes seguidas. Para esto, un subagente con Haiku sale más barato.', { timeoutMs: 7000 })
+  }
+}
+
+function anotar(comando: string, resultado: Decision['resultado'], motivo: string, ahorro?: number): void {
+  vivo.decisiones = registrarDecision(vivo.decisiones, { comando: recortar(comando, 60), resultado, motivo, ahorro })
+}
+
+/** Deja lista la nota que el hook SessionStart(compact) reinyecta tras compactar. */
+async function guardarMemoria($: $): Promise<void> {
+  try {
+    await asegurarCarpeta($)
+    vivo.memoria.cuando = await $.clock.now()
+    await $.fs.write(`${CARPETA}/punto-de-control.json`, JSON.stringify(vivo.memoria, null, 2))
+    await $.fs.write(`${CARPETA}/nota-post-compactacion.txt`, notaPostCompactacion(vivo.memoria))
+  } catch {
+    // Sin memoria guardada no pasa nada grave: Claude Code compacta como siempre.
+  }
+}
+
+/** ¿Hubo una compactación? El hook de comando deja una marca de tiempo. */
+async function detectarCompactacion($: $): Promise<void> {
+  try {
+    const { mtimeMs } = await $.fs.stat(`${CARPETA}/ultima-compactacion`)
+    if (mtimeMs <= vivo.ultimaCompactacionVista) return
+    const primeraVez = vivo.ultimaCompactacionVista === 0
+    vivo.ultimaCompactacionVista = mtimeMs
+    if (primeraVez && (await $.clock.now()) - mtimeMs > 60_000) return // Marca vieja de otra sesión.
+    vivo.compactaciones += 1
+    $.ui.toast(`Toki: se compactó el contexto y le recordé a Claude ${resumenCorto(vivo.memoria)}. Sigue donde quedó.`, { timeoutMs: 7000 })
+    if (vivo.compactaciones >= 3) {
+      vivo.lecciones = agregarLeccion(vivo.lecciones, {
+        clave: 'muchas-compactaciones',
+        texto: `Van ${vivo.compactaciones} compactaciones en esta sesión. Cada una resume y pierde detalle: para una tarea nueva, /clear deja un contexto limpio y más barato.`,
+      })
+    }
+    $.ui.invalidate('ui.render')
+  } catch {
+    // Aún no hay marca.
+  }
+}
+
+/** Una nota corta al final del contexto: no rompe el caché (solo se añade). */
+async function notaParaClaude($: $, texto: string): Promise<void> {
+  try {
+    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: texto }] } })
+  } catch {
+    // Si la sesión no admite notas (p. ej. hooks apagados), no pasa nada.
+  }
+}
 
 /** Un sonido corto y suave. En Linux y Windows la terminal no tiene reproductor: no pasa nada. */
 function sonar($: $, nombre: 'ahorro' | 'listo' | 'aviso'): void {
@@ -292,6 +393,18 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
   return r
 }
 
+function textoDecisiones(): string {
+  if (vivo.decisiones.length === 0) return 'Toki aún no ha visto ningún comando de Bash en esta sesión (desde la última recarga del plugin).'
+  const lineas = ['Últimos comandos y qué hizo Toki con cada uno:']
+  for (const d of [...vivo.decisiones].reverse()) {
+    const marca = d.resultado === 'compactado' ? '✓' : '·'
+    const extra = d.ahorro !== undefined ? ` (~${formatearTokens(d.ahorro)} tokens ahorrados)` : ''
+    lineas.push(`  ${marca} ${d.comando}`, `      ${d.resultado === 'compactado' ? 'compactado: ' : 'sin cambio: '}${d.motivo}${extra}`)
+  }
+  lineas.push('', 'Compacta: tests, builds, instalaciones, linters, logs, listados largos. No toca: lecturas de archivos, diffs ni salidas ya filtradas con | tail, | grep, etc.')
+  return lineas.join('\n')
+}
+
 function reporteEnTexto(r: Reporte): string {
   const lineas = [
     `Toki · ~${formatearTokens(r.sesion.tokensAhorrados)} tokens ahorrados en esta sesión · hoy ~${formatearTokens(r.hoy)} · semana ~${formatearTokens(r.semana)} · histórico ~${formatearTokens(r.total)}`,
@@ -320,20 +433,33 @@ export const register: Register = (on, options) => {
   const mapaAuto = options['mapaAutomatico'] !== false
   const acompanante = options['acompanante'] !== false
   vivo.sonidos = options['sonidos'] !== false
+  const memoriaActiva = options['memoria'] !== false
+  const concisoAuto = options['concisoAutomatico'] !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'ahorro', description: 'ahorro-tokens: ver cuánto has ahorrado y qué ocupa tu contexto' })
     await $.command.register({ name: 'ahorro-mapa', description: 'ahorro-tokens: crear o actualizar el mapa del proyecto' })
+    await $.command.register({ name: 'ahorro-por-que', description: 'ahorro-tokens: ver por qué se compactó (o no) cada comando reciente' })
     // Animación de la mascota: un cuadro cada 600 ms mientras la barra esté visible.
     if (acompanante) {
       $.clock.every(600, () => {
         vivo.tick += 1
+        if (memoriaActiva && vivo.tick % 5 === 0) void detectarCompactacion($)
         void read($, oculto).then(estaOculto => {
           if (!estaOculto) $.ui.invalidate('ui.render')
         })
       })
     }
     if (mapaAuto) $.clock.after(3_000, () => void mapaAutomatico($))
+    // Sesión reanudada: recupera el último punto de control si es reciente.
+    if (memoriaActiva) {
+      try {
+        const guardado = JSON.parse(await $.fs.read(`${CARPETA}/punto-de-control.json`)) as PuntoDeControl
+        if ((await $.clock.now()) - guardado.cuando < 24 * 3_600_000) vivo.memoria = { ...vacio(guardado.cuando), ...guardado }
+      } catch {
+        // No hay punto de control: se empieza de cero.
+      }
+    }
     return next(e)
   })
 
@@ -351,6 +477,8 @@ export const register: Register = (on, options) => {
       vivo.actividad = 'pensando'
       vivo.ultimoAhorro = undefined
       vivo.bucleReciente = false
+      vivo.salidasGrandesEnTurno = 0
+      if (e.text.trim() !== '' && !e.text.startsWith('/')) vivo.memoria.tareaActual = recortar(e.text, LIMITES_MEMORIA.tarea)
     }
     return next(e)
   })
@@ -361,6 +489,24 @@ export const register: Register = (on, options) => {
       await update($, sesion, s => ({ ...s, ultimaActividad: ahora }))
       vivo.actividad = 'listo'
       if (vivo.ultimoAhorro !== undefined) sonar($, 'listo')
+      for (const d of extraerDecisiones(e.answer)) vivo.memoria.decisiones = recordar(vivo.memoria.decisiones, d, LIMITES_MEMORIA.decisiones)
+      if (memoriaActiva) await guardarMemoria($)
+      await refrescarUso($)
+      const uso = vivo.usoCache
+      if (uso !== undefined && ahora - uso.inicio > 3 * 3_600_000) {
+        vivo.lecciones = agregarLeccion(vivo.lecciones, {
+          clave: 'sesion-larga',
+          texto: 'Esta sesión lleva más de 3 horas. Cada mensaje reenvía toda la conversación: al cambiar de tarea, /clear (con /rename antes si quieres volver) sale más barato que seguir en el mismo hilo.',
+        })
+      }
+      if (concisoAuto && !vivo.nudgeConciso && (uso?.pct ?? 0) >= 50) {
+        vivo.nudgeConciso = true
+        await notaParaClaude(
+          $,
+          '[ahorro-tokens] El contexto pasa del 50%. De aquí en adelante responde de forma concisa: sin preámbulos, sin resúmenes finales ni narración de cada paso. Nunca recortes código, comandos, rutas, errores ni advertencias.',
+        )
+        $.ui.toast('Toki: contexto al 50%. Le pedí a Claude respuestas más concisas (sin recortar lo técnico).', { timeoutMs: 6000 })
+      }
       $.clock.after(12_000, () => {
         if (vivo.actividad === 'listo') {
           vivo.actividad = 'tranquilo'
@@ -376,8 +522,31 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) return next(e)
     vivo.actividad = actividadDeHerramienta(String(e.tool))
     await update($, sesion, s => ({ ...s, llamadas: s.llamadas + 1 }))
+    const herramienta = String(e.tool)
+    if ((herramienta === 'Edit' || herramienta === 'Write' || herramienta === 'MultiEdit') && typeof (e as { file_path?: unknown }).file_path === 'string') {
+      vivo.memoria.archivosEditados = recordar(vivo.memoria.archivosEditados, String((e as { file_path?: unknown }).file_path), LIMITES_MEMORIA.archivos)
+    }
+    let nudgeLectura: string | undefined
+    if (herramienta === 'Read') {
+      const entrada = e as { file_path?: unknown; offset?: unknown; limit?: unknown }
+      if (typeof entrada.file_path === 'string' && entrada.offset === undefined && entrada.limit === undefined) {
+        const n = (vivo.lecturas[entrada.file_path] ?? 0) + 1
+        vivo.lecturas[entrada.file_path] = n
+        if (n >= 4 && !vivo.nudgeLecturas) {
+          vivo.nudgeLecturas = true
+          const nombre = entrada.file_path.split('/').pop() ?? entrada.file_path
+          vivo.lecciones = agregarLeccion(vivo.lecciones, {
+            clave: 'relecturas',
+            texto: `Claude leyó «${nombre}» completo ${n} veces. Cuando un archivo ya se conoce, leer solo el rango necesario (offset/limit) evita reenviar todo su contenido.`,
+          })
+          nudgeLectura = `[ahorro-tokens] Ya leíste «${nombre}» completo ${n} veces. Si solo necesitas una parte, usa offset y limit; si no cambió, no hace falta releerlo.`
+        }
+      }
+    }
     try {
-      return await next(e)
+      const ran = await next(e)
+      if (nudgeLectura !== undefined && ran.deny === undefined && ran.isError !== true) return { ...ran, context: [...(ran.context ?? []), nudgeLectura] }
+      return ran
     } finally {
       vivo.actividad = 'pensando'
     }
@@ -410,13 +579,20 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // Donde no hay guardia corporativo, además guiamos el resumen de la compactación.
   on('session.compact', async ($, e, next) => {
-    if (e.agentId !== undefined) return next(e)
+    if (e.agentId !== undefined || e.trigger === 'precompute') return next(e)
     const anterior = vivo.actividad
     vivo.actividad = 'compactando'
     $.ui.invalidate('ui.render')
+    let entrada = e
+    if (memoriaActiva) {
+      await guardarMemoria($)
+      const extra = instruccionesDeCompactacion(vivo.memoria)
+      entrada = { ...e, instructions: e.instructions ? `${e.instructions}\n\n${extra}` : extra }
+    }
     try {
-      return await next(e)
+      return await next(entrada)
     } finally {
       vivo.actividad = anterior === 'compactando' ? 'tranquilo' : anterior
     }
@@ -425,12 +601,20 @@ export const register: Register = (on, options) => {
   // Motor: compactar salidas ruidosas y detectar bucles.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const comando = e.command
-    const compactable = compresion && esCompactable(comando)
+    const motivoNo = porQueNoCompactable(comando)
+    const compactable = compresion && motivoNo === undefined
+    if (!compresion) anotar(comando, 'sin-cambio', MOTIVOS.apagado)
+    else if (motivoNo !== undefined) anotar(comando, 'sin-cambio', MOTIVOS[motivoNo])
+    vivo.memoria.comandosRecientes = recordar(vivo.memoria.comandosRecientes, recortar(comando, 80), LIMITES_MEMORIA.comandos)
     const captura = compactable ? await planearCaptura($, comando) : undefined
     // El modelo sigue viendo su comando original en el historial; solo cambia cómo se ejecuta.
     const ran = await next(captura ? { ...e, command: captura.comando } : e)
     if (ran.deny !== undefined) return ran
     const fallo = ran.isError === true
+    if (fallo) {
+      const err = primerError(ran.text ?? '')
+      if (err !== undefined) vivo.memoria.ultimosErrores = recordar(vivo.memoria.ultimosErrores, err, LIMITES_MEMORIA.errores)
+    }
 
     const { fallos: nuevos, avisar } = registrar(await read($, fallos), comando, fallo)
     await update($, fallos, () => nuevos)
@@ -459,14 +643,19 @@ export const register: Register = (on, options) => {
         if (c !== null) {
           const ruta = captura?.ruta ?? (await archivar($, texto))
           if (ruta !== undefined) {
-            await sumarAhorro($, Math.max(0, Math.min(texto.length, c.caracteresAntes) - c.caracteresDespues), comando)
+            const ahorrado = Math.max(0, Math.min(texto.length, c.caracteresAntes) - c.caracteresDespues)
+            await sumarAhorro($, ahorrado, comando)
+            anotar(comando, 'compactado', `${c.lineasAntes} → ${c.lineasDespues} líneas`, tokensAprox(ahorrado))
+            registrarSalidaGrande($, cuerpo.length)
             return { deny: [salida?.[1], encabezado(c, ruta), c.texto, avisoBucle].filter(Boolean).join('\n') }
           }
-        }
+          anotar(comando, 'sin-cambio', MOTIVOS.archivar)
+        } else anotar(comando, 'sin-cambio', esCorta(cuerpo) ? MOTIVOS.corta : MOTIVOS.pocoAhorro)
       } else {
         const r = ran.result
         const enSegundoPlano = r.backgroundTaskId !== undefined || r.interrupted || r.isImage === true
-        if (!enSegundoPlano) {
+        if (enSegundoPlano) anotar(comando, 'sin-cambio', MOTIVOS.segundoPlano)
+        else {
           // Con captura, stdout y stderr vienen juntos en el orden real en que salieron.
           const fuente = completa !== undefined && completa.length > 0 ? completa : r.stdout
           const cOut = compactar(fuente)
@@ -478,6 +667,8 @@ export const register: Register = (on, options) => {
                 (cOut ? cOut.caracteresAntes - cOut.caracteresDespues : 0) + (cErr ? cErr.caracteresAntes - cErr.caracteresDespues : 0)
               await sumarAhorro($, ahorrado, comando)
               const principal = cOut ?? cErr
+              anotar(comando, 'compactado', principal ? `${principal.lineasAntes} → ${principal.lineasDespues} líneas` : 'compactado', tokensAprox(ahorrado))
+              registrarSalidaGrande($, fuente.length)
               const cabecera = principal ? encabezado(principal, ruta) : ''
               return {
                 result: {
@@ -489,7 +680,8 @@ export const register: Register = (on, options) => {
                 },
               }
             }
-          }
+            anotar(comando, 'sin-cambio', MOTIVOS.archivar)
+          } else anotar(comando, 'sin-cambio', esCorta(fuente) ? MOTIVOS.corta : MOTIVOS.pocoAhorro)
         }
       }
     }
@@ -508,6 +700,8 @@ export const register: Register = (on, options) => {
     if (abierto.isPlaced) return { text: 'Reporte de ahorro-tokens abierto en el panel.' }
     return { text: reporteEnTexto(await reporte($)) }
   })
+
+  on('command.run', { command: 'ahorro-por-que' }, async () => ({ text: textoDecisiones() }))
 
   on('command.run', { command: 'ahorro-mapa' }, async $ => {
     const { archivos, truncado } = await generarMapa($)
@@ -572,6 +766,21 @@ export const register: Register = (on, options) => {
               <Text>
                 {'  '}
                 {c.nombre}: <Text dimColor>~{formatearTokens(c.tokens)}</Text>
+              </Text>
+            ))}
+          </Box>
+        )}
+        {vivo.decisiones.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>Últimos comandos (/ahorro-por-que)</Text>
+            {[...vivo.decisiones].reverse().slice(0, 6).map(d => (
+              <Text wrap="truncate-end">
+                {'  '}
+                <Text color={d.resultado === 'compactado' ? 'success' : 'inactive'}>{d.resultado === 'compactado' ? '✓' : '·'}</Text> {d.comando}{' '}
+                <Text dimColor>
+                  — {d.motivo}
+                  {d.ahorro !== undefined ? ` (~${formatearTokens(d.ahorro)})` : ''}
+                </Text>
               </Text>
             ))}
           </Box>

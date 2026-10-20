@@ -1,6 +1,6 @@
 {
   "name": "ahorro-tokens",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Kit de ahorro de tokens para Claude Code: compacta salidas ruidosas, detecta bucles, mapea tu proyecto y te avisa cuándo compactar. Cero dependencias, cero instrucciones fijas en el contexto.",
   "author": {
     "name": "ahorro-tokens"
@@ -37,6 +37,18 @@
       "type": "boolean",
       "title": "Sonidos suaves",
       "description": "Un sonido corto cuando Toki ahorra tokens o te avisa de algo (solo en macOS; en Linux y Windows la terminal no reproduce audio).",
+      "default": true
+    },
+    "memoria": {
+      "type": "boolean",
+      "title": "Memoria que sobrevive la compactación",
+      "description": "Antes de compactar guarda la tarea, decisiones, archivos editados y últimos errores, y se los recuerda a Claude después.",
+      "default": true
+    },
+    "concisoAutomatico": {
+      "type": "boolean",
+      "title": "Modo conciso automático",
+      "description": "Cuando el contexto pasa del 50%, le pide a Claude respuestas más cortas sin recortar código ni errores.",
       "default": true
     }
   }

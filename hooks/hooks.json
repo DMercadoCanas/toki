@@ -1,1 +1,16 @@
-{ "modules": ["./register.tsx"] }
+{
+  "modules": ["./register.tsx"],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=\"${CLAUDE_PROJECT_DIR:-.}/.claude/ahorro-tokens\"; [ -f \"$d/nota-post-compactacion.txt\" ] && cat \"$d/nota-post-compactacion.txt\"; date +%s > \"$d/ultima-compactacion\" 2>/dev/null; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
