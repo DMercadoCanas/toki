@@ -1,6 +1,6 @@
 {
   "name": "ahorro-tokens",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Kit de ahorro de tokens para Claude Code: compacta salidas ruidosas, detecta bucles, mapea tu proyecto y te avisa cuándo compactar. Cero dependencias, cero instrucciones fijas en el contexto.",
   "author": {
     "name": "ahorro-tokens"

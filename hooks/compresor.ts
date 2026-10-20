@@ -56,6 +56,15 @@ const RUIDOSOS: RegExp[] = [
   /(^|[\s;&|(])ls\s+(-\w*R|--recursive)/,
   /\bbrew\s+(install|upgrade)\b/,
   /\bapt(-get)?\s+install\b/,
+  // Móvil: Flutter, Dart, iOS, Android
+  /\bflutter\s+(test|build|analyze|run|pub\s+(get|upgrade|outdated)|doctor|clean|drive)\b/,
+  /\bdart\s+(test|analyze|pub\s+(get|upgrade)|run\s+build_runner|format|fix)\b/,
+  /\bxcodebuild\b/,
+  /\bpod\s+(install|update)\b/,
+  /\bswift\s+(build|test|package)\b/,
+  /\bfastlane\b/,
+  /\badb\s+logcat\b/,
+  /\bxcrun\s+simctl\b/,
 ]
 
 // Comandos cuyo contenido exacto importa: nunca se tocan.

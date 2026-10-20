@@ -33,7 +33,7 @@ function salidaDeTests(): string {
 
 describe('esCompactable', () => {
   test('acepta familias ruidosas', async () => {
-    for (const comando of ['npm test', 'pnpm run build', 'npx vitest run', 'pytest -q', 'cargo build --release', 'go test ./...', 'docker compose up --build', 'cd app && yarn install', 'git log --oneline']) {
+    for (const comando of ['npm test', 'pnpm run build', 'npx vitest run', 'pytest -q', 'cargo build --release', 'go test ./...', 'docker compose up --build', 'cd app && yarn install', 'git log --oneline', 'flutter test', 'flutter pub get', 'dart analyze', 'cd ios && pod install', 'xcodebuild -scheme Runner build', 'cd android && ./gradlew assembleDebug']) {
       expect(esCompactable(comando)).toBe(true)
     }
   })
