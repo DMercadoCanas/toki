@@ -2,7 +2,7 @@
 
 **El acompañante de ahorro de tokens para Claude Code.** Lo instalas y listo: no tienes que aprender qué skill usar ni cuándo compactar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen entre sí, y nunca sacrifica calidad para ahorrar.
 
-> Versión 0.4 (prototipo). Requiere Claude Code 2.1.287 o posterior.
+> Versión 0.5 (prototipo). Requiere Claude Code 2.1.287 o posterior.
 
 ## Qué hace
 
@@ -86,18 +86,26 @@ Con `/plugin configure ahorro-tokens@kit-ahorro` puedes apagar cualquiera de las
 2. Los motivos más comunes: Claude usó `| tail` o `| grep` (la salida ya venía filtrada), la salida era corta, o el comando no es de una familia ruidosa.
 3. Después de actualizar el plugin, usa `/reload-plugins`. Si dice `register.tsx unchanged`, reinicia la sesión: Claude Code no recompiló el módulo.
 
-## Resultados en el proyecto de prueba
+## Resultados medidos (con y sin plugin)
 
-Medidos con Claude Code 2.1.303 sobre un proyecto con 420 tests y un build de 300 módulos:
+Misma pregunta, mismo modelo (Haiku), dos corridas por escenario, tokens de entrada totales reportados por Claude Code (incluye caché):
 
-| Comando | Sin ahorro-tokens | Con ahorro-tokens |
-|---|---|---|
-| `npm run build` (éxito) | 22.700 caracteres | 490 caracteres |
-| `npm test` (1 test falla) | 10.000 caracteres, **sin el test que falló** (recortado) | 3.800 caracteres, **con el test que falló y su causa** |
+| Escenario | Sin plugin | Con plugin | Diferencia |
+|---|---|---|---|
+| `npm test` con 1 fallo entre 421 tests (26 KB de salida) | 94.5k tokens · 2 turnos | 89.8k–94.5k tokens · 2 turnos | hasta −4.7k (−5%) |
+| `npm run enorme`: 1,6 MB de salida con el error en la última línea | 134.2k tokens · 3 turnos | 88.0k tokens · 2 turnos | **−46k (−34%) y un turno menos** |
 
-En el segundo caso, sin el plugin Claude tuvo que hacer llamadas extra para encontrar el error. Con el plugin lo identificó a la primera.
+Lo honesto: el ahorro grande aparece con salidas enormes, donde Claude Code sin ayuda entrega solo una vista previa del inicio y Claude tiene que hacer una segunda llamada para buscar el error. En salidas medianas el ahorro es de unos miles de tokens por comando. Y en una sesión real larga, cada turno que se evita vale mucho más que aquí, porque reenvía toda la conversación.
 
-Los ahorros en tokens que muestra el plugin son estimaciones (aprox. 4 caracteres por token).
+Lo que muestra Toki como "tokens ahorrados" es la diferencia entre lo que Claude habría leído sin el plugin (como máximo 30 KB, o la vista previa de 2 KB cuando Claude Code guarda la salida en archivo) y lo que leyó con él, a ~4 caracteres por token. Es una estimación y siempre lleva "~".
+
+### Evals formales
+
+En `evals/` hay una suite para la herramienta oficial de Anthropic, que corre cada caso con y sin el plugin y califica el resultado. Necesita el sandbox del sistema (en macOS viene incluido):
+
+```bash
+claude plugin eval . --scaffold --allow-tools "Bash(npm *)" --runs 3
+```
 
 ## Límites conocidos de esta versión
 

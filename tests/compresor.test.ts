@@ -5,7 +5,7 @@ import { agrupar, compactar, encabezado, envolver, esCompactable, limpiar, separ
 describe('captura', () => {
   test('conserva un cd inicial fuera del subshell', async () => {
     expect(separarComando('cd app && npm test')).toEqual({ prefijo: 'cd app && ', cuerpo: 'npm test' })
-    expect(envolver('cd app && ', 'npm test', '/p/s.txt')).toBe("cd app && ( set -o pipefail; { npm test\n} 2>&1 | tee '/p/s.txt' )")
+    expect(envolver('cd app && ', 'npm test', '/p/s.txt')).toBe("cd app && ( set -o pipefail; { npm test\n} 2>&1 | tee '/p/s.txt' ) # ahorro-tokens: guarda una copia completa de la salida")
   })
 
   test('no envuelve comandos que cambian el estado del shell o van en segundo plano', async () => {
@@ -42,6 +42,14 @@ describe('esCompactable', () => {
     for (const comando of ['cat package.json', 'git diff', 'git show HEAD', 'npm test | tail -50', 'pytest | grep FAIL', 'sed -n 1,80p src/app.ts', 'echo hola', 'git log -p']) {
       expect(esCompactable(comando)).toBe(false)
     }
+  })
+
+  test('ignora el echo final que Claude agrega', async () => {
+    expect(esCompactable('npm run enorme; echo "EXIT_CODE=$?"')).toBe(true)
+    expect(esCompactable('flutter test 2>&1; echo "---"; echo $?')).toBe(true)
+    expect(esCompactable('npm test && cat resultado.json')).toBe(false)
+    expect(esCompactable('npm run dev')).toBe(false)
+    expect(esCompactable('npm run e2e:ci')).toBe(true)
   })
 
   test('no compacta comandos desconocidos', async () => {
@@ -102,5 +110,8 @@ describe('compactar', () => {
     const texto = encabezado(c, '.claude/ahorro-tokens/salidas/salida-00.txt')
     expect(texto).toContain('[ahorro-tokens] Salida compactada')
     expect(texto).toContain('.claude/ahorro-tokens/salidas/salida-00.txt')
+    expect(texto).toContain('Copia completa')
+    expect(encabezado(c, 'x.txt', false)).toContain('Copia parcial')
+    expect(encabezado(c, 'x.txt', true, 1600)).toContain('~1.6k tokens menos')
   })
 })

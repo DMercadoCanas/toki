@@ -60,7 +60,7 @@ import {
 import type { Decision, PuntoDeControl } from './memoria'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.4.1'
+export const VERSION = '0.5.0'
 
 type $ = EngineInterface
 
@@ -78,6 +78,8 @@ const CLAVE_TOTAL = 'tokensAhorradosTotal'
 const CLAVE_RANURA = 'ranuraArchivo'
 const CLAVE_HISTORIAL = 'historialDiario'
 const RANURAS = 40
+/** Lo que Claude Code entrega de una salida exitosa sin ayuda: 30 KB. */
+const LIMITE_CLAUDE_CODE = 30_000
 const UMBRAL_CONTEXTO = 70
 const HORAS_MAPA_VIGENTE = 24
 
@@ -109,6 +111,29 @@ async function archivar($: $, contenido: string): Promise<string | undefined> {
 
 type Captura = { comando: string; ruta: string; absoluta: string }
 
+/** Claude Code recorta la salida a 30 KB; mientras corre un comando ruidoso la dejamos llegar a 150 KB (luego se compacta). */
+let comandosRuidososEnCurso = 0
+let limiteOriginal: string | undefined
+async function ampliarLimite($: $): Promise<void> {
+  try {
+    if (comandosRuidososEnCurso === 0) {
+      limiteOriginal = await $.env.get('BASH_MAX_OUTPUT_LENGTH')
+      await $.env.set('BASH_MAX_OUTPUT_LENGTH', '150000')
+    }
+    comandosRuidososEnCurso += 1
+  } catch {
+    // Sin permiso para tocar el entorno: seguimos con el recorte normal.
+  }
+}
+async function restaurarLimite($: $): Promise<void> {
+  try {
+    comandosRuidososEnCurso = Math.max(0, comandosRuidososEnCurso - 1)
+    if (comandosRuidososEnCurso === 0) await $.env.set('BASH_MAX_OUTPUT_LENGTH', limiteOriginal)
+  } catch {
+    // Nada.
+  }
+}
+
 /**
  * Prepara la copia completa de la salida mientras el comando corre.
  * Solo en bash o zsh, y solo si el comando envuelto no pediría un permiso nuevo.
@@ -116,17 +141,26 @@ type Captura = { comando: string; ruta: string; absoluta: string }
 async function planearCaptura($: $, comando: string): Promise<Captura | undefined> {
   try {
     const shell = (await $.env.get('SHELL')) ?? ''
-    if (!/(^|\/)(bash|zsh)$/.test(shell)) return undefined
+    if (!/(^|\/)(bash|zsh)$/.test(shell)) {
+      $.ui.log(`captura: shell no compatible: ${shell}`, { to: 'debug' })
+      return undefined
+    }
     const partes = separarComando(comando)
     if (partes === undefined) return undefined
     const ruta = await reservarRuta($)
     const absoluta = `${(await $.session.cwd()).replace(/\/$/, '')}/${ruta}`
     const envuelto = envolver(partes.prefijo, partes.cuerpo, absoluta)
-    const permiso = await $.tool.check({ tool: 'Bash', input: { command: envuelto } })
-    if (permiso.decision !== 'allow') return undefined
+    // Solo si envolverlo no cambia la decisión de permisos: nunca genera una pregunta nueva.
+    const [original, permiso] = await Promise.all([
+      $.tool.check({ tool: 'Bash', input: { command: comando } }),
+      $.tool.check({ tool: 'Bash', input: { command: envuelto } }),
+    ])
+    $.ui.log(`captura: shell=${shell} original=${original.decision} envuelto=${permiso.decision}`, { to: 'debug' })
+    if (permiso.decision === 'deny' || permiso.decision !== original.decision) return undefined
     await $.fs.write(ruta, '')
     return { comando: envuelto, ruta, absoluta }
-  } catch {
+  } catch (err) {
+    $.ui.log(`captura falló: ${String(err)}`, { to: 'debug' })
     return undefined
   }
 }
@@ -616,8 +650,14 @@ export const register: Register = (on, options) => {
     else if (motivoNo !== undefined) anotar(comando, 'sin-cambio', MOTIVOS[motivoNo])
     vivo.memoria.comandosRecientes = recordar(vivo.memoria.comandosRecientes, recortar(comando, 80), LIMITES_MEMORIA.comandos)
     const captura = compactable ? await planearCaptura($, comando) : undefined
+    if (compactable) await ampliarLimite($)
     // El modelo sigue viendo su comando original en el historial; solo cambia cómo se ejecuta.
-    const ran = await next(captura ? { ...e, command: captura.comando } : e)
+    let ran
+    try {
+      ran = await next(captura ? { ...e, command: captura.comando } : e)
+    } finally {
+      if (compactable) await restaurarLimite($)
+    }
     if (ran.deny !== undefined) return ran
     const fallo = ran.isError === true
     if (fallo) {
@@ -643,6 +683,7 @@ export const register: Register = (on, options) => {
       // La salida completa: la copia capturada si existe, si no lo que entregó Claude Code.
       let completa: string | undefined
       if (captura !== undefined) completa = await $.fs.read(captura.ruta).catch(() => undefined)
+      const copiaCompleta = completa !== undefined && completa.length > 0
 
       if (ran.isError === true) {
         const texto = ran.text ?? ''
@@ -652,11 +693,11 @@ export const register: Register = (on, options) => {
         if (c !== null) {
           const ruta = captura?.ruta ?? (await archivar($, texto))
           if (ruta !== undefined) {
-            const ahorrado = Math.max(0, Math.min(texto.length, c.caracteresAntes) - c.caracteresDespues)
+            const ahorrado = Math.max(0, texto.length - c.caracteresDespues - 200)
             await sumarAhorro($, ahorrado, comando)
-            anotar(comando, 'compactado', `${c.lineasAntes} → ${c.lineasDespues} líneas`, tokensAprox(ahorrado))
+            anotar(comando, 'compactado', `${Math.round(c.caracteresAntes / 1024)} KB → ${(c.caracteresDespues / 1024).toFixed(1)} KB${copiaCompleta ? ', copia completa guardada' : ', copia parcial'}`, tokensAprox(ahorrado))
             registrarSalidaGrande($, cuerpo.length)
-            return { deny: [salida?.[1], encabezado(c, ruta), c.texto, avisoBucle].filter(Boolean).join('\n') }
+            return { deny: [salida?.[1], encabezado(c, ruta, copiaCompleta, tokensAprox(ahorrado)), c.texto, avisoBucle].filter(Boolean).join('\n') }
           }
           anotar(comando, 'sin-cambio', MOTIVOS.archivar)
         } else anotar(comando, 'sin-cambio', esCorta(cuerpo) ? MOTIVOS.corta : MOTIVOS.pocoAhorro)
@@ -672,13 +713,16 @@ export const register: Register = (on, options) => {
           if (cOut !== null || cErr !== null) {
             const ruta = captura?.ruta ?? (await archivar($, `=== stdout ===\n${r.stdout}\n\n=== stderr ===\n${r.stderr}`))
             if (ruta !== undefined) {
-              const ahorrado =
-                (cOut ? cOut.caracteresAntes - cOut.caracteresDespues : 0) + (cErr ? cErr.caracteresAntes - cErr.caracteresDespues : 0)
+              // Contrafactual honesto: sin el plugin, Claude Code entrega como máximo 30 KB,
+              // o una vista previa de ~2 KB cuando guarda la salida en un archivo.
+              const leidoSinPlugin = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
+              const leidoConPlugin = (cOut?.caracteresDespues ?? 0) + (cErr?.caracteresDespues ?? 0) + 300
+              const ahorrado = Math.max(0, leidoSinPlugin - leidoConPlugin)
               await sumarAhorro($, ahorrado, comando)
               const principal = cOut ?? cErr
-              anotar(comando, 'compactado', principal ? `${principal.lineasAntes} → ${principal.lineasDespues} líneas` : 'compactado', tokensAprox(ahorrado))
+              anotar(comando, 'compactado', principal ? `${Math.round(principal.caracteresAntes / 1024)} KB → ${(principal.caracteresDespues / 1024).toFixed(1)} KB${copiaCompleta ? ', copia completa guardada' : ', copia parcial'}` : 'compactado', tokensAprox(ahorrado))
               registrarSalidaGrande($, fuente.length)
-              const cabecera = principal ? encabezado(principal, ruta) : ''
+              const cabecera = principal ? encabezado(principal, ruta, copiaCompleta, tokensAprox(ahorrado)) : ''
               return {
                 result: {
                   ...r,

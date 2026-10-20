@@ -33,6 +33,7 @@ export function limpiar(salida: string): string[] {
 // Familias de comandos ruidosos: tests, builds, instalaciones, linters, logs, listados.
 const RUIDOSOS: RegExp[] = [
   /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|build|install|ci|add|lint|typecheck|check|i)\b/,
+  /\b(npm|pnpm|yarn|bun)\s+run\s+(?!(dev|start|serve|watch|preview)\b)[\w:.-]+/,
   /\b(npx|bunx|pnpm\s+(dlx|exec)|yarn\s+dlx)\s+(jest|vitest|mocha|playwright|cypress|tsc|eslint|prettier|webpack|vite|next|nuxt|astro|turbo|nx|biome)\b/,
   /(^|[\s;&|(])(jest|vitest|mocha|playwright|cypress|tsc|eslint|webpack|turbo|nx|biome)\b/,
   /(^|[\s;&|(])(pytest|tox|nox|mypy|ruff|flake8|pylint)\b/,
@@ -84,7 +85,9 @@ function primerPrograma(segmento: string): string {
 export function porQueNoCompactable(comando: string): 'filtrado' | 'lector' | 'familia' | undefined {
   if (YA_FILTRADO.test(comando)) return 'filtrado'
   if (CONTENIDO_EXACTO.test(comando)) return 'lector'
+  // Se ignoran los `echo` finales que Claude agrega (p. ej. `; echo "EXIT_CODE=$?"`).
   const segmentos = comando.split(/&&|\|\||;|\|/).map(s => s.trim()).filter(Boolean)
+  while (segmentos.length > 1 && /^(echo|printf)$/.test(primerPrograma(segmentos[segmentos.length - 1] ?? ''))) segmentos.pop()
   const ultimo = segmentos[segmentos.length - 1] ?? ''
   if (LECTORES.test(primerPrograma(ultimo))) return 'lector'
   return RUIDOSOS.some(patron => patron.test(comando)) ? undefined : 'familia'
@@ -248,7 +251,7 @@ export function citar(texto: string): string {
 
 /** El comando envuelto: misma salida en vivo, mismo código de salida, copia completa en `ruta`. */
 export function envolver(prefijo: string, cuerpo: string, ruta: string): string {
-  return `${prefijo}( set -o pipefail; { ${cuerpo}\n} 2>&1 | tee ${citar(ruta)} )`
+  return `${prefijo}( set -o pipefail; { ${cuerpo}\n} 2>&1 | tee ${citar(ruta)} ) # ahorro-tokens: guarda una copia completa de la salida`
 }
 
 /** Salidas cortas: se dejan intactas. */
@@ -270,10 +273,15 @@ export function formatearTokens(tokens: number): string {
 }
 
 /** Encabezado honesto: Claude sabe que la salida fue compactada y dónde está el original. */
-export function encabezado(c: Compactado, rutaOriginal: string): string {
-  const ahorro = formatearTokens(tokensAprox(c.caracteresAntes - c.caracteresDespues))
+export function encabezado(c: Compactado, rutaOriginal: string, copiaCompleta = true, tokensAhorrados?: number): string {
+  const ahorro = tokensAhorrados ?? tokensAprox(c.caracteresAntes - c.caracteresDespues)
+  const kb = (n: number) => `${(n / 1024).toFixed(n >= 10240 ? 0 : 1)} KB`
+  const copia = copiaCompleta
+    ? `Copia completa de la salida: ${rutaOriginal}`
+    : `Copia parcial (los primeros ${kb(c.caracteresAntes)} que entregó Claude Code): ${rutaOriginal}`
   return (
-    `[ahorro-tokens] Salida compactada: ${c.lineasAntes} → ${c.lineasDespues} líneas (~${ahorro} tokens menos). ` +
-    `Se conservaron errores, advertencias, el inicio y el final. Original completo: ${rutaOriginal}`
+    `[ahorro-tokens] Salida compactada: ${kb(c.caracteresAntes)} → ${kb(c.caracteresDespues)}, ${c.lineasAntes} → ${c.lineasDespues} líneas` +
+    (ahorro > 0 ? ` (~${formatearTokens(ahorro)} tokens menos de lo que habrías leído)` : '') +
+    `. Se conservaron errores, advertencias, el inicio y el final. ${copia}`
   )
 }
