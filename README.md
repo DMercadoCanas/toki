@@ -12,7 +12,7 @@
 | **Rescate de errores escondidos** | Claude Code recorta por la mitad las salidas largas de los comandos que fallan, y justo ahí suele estar el error. ahorro-tokens copia la salida completa mientras el comando corre y le entrega a Claude el error real, en menos espacio. | Idea propia |
 | **Detector de bucles** | Si el mismo comando falla 3 veces seguidas, le avisa a Claude que cambie de enfoque antes de seguir reintentando. | Token Optimizer |
 | **Mapa del proyecto** | Genera un mapa de archivos, símbolos y módulos más usados, sin gastar tokens del modelo. La primera vez que Claude busca algo en la sesión, le avisa que el mapa existe. | Graphify |
-| **Acompañante** | Una franja sobre el prompt con el contexto usado y lo ahorrado. Te avisa cuando conviene compactar (con un botón) y cuando el caché se enfrió. | Token Optimizer |
+| **Toki, el acompañante** | Una barra viva sobre el prompt con una mascota que actúa lo que Claude hace (piensa, lee, ejecuta, edita, compacta, duerme), medidores de contexto, caché, ahorro y límites del plan, una frase que dice qué pasa y un botón cuando hay algo que hacer. | Token Optimizer |
 | **Estilo conciso** | Respuestas cortas sin relleno. El código, los errores y las rutas no se tocan. Opcional. | Caveman (nivel lite) |
 
 ### Reglas que nunca rompe
@@ -29,7 +29,7 @@
 En una sesión de Claude Code en la terminal:
 
 ```
-/plugin install ahorro-tokens --marketplace TU-USUARIO/ahorro-tokens
+/plugin install ahorro-tokens --marketplace DMercadoCanas/ahorro-tokens
 ```
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato.
@@ -37,10 +37,26 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 Desde la terminal del sistema:
 
 ```
-claude plugin install ahorro-tokens --marketplace TU-USUARIO/ahorro-tokens
+claude plugin install ahorro-tokens --marketplace DMercadoCanas/ahorro-tokens
 ```
 
-En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `TU-USUARIO/ahorro-tokens` → **Add plugin**.
+En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/ahorro-tokens` → **Add plugin**.
+
+## La barra de Toki
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ (•‿•) Toki · Todo en orden. Esta sesión te ahorré ~5.4k tokens.        − × │
+│ contexto ██████░░░░░░░░ 37% · caché ● 48 min · ahorrado ~5.4k · 5 h 25% · semana 12%   ▸ más │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+- **La mascota actúa lo que pasa:** `(•_•)···` pensando, `(⊙‿⊙)` leyendo, `(•‿•) ⠋` ejecutando, `✎` editando, `(>‿<)` compactando, `(•o•)?` esperando tu permiso, `(^‿^)✓` listo, `(−_−)zZ` caché frío, `(•△•)!` contexto alto.
+- **Una frase y, si hace falta, un botón:** al 70% de contexto aparece **Compactar ahora** (atajo `c`).
+- **Medidores:** contexto (verde, amarillo, rojo), reloj del caché (`●` lleno → `○` frío), tokens ahorrados en la sesión y, en planes con suscripción, los límites de 5 horas y semana.
+- **Cada vez que ahorra, te lo dice:** aparece un aviso corto ("Toki te ahorró ~5.4k tokens en «npm test»").
+- **`▸ más`** muestra duración, llamadas, salidas compactadas, bucles e histórico. **`−`** la deja en una sola línea. **`×`** la oculta (vuelve con `/ahorro`).
+- Los porcentajes de ahorro son estimados (unos 4 caracteres por token).
 
 ## Cómo se usa
 

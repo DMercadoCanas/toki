@@ -27,12 +27,27 @@ import {
   lenguaje,
 } from './mapa'
 import type { FichaArchivo } from './mapa'
+import {
+  actividadDeHerramienta,
+  barra,
+  colorDePorcentaje,
+  cuadro,
+  decidirActividad,
+  formatearDuracion,
+  formatearMinutos,
+  frase,
+  recortar,
+  relojCache,
+} from './mascota'
+import type { Actividad } from './mascota'
 
 type $ = EngineInterface
 
-const SESION_VACIA: Sesion = { tokensAhorrados: 0, compactaciones: 0, bucles: 0, ultimaActividad: 0 }
+const SESION_VACIA: Sesion = { tokensAhorrados: 0, compactaciones: 0, bucles: 0, ultimaActividad: 0, llamadas: 0 }
 const sesion = atom({ plugin: 'ahorro-tokens', key: 'sesion' } as const, SESION_VACIA)
 const oculto = atom({ plugin: 'ahorro-tokens', key: 'oculto' } as const, false)
+const compacto = atom({ plugin: 'ahorro-tokens', key: 'compacto' } as const, false)
+const detalles = atom({ plugin: 'ahorro-tokens', key: 'detalles' } as const, false)
 const fallos = atom({ plugin: 'ahorro-tokens', key: 'fallos' } as const, {})
 const avisoMapaDado = atom({ plugin: 'ahorro-tokens', key: 'avisoMapaDado' } as const, false)
 
@@ -94,11 +109,44 @@ async function planearCaptura($: $, comando: string): Promise<Captura | undefine
   }
 }
 
-async function sumarAhorro($: $, caracteres: number): Promise<void> {
+// Estado vivo del acompañante (se pierde al recargar; no importa, es efímero).
+const vivo: {
+  actividad: Actividad
+  tick: number
+  ultimoAhorro?: { tokens: number; comando: string }
+  bucleReciente: boolean
+  usoCache?: { pct?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean }
+  usoLeido: number
+} = { actividad: 'tranquilo', tick: 0, bucleReciente: false, usoLeido: 0 }
+
+async function sumarAhorro($: $, caracteres: number, comando: string): Promise<void> {
   const tokens = tokensAprox(caracteres)
   await update($, sesion, s => ({ ...s, tokensAhorrados: s.tokensAhorrados + tokens, compactaciones: s.compactaciones + 1 }))
   const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
   await $.store.set(CLAVE_TOTAL, total + tokens)
+  vivo.ultimoAhorro = { tokens, comando }
+  $.ui.toast(`Toki te ahorró ~${formatearTokens(tokens)} tokens en «${recortar(comando, 40)}»`, { timeoutMs: 6000 })
+}
+
+/** Lee las cifras de la sesión como máximo cada 5 s (es la misma llamada barata de la status line). */
+async function refrescarUso($: $): Promise<void> {
+  const ahora = await $.clock.now()
+  if (ahora - vivo.usoLeido < 5000) return
+  vivo.usoLeido = ahora
+  try {
+    const uso = await $.session.usage()
+    const limite = (kind: string) => uso.rateLimits.find(r => r.kind === kind)?.percentUsed
+    vivo.usoCache = {
+      pct: uso.context.percent,
+      cincoHoras: limite('five_hour'),
+      semana: limite('seven_day'),
+      costo: uso.cost?.usd,
+      inicio: uso.startedAt,
+      esSuscripcion: uso.rateLimits.length > 0,
+    }
+  } catch {
+    // Sin cifras por ahora: la barra muestra guiones.
+  }
 }
 
 async function conAvisoMapa($: $, herramienta: string, comando: string | undefined, ran: ToolCallResult): Promise<ToolCallResult> {
@@ -228,8 +276,15 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'ahorro', description: 'ahorro-tokens: ver cuánto has ahorrado y qué ocupa tu contexto' })
     await $.command.register({ name: 'ahorro-mapa', description: 'ahorro-tokens: crear o actualizar el mapa del proyecto' })
-    // Redibuja la franja cada minuto para que el aviso de caché frío aparezca a tiempo.
-    if (acompanante) $.clock.every(60_000, () => $.ui.invalidate('ui.render'))
+    // Animación de la mascota: un cuadro cada 600 ms mientras la barra esté visible.
+    if (acompanante) {
+      $.clock.every(600, () => {
+        vivo.tick += 1
+        void read($, oculto).then(estaOculto => {
+          if (!estaOculto) $.ui.invalidate('ui.render')
+        })
+      })
+    }
     if (mapaAuto) $.clock.after(3_000, () => void mapaAutomatico($))
     return next(e)
   })
@@ -243,12 +298,63 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  on('turn.start', ($, e, next) => {
+    if (e.agentId === undefined) {
+      vivo.actividad = 'pensando'
+      vivo.ultimoAhorro = undefined
+      vivo.bucleReciente = false
+    }
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
       const ahora = await $.clock.now()
       await update($, sesion, s => ({ ...s, ultimaActividad: ahora }))
+      vivo.actividad = 'listo'
+      $.clock.after(12_000, () => {
+        if (vivo.actividad === 'listo') {
+          vivo.actividad = 'tranquilo'
+          $.ui.invalidate('ui.render')
+        }
+      })
     }
     return next(e)
+  })
+
+  // Observador: qué está haciendo Claude, para que Toki lo actúe.
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+    vivo.actividad = actividadDeHerramienta(String(e.tool))
+    await update($, sesion, s => ({ ...s, llamadas: s.llamadas + 1 }))
+    try {
+      return await next(e)
+    } finally {
+      vivo.actividad = 'pensando'
+    }
+  })
+
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const anterior = vivo.actividad
+    vivo.actividad = 'esperando'
+    $.ui.invalidate('ui.render')
+    try {
+      return await next(e)
+    } finally {
+      vivo.actividad = anterior
+    }
+  })
+
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+    const anterior = vivo.actividad
+    vivo.actividad = 'compactando'
+    $.ui.invalidate('ui.render')
+    try {
+      return await next(e)
+    } finally {
+      vivo.actividad = anterior === 'compactando' ? 'tranquilo' : anterior
+    }
   })
 
   // Motor: compactar salidas ruidosas y detectar bucles.
@@ -263,7 +369,11 @@ export const register: Register = (on, options) => {
 
     const { fallos: nuevos, avisar } = registrar(await read($, fallos), comando, fallo)
     await update($, fallos, () => nuevos)
-    if (avisar) await update($, sesion, s => ({ ...s, bucles: s.bucles + 1 }))
+    if (avisar) {
+      await update($, sesion, s => ({ ...s, bucles: s.bucles + 1 }))
+      vivo.bucleReciente = true
+      $.ui.toast('Toki: el mismo comando falló 3 veces seguidas. Le pedí a Claude cambiar de enfoque.', { timeoutMs: 8000 })
+    }
     const avisoBucle = avisar ? AVISO_BUCLE : undefined
 
     if (compactable) {
@@ -279,7 +389,7 @@ export const register: Register = (on, options) => {
         if (c !== null) {
           const ruta = captura?.ruta ?? (await archivar($, texto))
           if (ruta !== undefined) {
-            await sumarAhorro($, Math.max(0, Math.min(texto.length, c.caracteresAntes) - c.caracteresDespues))
+            await sumarAhorro($, Math.max(0, Math.min(texto.length, c.caracteresAntes) - c.caracteresDespues), comando)
             return { deny: [salida?.[1], encabezado(c, ruta), c.texto, avisoBucle].filter(Boolean).join('\n') }
           }
         }
@@ -296,7 +406,7 @@ export const register: Register = (on, options) => {
             if (ruta !== undefined) {
               const ahorrado =
                 (cOut ? cOut.caracteresAntes - cOut.caracteresDespues : 0) + (cErr ? cErr.caracteresAntes - cErr.caracteresDespues : 0)
-              await sumarAhorro($, ahorrado)
+              await sumarAhorro($, ahorrado, comando)
               const principal = cOut ?? cErr
               const cabecera = principal ? encabezado(principal, ruta) : ''
               return {
@@ -354,39 +464,116 @@ export const register: Register = (on, options) => {
     if (!acompanante || e.props.hasSurvey || (await read($, oculto))) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const s = await read($, sesion)
-    const uso = await $.session.usage().catch(() => undefined)
-    const pct = uso?.context.percent
-    const ttlMinutos = (uso?.rateLimits.length ?? 0) > 0 ? 60 : 5 // Suscripción: 1 h. API: 5 min.
-    const inactivo = s.ultimaActividad > 0 ? ((await $.clock.now()) - s.ultimaActividad) / 60_000 : 0
-    const ocultar = <Button key="ocultar" plain label="ocultar" onPress={() => update($, oculto, () => true)} />
+    const esCompacto = await read($, compacto)
+    const verDetalles = await read($, detalles)
+    await refrescarUso($)
+    const uso = vivo.usoCache
+    const ahora = await $.clock.now()
+    const pct = uso?.pct
+    const ttl = uso?.esSuscripcion ? 60 : 5 // Suscripción: 1 h de caché. API: 5 min.
+    const inactivo = s.ultimaActividad > 0 ? (ahora - s.ultimaActividad) / 60_000 : 0
+    const cacheRestante = s.ultimaActividad > 0 ? Math.max(0, ttl - inactivo) : undefined
+    const actividad = decidirActividad(vivo.actividad, e.props.isWorking, pct, inactivo, ttl, s.ultimaActividad > 0)
+    const dicho = frase({
+      actividad,
+      contextoPct: pct,
+      cacheMinutosRestantes: cacheRestante,
+      inactivoMinutos: inactivo,
+      ahorradoSesion: s.tokensAhorrados,
+      ultimoAhorro: vivo.ultimoAhorro,
+      bucleReciente: vivo.bucleReciente,
+    })
+    const colorFrase = dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : dicho.tono === 'bien' ? 'success' : 'text'
+    const mascota = cuadro(actividad, vivo.tick)
+    const ancho = e.props.bodyColumns
+    const angosto = ancho < 90
+    const colorCache = cacheRestante === undefined ? 'inactive' : cacheRestante <= 0 ? 'error' : cacheRestante < ttl * 0.25 ? 'warning' : 'success'
+    const cacheTexto = cacheRestante === undefined ? '—' : cacheRestante <= 0 ? 'frío' : formatearMinutos(cacheRestante)
+    const pctTexto = pct === undefined ? '—' : `${pct}%`
 
-    if (!e.props.isWorking && pct !== undefined && pct >= UMBRAL_CONTEXTO) {
+    const botonOcultar = <Button key="ocultar" plain dimColor label="×" onPress={() => update($, oculto, () => true)} />
+    const botonTamano = (
+      <Button key="tamano" plain dimColor label={esCompacto ? '+' : '−'} onPress={() => update($, compacto, v => !v)} />
+    )
+
+    if (esCompacto) {
       return (
         <Box flexDirection="row" gap={1}>
-          <Text color="warning">
-            Contexto al {pct}%: compacta en esta pausa, antes de que se haga solo a mitad de una tarea.
-          </Text>
-          <Button key="compactar" variant="primary" label="Compactar ahora" onPress={() => void $.session.compact({})} />
-          {ocultar}
+          <Text color="claude">{mascota}</Text>
+          <Text color={colorDePorcentaje(pct)}>ctx {pctTexto}</Text>
+          <Text dimColor>·</Text>
+          <Text color={colorCache}>caché {cacheTexto}</Text>
+          <Text dimColor>·</Text>
+          <Text color="success">~{formatearTokens(s.tokensAhorrados)} ahorrados</Text>
+          {dicho.tono !== 'normal' && dicho.tono !== 'bien' && <Text color={colorFrase}>· {recortar(dicho.texto, Math.max(20, ancho - 60))}</Text>}
+          <Box flexGrow={1} />
+          {botonTamano}
+          {botonOcultar}
         </Box>
       )
     }
-    if (!e.props.isWorking && s.ultimaActividad > 0 && inactivo >= ttlMinutos) {
-      return (
-        <Box flexDirection="row" gap={1}>
-          <Text color="warning">
-            El caché se enfrió (sin actividad {Math.floor(inactivo)} min): tu próximo mensaje vuelve a procesar todo el contexto. Si cambias de tema, mejor /clear.
-          </Text>
-          {ocultar}
-        </Box>
-      )
-    }
+
+    const anchoBarra = angosto ? 8 : 14
     return (
-      <Box flexDirection="row" gap={1}>
-        <Text dimColor>
-          ahorro-tokens · contexto {pct === undefined ? '—' : `${pct}%`} · ~{formatearTokens(s.tokensAhorrados)} tokens ahorrados · /ahorro
-        </Text>
-        {ocultar}
+      <Box flexDirection="column" borderStyle="round" borderColor={dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : 'claude'} paddingX={1}>
+        <Box flexDirection="row" gap={1}>
+          <Text color="claude" bold>
+            {mascota}
+          </Text>
+          <Text color="claude" bold>
+            Toki
+          </Text>
+          <Text dimColor>·</Text>
+          <Text color={colorFrase} wrap="truncate-end">
+            {dicho.texto}
+          </Text>
+          {dicho.accion === 'compactar' && (
+            <Button key="compactar" variant="primary" hotkey="c" label="Compactar ahora" onPress={() => void $.session.compact({})} />
+          )}
+          <Box flexGrow={1} />
+          {botonTamano}
+          {botonOcultar}
+        </Box>
+        <Box flexDirection="row" gap={1}>
+          <Text dimColor>contexto</Text>
+          <Text color={colorDePorcentaje(pct)} mono>
+            {barra(pct, anchoBarra)} {pctTexto}
+          </Text>
+          <Text dimColor>·</Text>
+          <Text dimColor>caché</Text>
+          <Text color={colorCache}>
+            {relojCache(cacheRestante, ttl)} {cacheTexto}
+          </Text>
+          <Text dimColor>·</Text>
+          <Text dimColor>ahorrado</Text>
+          <Text color="success" bold>
+            ~{formatearTokens(s.tokensAhorrados)}
+          </Text>
+          {uso?.cincoHoras !== undefined && !angosto && (
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor>·</Text>
+              <Text dimColor>5 h</Text>
+              <Text color={colorDePorcentaje(uso.cincoHoras)}>{Math.round(uso.cincoHoras)}%</Text>
+            </Box>
+          )}
+          {uso?.semana !== undefined && !angosto && (
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor>·</Text>
+              <Text dimColor>semana</Text>
+              <Text color={colorDePorcentaje(uso.semana)}>{Math.round(uso.semana)}%</Text>
+            </Box>
+          )}
+          <Box flexGrow={1} />
+          <Button key="detalles" plain dimColor label={verDetalles ? '▾ menos' : '▸ más'} onPress={() => update($, detalles, v => !v)} />
+        </Box>
+        {verDetalles && (
+          <Box flexDirection="row" gap={1}>
+            <Text dimColor>
+              sesión {uso ? formatearDuracion(ahora - uso.inicio) : '—'} · {s.llamadas} llamadas · {s.compactaciones} salidas compactadas · {s.bucles} bucles
+              {uso?.costo !== undefined && !uso.esSuscripcion ? ` · $${uso.costo.toFixed(2)}` : ''} · histórico ~{formatearTokens(Number((await $.store.get(CLAVE_TOTAL)) ?? 0))} · /ahorro
+            </Text>
+          </Box>
+        )}
       </Box>
     )
   })
