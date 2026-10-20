@@ -1,10 +1,18 @@
 {
   "name": "ahorro-tokens",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Kit de ahorro de tokens para Claude Code: compacta salidas ruidosas, detecta bucles, mapea tu proyecto y te avisa cuándo compactar. Cero dependencias, cero instrucciones fijas en el contexto.",
-  "author": { "name": "ahorro-tokens" },
+  "author": {
+    "name": "ahorro-tokens"
+  },
   "license": "MIT",
-  "keywords": ["tokens", "ahorro", "contexto", "costos", "español"],
+  "keywords": [
+    "tokens",
+    "ahorro",
+    "contexto",
+    "costos",
+    "español"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "compresion": {
@@ -23,6 +31,12 @@
       "type": "boolean",
       "title": "Acompañante sobre el prompt",
       "description": "Muestra el estado de la sesión y avisa cuándo conviene compactar o limpiar.",
+      "default": true
+    },
+    "sonidos": {
+      "type": "boolean",
+      "title": "Sonidos suaves",
+      "description": "Un sonido corto cuando Toki ahorra tokens o te avisa de algo (solo en macOS; en Linux y Windows la terminal no reproduce audio).",
       "default": true
     }
   }

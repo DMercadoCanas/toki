@@ -6,7 +6,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
 import type { Sesion } from '../types'
-import { AVISO_BUCLE, registrar } from './bucles'
+import { AVISO_BUCLE, UMBRAL_FALLOS, registrar } from './bucles'
 import {
   compactar,
   encabezado,
@@ -40,6 +40,9 @@ import {
   relojCache,
 } from './mascota'
 import type { Actividad } from './mascota'
+import { agregarLeccion, filasGrafica, leccionCambioModelo, sumarAlDia, totalDesde } from './historial'
+import type { Historial, Leccion } from './historial'
+import { tokiSvg } from './toki-svg'
 
 type $ = EngineInterface
 
@@ -55,6 +58,7 @@ const CARPETA = '.claude/ahorro-tokens'
 const PANEL = 'ahorro-reporte'
 const CLAVE_TOTAL = 'tokensAhorradosTotal'
 const CLAVE_RANURA = 'ranuraArchivo'
+const CLAVE_HISTORIAL = 'historialDiario'
 const RANURAS = 40
 const UMBRAL_CONTEXTO = 70
 const HORAS_MAPA_VIGENTE = 24
@@ -117,15 +121,33 @@ const vivo: {
   bucleReciente: boolean
   usoCache?: { pct?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean }
   usoLeido: number
-} = { actividad: 'tranquilo', tick: 0, bucleReciente: false, usoLeido: 0 }
+  lecciones: Leccion[]
+  sonidos: boolean
+  avisoReciente?: string
+  avisoContexto?: boolean
+} = { actividad: 'tranquilo', tick: 0, bucleReciente: false, usoLeido: 0, lecciones: [], sonidos: true }
+
+/** Un sonido corto y suave. En Linux y Windows la terminal no tiene reproductor: no pasa nada. */
+function sonar($: $, nombre: 'ahorro' | 'listo' | 'aviso'): void {
+  if (!vivo.sonidos) return
+  void $.audio.play({ asset: `sonidos/${nombre}.wav` }, { gain: 0.5 }).catch(() => undefined)
+}
+
+async function leerHistorial($: $): Promise<Historial> {
+  const guardado = await $.store.get(CLAVE_HISTORIAL)
+  return guardado !== null && typeof guardado === 'object' ? (guardado as Historial) : {}
+}
 
 async function sumarAhorro($: $, caracteres: number, comando: string): Promise<void> {
   const tokens = tokensAprox(caracteres)
   await update($, sesion, s => ({ ...s, tokensAhorrados: s.tokensAhorrados + tokens, compactaciones: s.compactaciones + 1 }))
   const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
   await $.store.set(CLAVE_TOTAL, total + tokens)
+  const ahora = await $.clock.now()
+  await $.store.set(CLAVE_HISTORIAL, sumarAlDia(await leerHistorial($), ahora, tokens))
   vivo.ultimoAhorro = { tokens, comando }
   $.ui.toast(`Toki te ahorró ~${formatearTokens(tokens)} tokens en «${recortar(comando, 40)}»`, { timeoutMs: 6000 })
+  sonar($, 'ahorro')
 }
 
 /** Lee las cifras de la sesión como máximo cada 5 s (es la misma llamada barata de la status line). */
@@ -212,58 +234,83 @@ async function mapaAutomatico($: $): Promise<void> {
 
 // ---------- Reporte ----------
 
-async function reporte($: $): Promise<string[]> {
-  const s = await read($, sesion)
-  const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
-  const lineas = [
-    `Esta sesión: ~${formatearTokens(s.tokensAhorrados)} tokens ahorrados · ${s.compactaciones} salidas compactadas · ${s.bucles} bucles detectados`,
-    `Desde que instalaste ahorro-tokens: ~${formatearTokens(total)} tokens ahorrados (estimado)`,
-  ]
+type Reporte = {
+  sesion: Sesion
+  total: number
+  hoy: number
+  semana: number
+  mes: number
+  grafica: ReturnType<typeof filasGrafica>
+  contexto?: { pct?: number; ventana: number; costo?: number; esSuscripcion: boolean }
+  ocupan: { nombre: string; tokens: number }[]
+  sugerencias: string[]
+  lecciones: Leccion[]
+  hayMapa: boolean
+}
 
-  const sugerencias: string[] = []
+async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
+  const s = await read($, sesion)
+  const ahora = await $.clock.now()
+  const historial = await leerHistorial($)
+  const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
+  const r: Reporte = {
+    sesion: s,
+    total,
+    hoy: totalDesde(historial, ahora, 1),
+    semana: totalDesde(historial, ahora, 7),
+    mes: totalDesde(historial, ahora, 30),
+    grafica: filasGrafica(historial, ahora, 14, anchoBarra),
+    ocupan: [],
+    sugerencias: [],
+    lecciones: vivo.lecciones,
+    hayMapa: await $.fs.exists(RUTA_MAPA).catch(() => false),
+  }
   try {
     const uso = await $.session.usage({ breakdown: 'summary' })
     const pct = uso.context.percent
+    r.contexto = { pct, ventana: uso.context.window, costo: uso.cost?.usd, esSuscripcion: uso.rateLimits.length > 0 }
     const desglose = uso.context.breakdown
-    lineas.push(
-      `Contexto: ${pct === undefined ? 'sin datos aún' : `${pct}% usado`} (ventana de ${formatearTokens(uso.context.window)} tokens)` +
-        (uso.cost !== undefined && uso.rateLimits.length === 0 ? ` · costo de la sesión: $${uso.cost.usd.toFixed(2)}` : ''),
-    )
     if (desglose !== undefined) {
-      const usados = desglose.categories
+      r.ocupan = desglose.categories
         .filter(c => c.kind === 'used' && c.tokens > 0)
         .sort((a, b) => b.tokens - a.tokens)
         .slice(0, 5)
-      if (usados.length > 0) {
-        lineas.push('', 'Qué ocupa tu contexto ahora:')
-        for (const c of usados) lineas.push(`  ${c.name}: ~${formatearTokens(c.tokens)}`)
-      }
+        .map(c => ({ nombre: c.name, tokens: c.tokens }))
       const memoria = desglose.memoryFiles.reduce((suma, f) => suma + f.tokens, 0)
       if (memoria > 5000) {
-        sugerencias.push(
-          `Tus archivos de memoria (CLAUDE.md y similares) pesan ~${formatearTokens(memoria)} tokens en cada mensaje. Mueve los flujos específicos a skills y deja el CLAUDE.md por debajo de 200 líneas.`,
-        )
+        r.sugerencias.push(`Tus archivos de memoria (CLAUDE.md y similares) pesan ~${formatearTokens(memoria)} tokens en cada mensaje. Mueve los flujos específicos a skills y deja el CLAUDE.md por debajo de 200 líneas.`)
       }
       const mcp = desglose.mcpTools.filter(t => t.isLoaded).reduce((suma, t) => suma + t.tokens, 0)
-      if (mcp > 10_000) {
-        sugerencias.push(`Las herramientas MCP ocupan ~${formatearTokens(mcp)} tokens. Desactiva en /mcp los servidores que no estés usando.`)
-      }
+      if (mcp > 10_000) r.sugerencias.push(`Las herramientas MCP cargadas ocupan ~${formatearTokens(mcp)} tokens. Desactiva en /mcp los servidores que no estés usando.`)
     }
-    if (pct !== undefined && pct >= 50) {
-      sugerencias.push('El contexto pasa de la mitad. Si terminaste una tarea, /compact en esta pausa; si vas a cambiar de tema, /clear.')
-    }
+    if (pct !== undefined && pct >= 50) r.sugerencias.push('El contexto pasa de la mitad. Si terminaste una tarea, /compact en esta pausa; si vas a cambiar de tema, /clear.')
   } catch {
-    lineas.push('Contexto: sin datos en este momento.')
+    // Sin cifras por ahora.
   }
+  if (!r.hayMapa) r.sugerencias.push('Aún no hay mapa del proyecto. Créalo con /ahorro-mapa para que Claude se oriente sin leer archivos a ciegas.')
+  r.sugerencias.push('Para respuestas más cortas sin perder lo técnico: /output-style → ahorro-tokens:conciso.')
+  return r
+}
 
-  if (!(await $.fs.exists(RUTA_MAPA).catch(() => false))) {
-    sugerencias.push('Aún no hay mapa del proyecto. Créalo con /ahorro-mapa para que Claude se oriente sin leer archivos a ciegas.')
+function reporteEnTexto(r: Reporte): string {
+  const lineas = [
+    `Toki · ~${formatearTokens(r.sesion.tokensAhorrados)} tokens ahorrados en esta sesión · hoy ~${formatearTokens(r.hoy)} · semana ~${formatearTokens(r.semana)} · histórico ~${formatearTokens(r.total)}`,
+    `${r.sesion.compactaciones} salidas compactadas · ${r.sesion.llamadas} llamadas · ${r.sesion.bucles} bucles`,
+  ]
+  if (r.contexto) lineas.push(`Contexto: ${r.contexto.pct === undefined ? 'sin datos aún' : `${r.contexto.pct}% usado`} (ventana de ${formatearTokens(r.contexto.ventana)} tokens)`)
+  if (r.ocupan.length > 0) {
+    lineas.push('', 'Qué ocupa tu contexto ahora:')
+    for (const c of r.ocupan) lineas.push(`  ${c.nombre}: ~${formatearTokens(c.tokens)}`)
   }
-  sugerencias.push('Para respuestas más cortas sin perder lo técnico: /output-style → ahorro-tokens:conciso.')
-
+  lineas.push('', 'Ahorro de los últimos 14 días:')
+  for (const f of r.grafica) lineas.push(`  ${f.etiqueta} ${f.barra} ${f.valor}`)
+  if (r.lecciones.length > 0) {
+    lineas.push('', 'Lo que Toki notó esta sesión:')
+    for (const l of r.lecciones) lineas.push(`  • ${l.texto}`)
+  }
   lineas.push('', 'Sugerencias:')
-  for (const sugerencia of sugerencias) lineas.push(`  • ${sugerencia}`)
-  return lineas
+  for (const sug of r.sugerencias) lineas.push(`  • ${sug}`)
+  return lineas.join('\n')
 }
 
 // ---------- Registro ----------
@@ -272,6 +319,7 @@ export const register: Register = (on, options) => {
   const compresion = options['compresion'] !== false
   const mapaAuto = options['mapaAutomatico'] !== false
   const acompanante = options['acompanante'] !== false
+  vivo.sonidos = options['sonidos'] !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'ahorro', description: 'ahorro-tokens: ver cuánto has ahorrado y qué ocupa tu contexto' })
@@ -312,6 +360,7 @@ export const register: Register = (on, options) => {
       const ahora = await $.clock.now()
       await update($, sesion, s => ({ ...s, ultimaActividad: ahora }))
       vivo.actividad = 'listo'
+      if (vivo.ultimoAhorro !== undefined) sonar($, 'listo')
       $.clock.after(12_000, () => {
         if (vivo.actividad === 'listo') {
           vivo.actividad = 'tranquilo'
@@ -345,6 +394,22 @@ export const register: Register = (on, options) => {
     }
   })
 
+  // Toki aprende: un cambio de modelo con el caché caliente reprocesa todo el contexto.
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    if (e.source !== 'resume' && e.prompt_cache_warm && e.context_tokens >= 20_000) {
+      vivo.lecciones = agregarLeccion(vivo.lecciones, leccionCambioModelo(e.context_tokens, e.estimated_cache_write_usd, e.from_model, e.to_model))
+      vivo.avisoReciente = `Cambio de modelo con el caché caliente: el próximo mensaje reprocesa ~${formatearTokens(e.context_tokens)} tokens.`
+      $.clock.after(20_000, () => {
+        vivo.avisoReciente = undefined
+        $.ui.invalidate('ui.render')
+      })
+      $.ui.toast(`Toki: ${vivo.avisoReciente} Para una tarea chica, mejor un subagente con model: haiku.`, { timeoutMs: 9000 })
+      sonar($, 'aviso')
+      $.ui.invalidate('ui.render')
+    }
+    return next(e)
+  })
+
   on('session.compact', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     const anterior = vivo.actividad
@@ -372,7 +437,12 @@ export const register: Register = (on, options) => {
     if (avisar) {
       await update($, sesion, s => ({ ...s, bucles: s.bucles + 1 }))
       vivo.bucleReciente = true
+      vivo.lecciones = agregarLeccion(vivo.lecciones, {
+        clave: 'bucle',
+        texto: `Un comando falló ${UMBRAL_FALLOS} veces seguidas («${recortar(comando, 30)}»). Cada reintento vuelve a enviar todo el contexto: ante un fallo repetido, conviene parar y revisar la causa.`,
+      })
       $.ui.toast('Toki: el mismo comando falló 3 veces seguidas. Le pedí a Claude cambiar de enfoque.', { timeoutMs: 8000 })
+      sonar($, 'aviso')
     }
     const avisoBucle = avisar ? AVISO_BUCLE : undefined
 
@@ -436,7 +506,7 @@ export const register: Register = (on, options) => {
     await update($, oculto, () => false)
     const abierto = await $.ui.open({ id: PANEL, title: 'ahorro-tokens' })
     if (abierto.isPlaced) return { text: 'Reporte de ahorro-tokens abierto en el panel.' }
-    return { text: (await reporte($)).join('\n') }
+    return { text: reporteEnTexto(await reporte($)) }
   })
 
   on('command.run', { command: 'ahorro-mapa' }, async $ => {
@@ -449,13 +519,95 @@ export const register: Register = (on, options) => {
 
   // Acompañante: el panel del reporte y la franja sobre el prompt.
   on('ui.render', { component: 'Pane', requestId: PANEL }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
-    const lineas = await reporte($)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const ancho = e.props.bodyColumns
+    const r = await reporte($, Math.max(8, Math.min(30, ancho - 22)))
+    const cifra = (etiqueta: string, valor: string, color: 'success' | 'claude' | 'text' = 'text') => (
+      <Box flexDirection="column" marginRight={3}>
+        <Text color={color} bold>
+          {valor}
+        </Text>
+        <Text dimColor>{etiqueta}</Text>
+      </Box>
+    )
     return (
-      <Box flexDirection="column">
-        {lineas.map(linea => (
-          <Text>{linea === '' ? ' ' : linea}</Text>
-        ))}
+      <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="row" gap={1}>
+          <Text color="claude" bold>
+            {cuadro(vivo.actividad, vivo.tick)} Toki cuida tus tokens
+          </Text>
+        </Box>
+        <Box flexDirection="row" marginTop={1}>
+          {cifra('esta sesión', `~${formatearTokens(r.sesion.tokensAhorrados)}`, 'success')}
+          {cifra('hoy', `~${formatearTokens(r.hoy)}`)}
+          {cifra('7 días', `~${formatearTokens(r.semana)}`)}
+          {cifra('30 días', `~${formatearTokens(r.mes)}`)}
+          {cifra('histórico', `~${formatearTokens(r.total)}`, 'claude')}
+        </Box>
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <Text dimColor>
+            {r.sesion.compactaciones} salidas compactadas · {r.sesion.llamadas} llamadas · {r.sesion.bucles} bucles
+            {r.contexto ? ` · contexto ${r.contexto.pct === undefined ? '—' : `${r.contexto.pct}%`} de ${formatearTokens(r.contexto.ventana)}` : ''}
+            {r.contexto?.costo !== undefined && !r.contexto.esSuscripcion ? ` · $${r.contexto.costo.toFixed(2)}` : ''}
+          </Text>
+        </Box>
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>Ahorro por día (últimos 14 días)</Text>
+          {r.grafica.map(f => (
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor={!f.esHoy} bold={f.esHoy}>
+                {f.etiqueta}
+              </Text>
+              <Text color={f.tokens > 0 ? 'success' : 'inactive'} mono>
+                {f.barra}
+              </Text>
+              <Text dimColor={!f.esHoy}>{f.valor}</Text>
+            </Box>
+          ))}
+        </Box>
+        {r.ocupan.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>Qué ocupa tu contexto ahora</Text>
+            {r.ocupan.map(c => (
+              <Text>
+                {'  '}
+                {c.nombre}: <Text dimColor>~{formatearTokens(c.tokens)}</Text>
+              </Text>
+            ))}
+          </Box>
+        )}
+        {r.lecciones.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold color="warning">
+              Lo que Toki notó esta sesión
+            </Text>
+            {r.lecciones.map(l => (
+              <Text wrap="wrap">
+                {'  • '}
+                {l.texto}
+              </Text>
+            ))}
+          </Box>
+        )}
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>Sugerencias</Text>
+          {r.sugerencias.map(sug => (
+            <Text wrap="wrap">
+              {'  • '}
+              {sug}
+            </Text>
+          ))}
+        </Box>
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          {!r.hayMapa && (
+            <Button
+              key="crear-mapa"
+              label="Crear mapa del proyecto"
+              onPress={() => void generarMapa($).then(() => $.ui.invalidate('ui.render'))}
+            />
+          )}
+          <Button key="cerrar" plain dimColor label="cerrar" onPress={() => void $.ui.close({ id: PANEL })} />
+        </Box>
       </Box>
     )
   })
@@ -483,6 +635,15 @@ export const register: Register = (on, options) => {
       ultimoAhorro: vivo.ultimoAhorro,
       bucleReciente: vivo.bucleReciente,
     })
+    if (vivo.avisoReciente !== undefined && (actividad === 'tranquilo' || actividad === 'listo')) {
+      dicho.texto = vivo.avisoReciente
+      dicho.tono = 'aviso'
+    }
+    if (actividad === 'alerta' && vivo.avisoContexto !== true) {
+      vivo.avisoContexto = true
+      sonar($, 'aviso')
+    }
+    if (actividad !== 'alerta' && vivo.avisoContexto === true && (pct ?? 0) < 60) vivo.avisoContexto = false
     const colorFrase = dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : dicho.tono === 'bien' ? 'success' : 'text'
     const mascota = cuadro(actividad, vivo.tick)
     const ancho = e.props.bodyColumns
@@ -517,9 +678,16 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : 'claude'} paddingX={1}>
         <Box flexDirection="row" gap={1}>
-          <Text color="claude" bold>
-            {mascota}
-          </Text>
+          {e.surface === 'terminal' ? (
+            <Text color="claude" bold>
+              {mascota}
+            </Text>
+          ) : (
+            (() => {
+              const { Svg } = $.ui.resolve(e)
+              return <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={50} height={36} isInteractive />
+            })()
+          )}
           <Text color="claude" bold>
             Toki
           </Text>

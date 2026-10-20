@@ -2,7 +2,7 @@
 
 **El acompañante de ahorro de tokens para Claude Code.** Lo instalas y listo: no tienes que aprender qué skill usar ni cuándo compactar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen entre sí, y nunca sacrifica calidad para ahorrar.
 
-> Versión 0.1 (prototipo). Requiere Claude Code 2.1.287 o posterior.
+> Versión 0.3 (prototipo). Requiere Claude Code 2.1.287 o posterior.
 
 ## Qué hace
 
@@ -56,7 +56,14 @@ En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** �
 - **Medidores:** contexto (verde, amarillo, rojo), reloj del caché (`●` lleno → `○` frío), tokens ahorrados en la sesión y, en planes con suscripción, los límites de 5 horas y semana.
 - **Cada vez que ahorra, te lo dice:** aparece un aviso corto ("Toki te ahorró ~5.4k tokens en «npm test»").
 - **`▸ más`** muestra duración, llamadas, salidas compactadas, bucles e histórico. **`−`** la deja en una sola línea. **`×`** la oculta (vuelve con `/ahorro`).
+- **En la app de escritorio, Toki es un dibujo vectorial animado** (respira, parpadea, y cambia de cara y accesorio según lo que Claude hace). En la terminal usa caras de texto.
+- **Sonidos suaves** (solo macOS): una campanita al ahorrar, un acorde al terminar con ahorro y un tono bajo al avisar. Se apagan en la configuración del plugin.
+- **Toki aprende:** si cambias de modelo a mitad de sesión con el caché caliente, te dice cuántos tokens se reprocesan y cuánto costaría, y lo guarda en "Lo que Toki notó esta sesión" dentro de `/ahorro`. Lo mismo con los comandos que fallan en bucle.
 - Los porcentajes de ahorro son estimados (unos 4 caracteres por token).
+
+## El panel `/ahorro`
+
+Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), una gráfica de barras del ahorro por día en las últimas dos semanas, qué ocupa tu contexto ahora, lo que Toki notó en la sesión y sugerencias concretas. El historial se guarda en tu máquina, por proyecto.
 
 ## Cómo se usa
 
@@ -68,7 +75,7 @@ No tienes que hacer nada. Además:
 
 ### Configuración
 
-Con `/plugin configure ahorro-tokens@kit-ahorro` puedes apagar cualquiera de las tres piezas automáticas: compactador, mapa automático y acompañante.
+Con `/plugin configure ahorro-tokens@kit-ahorro` puedes apagar cualquiera de las piezas automáticas: compactador, mapa automático, acompañante y sonidos.
 
 ## Resultados en el proyecto de prueba
 
@@ -98,7 +105,7 @@ claude plugin test .
 claude --plugin-dir .
 ```
 
-Las pruebas viven en `tests/`. La lógica pura está en `hooks/compresor.ts`, `hooks/bucles.ts` y `hooks/mapa.ts`; `hooks/register.tsx` la conecta con Claude Code.
+Las pruebas viven en `tests/`. La lógica pura está en `hooks/compresor.ts`, `hooks/bucles.ts`, `hooks/mapa.ts`, `hooks/mascota.ts`, `hooks/toki-svg.ts` y `hooks/historial.ts`; `hooks/register.tsx` la conecta con Claude Code. Los sonidos de `sonidos/` son sintéticos (generados con Python, sin derechos de terceros).
 
 ## Créditos
 

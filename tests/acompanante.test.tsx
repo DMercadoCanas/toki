@@ -17,6 +17,27 @@ describe('acompañante', () => {
       expect(await ui.find({ type: 'Text', text: /░/ })).toBeDefined()
       expect(await ui.find({ key: 'ocultar' })).toBeDefined()
       expect(await ui.find({ key: 'detalles' })).toBeDefined()
+      if (surface === 'desktop') expect(await ui.find({ type: 'Svg' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+
+  test('el panel /ahorro muestra cifras, gráfica y sugerencias en ambas superficies', async ($, on) => {
+    mock.clock(on, { now: 1_760_000_000_000 })
+    mock.store(on, { historialDiario: { '2025-10-09': 3000 }, tokensAhorradosTotal: 15900 })
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({
+        plugin: 'ahorro-tokens',
+        surface,
+        component: 'Pane',
+        requestId: 'ahorro-reporte',
+        props: { title: 'ahorro-tokens', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+      })
+      expect(await ui.find({ type: 'Text', text: /Toki cuida tus tokens/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /Ahorro por día/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /~15\.9k/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /Sugerencias/ })).toBeDefined()
+      expect(await ui.find({ key: 'cerrar' })).toBeDefined()
       await ui.unmount()
     }
   })
