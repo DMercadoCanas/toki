@@ -4,7 +4,7 @@
 
 # Toki: tu acompañante de ahorro de tokens
 
-**Cada token cuenta.** Toki es una alcancía que vive sobre tu prompt en Claude Code. Lo instalas una vez y se encarga solo: compacta las salidas ruidosas, rescata los errores que se esconden, recuerda lo importante cuando Claude Code compacta, mapea tu proyecto y te avisa justo cuando conviene actuar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen y nunca sacrifica calidad para ahorrar.
+**Cada token cuenta.** Toki es un robot de limpieza que vive sobre tu prompt en Claude Code: aspira el ruido para que Claude lea solo lo que importa. Lo instalas una vez y se encarga solo: compacta las salidas ruidosas, rescata los errores que se esconden, recuerda lo importante cuando Claude Code compacta, mapea tu proyecto y te avisa justo cuando conviene actuar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen y nunca sacrifica calidad para ahorrar.
 
 Habla español e inglés. No agrega ni un token fijo a tu contexto.
 
@@ -42,7 +42,7 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 | **Memoria que sobrevive la compactación** | Toki anota la tarea, las decisiones, los archivos editados, los últimos comandos y errores. Cuando Claude Code compacta, se lo recuerda a Claude en una nota corta para que siga donde quedó. | Token Optimizer |
 | **Detector de bucles** | Si el mismo comando falla 3 veces seguidas, le pide a Claude cambiar de enfoque antes de seguir reintentando. | Token Optimizer |
 | **Mapa del proyecto** | Archivos, símbolos y módulos más usados, sin gastar tokens del modelo. La primera vez que Claude busca algo, le avisa que el mapa existe. | Graphify |
-| **Toki, el acompañante** | Una alcancía viva sobre el prompt que actúa lo que Claude hace, con medidores de contexto, caché, ahorro, racha y límites del plan, y un botón cuando hay algo que hacer. | Token Optimizer |
+| **Toki, el acompañante** | Un robot de limpieza vivo sobre el prompt que actúa lo que Claude hace, con medidores de contexto, caché, ahorro, racha y límites del plan, y un botón cuando hay algo que hacer. | Token Optimizer |
 | **Estilo conciso** | Respuestas cortas sin relleno; el código, los errores y las rutas no se tocan. Se activa solo al 50% de contexto o con `/output-style`. | Caveman (nivel lite) |
 
 ### Reglas que nunca rompe
@@ -59,12 +59,12 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 
 ```
 ╭──────────────────────────────────────────────────────────────────────────────────────╮
-│ (^‿^) ✓ Toki · Listo. En «npm test» te ahorré ~5.4k tokens.                    − × │
+│ [^‿^] ✓ Toki · Listo. En «npm test» te ahorré ~5.4k tokens.                    − × │
 │ contexto ██████░░░░░░░░ 37% · caché ● 48 min · ahorrado ~5.4k · 🔥 4 días · 5 h 25%  ▸ más │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-- **Toki actúa lo que pasa:** `(•_•)···` pensando, `(⊙‿⊙)` leyendo, `(•‿•) ⠋` ejecutando, `✎` editando, `(>‿<)` compactando, `(•o•)?` esperando tu permiso, `(^‿^)✓` listo, `\(^‿^)/ ✦` celebrando un logro, `(−_−)zZ` caché frío, `(•△•)!` contexto alto. En la app de escritorio es un dibujo animado que respira, parpadea, guarda monedas y lanza confeti.
+- **Toki actúa lo que pasa:** su cara va en la pantalla del robot. `[•_•]···` pensando, `[⊙‿⊙]` leyendo, `[•‿•] ⠋` ejecutando, `✎` editando, `[>‿<] ≋` aspirando (compactando), `[•o•]?` esperando tu permiso, `[^‿^]✓` listo, `\[^‿^]/ ✦` celebrando un logro, `[−_−]zZ` caché frío, `[•△•]!` contexto alto. En la app de escritorio es un dibujo animado: flota, parpadea, gira las ruedas cuando trabaja, aspira con la manguera cuando compacta y lanza confeti con cada logro.
 - **Una frase y, si hace falta, un botón:** al 70% de contexto (o si la conversación ya pesa más de 200k tokens) aparece **Compactar ahora** (atajo `c`).
 - **Medidores:** contexto, reloj del caché (`●` lleno → `○` frío), tokens ahorrados en la sesión, tu racha y, en planes con suscripción, los límites de 5 horas y de la semana.
 - **Cada ahorro y cada rescate te lo dice** con un aviso corto, y una campanita (solo macOS).
@@ -124,7 +124,7 @@ En `evals/` hay una suite para `claude plugin eval`, que corre cada caso con y s
 
 **Toki: your token-saving companion. Every token counts.**
 
-Toki is a piggy bank that lives above your Claude Code prompt. Install it once and it takes care of the rest: it compacts noisy command output (tests, builds, installs, linters, logs) while keeping every error, rescues the errors Claude Code's truncation or a `| tail` would hide, reminds Claude of the task after a compaction, maps your project without using the model, and tells you when it is the right moment to compact or clear. It adds zero always-on tokens to your context and never touches file reads or diffs.
+Toki is a little cleaning robot that lives above your Claude Code prompt and vacuums up the noise so Claude reads only what matters. Install it once and it takes care of the rest: it compacts noisy command output (tests, builds, installs, linters, logs) while keeping every error, rescues the errors Claude Code's truncation or a `| tail` would hide, reminds Claude of the task after a compaction, maps your project without using the model, and tells you when it is the right moment to compact or clear. It adds zero always-on tokens to your context and never touches file reads or diffs.
 
 ```
 /plugin install toki --marketplace DMercadoCanas/toki

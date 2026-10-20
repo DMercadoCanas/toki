@@ -212,9 +212,9 @@ const es: Textos = {
   frasePensando: 'Claude está pensando…',
   fraseLeyendo: 'Leyendo archivos. Si ya leyó uno sin cambios, Claude Code no lo vuelve a cargar.',
   fraseBuscando: 'Buscando en el proyecto. Le recordé que hay un mapa para no leer a ciegas.',
-  fraseEjecutando: 'Ejecutando un comando. Si la salida es larga, te la compacto y guardo el original.',
+  fraseEjecutando: 'Ejecutando un comando. Si la salida trae mucho ruido, la limpio y guardo el original.',
   fraseEditando: 'Editando archivos.',
-  fraseCompactando: 'Compactando el contexto. Los errores y decisiones importantes se conservan.',
+  fraseCompactando: 'Aspirando el contexto. Los errores y las decisiones importantes se quedan.',
   fraseEsperando: 'Claude espera tu permiso para continuar.',
   fraseBucle: 'Ojo: un comando falló 3 veces seguidas. Le pedí a Claude cambiar de enfoque.',
   fraseListoAhorro: (c, t) => `Listo. En «${c}» te ahorré ~${t} tokens.`,
@@ -227,7 +227,7 @@ const es: Textos = {
   fraseCambioModelo: (m, t) => `Cambiaste a ${m} con el caché caliente: tu próximo mensaje reprocesará ~${t} tokens. Si fue sin querer, vuelve al modelo anterior con /model.`,
   saludo: (total, r) =>
     total === undefined
-      ? '¡Hola! Soy Toki. Voy a cuidar tus tokens mientras trabajas.'
+      ? '¡Hola! Soy Toki, tu robot de limpieza de tokens. Voy a aspirar el ruido mientras trabajas.'
       : `¡Hola de nuevo! Llevamos ~${total} tokens ahorrados juntos${r >= 2 ? ` y una racha de ${r} días` : ''}.`,
   min: 'min',
   h: 'h',
@@ -387,9 +387,9 @@ const en: Textos = {
   frasePensando: 'Claude is thinking…',
   fraseLeyendo: "Reading files. If one is unchanged, Claude Code won't load it again.",
   fraseBuscando: 'Searching the project. I reminded Claude there is a map, so it does not read blindly.',
-  fraseEjecutando: 'Running a command. If the output is long, I compact it and keep the original.',
+  fraseEjecutando: 'Running a command. If the output is noisy, I clean it up and keep the original.',
   fraseEditando: 'Editing files.',
-  fraseCompactando: 'Compacting the context. Errors and key decisions are preserved.',
+  fraseCompactando: 'Vacuuming the context. Errors and key decisions stay.',
   fraseEsperando: 'Claude is waiting for your permission.',
   fraseBucle: 'Heads up: a command failed 3 times in a row. I asked Claude to change approach.',
   fraseListoAhorro: (c, t) => `Done. On "${c}" I saved you ~${t} tokens.`,
@@ -402,7 +402,7 @@ const en: Textos = {
   fraseCambioModelo: (m, t) => `You switched to ${m} with a warm cache: your next message will reprocess ~${t} tokens. If it was by accident, switch back with /model.`,
   saludo: (total, r) =>
     total === undefined
-      ? "Hi! I'm Toki. I'll look after your tokens while you work."
+      ? "Hi! I'm Toki, your token-cleaning robot. I'll vacuum up the noise while you work."
       : `Welcome back! We have saved ~${total} tokens together${r >= 2 ? ` with a ${r}-day streak` : ''}.`,
   min: 'min',
   h: 'h',

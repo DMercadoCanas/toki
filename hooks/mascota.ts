@@ -1,4 +1,4 @@
-// Toki, la alcancía: la mascota que cuida tus tokens.
+// Toki, el robot de limpieza que cuida tus tokens: aspira el ruido para que Claude lea lo que importa.
 // Funciones puras: cuadros de animación, frases y medidores. Sin $.
 
 import { t } from './idioma'
@@ -20,23 +20,24 @@ export type Actividad =
 
 /** Cuadros por estado. Se avanza uno cada ~600 ms. */
 const CUADROS: Record<Actividad, readonly string[]> = {
-  tranquilo: ['(•‿•)', '(•‿•)', '(•‿•)', '(•‿•)', '(−‿−)'],
-  pensando: ['(•_•)   ', '(•_•) · ', '(•_•) ··', '(•_•)···'],
-  leyendo: ['(⊙‿⊙) ▤', '(⊙‿⊙) ▥'],
-  buscando: ['(•‿•) ⌕', '(•‿•)  ⌕', '(•‿•) ⌕'],
-  ejecutando: ['(•‿•) ⠋', '(•‿•) ⠙', '(•‿•) ⠹', '(•‿•) ⠸', '(•‿•) ⠼', '(•‿•) ⠴', '(•‿•) ⠦', '(•‿•) ⠧', '(•‿•) ⠇', '(•‿•) ⠏'],
-  editando: ['(•‿•) ✎', '(•‿•) ✎.', '(•‿•) ✎..'],
-  compactando: ['(>‿<) ▸  ', '(>‿<) ▸▸ ', '(>‿<) ▸▸▸'],
-  esperando: ['(•o•) ?', '(•o•)  ', '(•o•) ?'],
-  listo: ['(^‿^) ✓', '(^‿^) ✓'],
-  dormido: ['(−_−) z  ', '(−_−) zZ ', '(−_−) zZZ', '(−_−)    '],
-  alerta: ['(•△•) !', '(•△•)  '],
-  celebrando: ['\\(^‿^)/ ✦', ' (^‿^)/ ✧', '\\(^‿^)/ ✦', ' (^‿^)/  '],
+  // La cara va en la pantalla del robot: [•‿•]
+  tranquilo: ['[•‿•]', '[•‿•]', '[•‿•]', '[•‿•]', '[−‿−]'],
+  pensando: ['[•_•]   ', '[•_•] · ', '[•_•] ··', '[•_•]···'],
+  leyendo: ['[⊙‿⊙] ▤', '[⊙‿⊙] ▥'],
+  buscando: ['[•‿•] ⌕', '[•‿•]  ⌕', '[•‿•] ⌕'],
+  ejecutando: ['[•‿•] ⠋', '[•‿•] ⠙', '[•‿•] ⠹', '[•‿•] ⠸', '[•‿•] ⠼', '[•‿•] ⠴', '[•‿•] ⠦', '[•‿•] ⠧', '[•‿•] ⠇', '[•‿•] ⠏'],
+  editando: ['[•‿•] ✎', '[•‿•] ✎.', '[•‿•] ✎..'],
+  compactando: ['[>‿<] ≋  ', '[>‿<] ≋≋ ', '[>‿<] ≋≋≋'],
+  esperando: ['[•o•] ?', '[•o•]  ', '[•o•] ?'],
+  listo: ['[^‿^] ✓', '[^‿^] ✓'],
+  dormido: ['[−_−] z  ', '[−_−] zZ ', '[−_−] zZZ', '[−_−]    '],
+  alerta: ['[•△•] !', '[•△•]  '],
+  celebrando: ['\\[^‿^]/ ✦', ' [^‿^]/ ✧', '\\[^‿^]/ ✦', ' [^‿^]/  '],
 }
 
 export function cuadro(actividad: Actividad, tick: number): string {
   const lista = CUADROS[actividad]
-  return lista[((tick % lista.length) + lista.length) % lista.length] ?? lista[0] ?? '(•‿•)'
+  return lista[((tick % lista.length) + lista.length) % lista.length] ?? lista[0] ?? '[•‿•]'
 }
 
 export function actividadDeHerramienta(herramienta: string): Actividad {

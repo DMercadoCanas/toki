@@ -502,7 +502,7 @@ async function sumarAhorro($: $, caracteres: number, comando: string): Promise<v
   await $.store.set(CLAVE_HISTORIAL, sumarAlDia(await leerHistorial($), ahora, tokens))
   vivo.ultimoAhorro = { tokens, comando }
   $.ui.toast(tx().toastAhorro(formatearTokens(tokens), recortar(comando, 40)), { timeoutMs: 6000 })
-  // Si además se desbloqueó un logro, suena la fanfarria en vez de la moneda.
+  // Si además se desbloqueó un logro, suena la fanfarria en vez de la campanita.
   if ((await revisarLogros($)).length === 0) sonar($, 'ahorro')
 }
 
@@ -1596,7 +1596,7 @@ export const register: Register = (on, options) => {
           ) : (
             (() => {
               const { Svg } = $.ui.resolve(e)
-              return <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={50} height={36} isInteractive />
+              return <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={44} height={38} isInteractive />
             })()
           )}
           <Text color="claude" bold>

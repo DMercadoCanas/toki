@@ -76,8 +76,12 @@ describe('Toki en vector', () => {
       expect(svg.endsWith('</svg>')).toBe(true)
       expect(svg.length < 131072).toBe(true)
     }
-    expect(tokiSvg('listo')).toContain('#f4c35b')
+    expect(tokiSvg('tranquilo')).toContain('#f39a3d') // audífonos naranjas
+    expect(tokiSvg('tranquilo')).toContain('>Toki</text>')
+    expect(tokiSvg('listo')).toContain('#34a853') // el check verde
     expect(tokiSvg('dormido')).toContain('>z<')
+    expect(tokiSvg('compactando')).toContain('animateMotion') // aspira
+    expect(tokiSvg('compactando')).toContain('rotate') // ruedas
     expect(tokiSvg('celebrando')).toContain('#bc8cff') // confeti
   })
 })

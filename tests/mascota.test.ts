@@ -4,11 +4,11 @@ import { actividadDeHerramienta, barra, colorDePorcentaje, cuadro, decidirActivi
 
 describe('Toki', () => {
   test('tiene cuadros para cada estado y la animación avanza', async () => {
-    expect(cuadro('tranquilo', 0)).toBe('(•‿•)')
-    expect(cuadro('tranquilo', 4)).toBe('(−‿−)')
+    expect(cuadro('tranquilo', 0)).toBe('[•‿•]')
+    expect(cuadro('tranquilo', 4)).toBe('[−‿−]')
     expect(cuadro('ejecutando', 0)).not.toBe(cuadro('ejecutando', 1))
     expect(cuadro('dormido', 2)).toContain('zZZ')
-    expect(cuadro('celebrando', 0)).toContain('(^‿^)/')
+    expect(cuadro('celebrando', 0)).toContain('[^‿^]/')
   })
 
   test('actúa según la herramienta', async () => {
