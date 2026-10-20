@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 const BANDA = {
-  plugin: 'ahorro-tokens',
+  plugin: 'toki',
   component: 'AbovePrompt',
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
@@ -22,20 +22,24 @@ describe('acompañante', () => {
     }
   })
 
-  test('el panel /ahorro muestra cifras, gráfica y sugerencias en ambas superficies', async ($, on) => {
+  test('el panel /toki muestra cifras, racha, logros, gráfica y sugerencias en ambas superficies', async ($, on) => {
     mock.clock(on, { now: 1_760_000_000_000 })
-    mock.store(on, { historialDiario: { '2025-10-09': 3000 }, tokensAhorradosTotal: 15900 })
+    mock.store(on, { historialDiario: { '2025-10-07': 1000, '2025-10-08': 2000, '2025-10-09': 3000 }, tokensAhorradosTotal: 15900, logros: ['primero', 'diez'] })
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({
-        plugin: 'ahorro-tokens',
+        plugin: 'toki',
         surface,
         component: 'Pane',
-        requestId: 'ahorro-reporte',
-        props: { title: 'ahorro-tokens', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+        requestId: 'toki-panel',
+        props: { title: 'Toki', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
       })
       expect(await ui.find({ type: 'Text', text: /Toki cuida tus tokens/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /Cada token cuenta/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /Ahorro por día/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /~15\.9k/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /Racha: 3 días seguidos/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /✓ 10k tokens/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /○ 100k tokens/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /Sugerencias/ })).toBeDefined()
       expect(await ui.find({ key: 'cerrar' })).toBeDefined()
       await ui.unmount()

@@ -1,3 +1,6 @@
+import { t } from './idioma'
+import type { Idioma } from './idioma'
+
 // Detector de bucles (idea de Token Optimizer): el mismo comando fallando
 // una y otra vez quema contexto en cada intento. Funciones puras.
 
@@ -28,6 +31,6 @@ export function registrar(fallos: Fallos, comando: string, fallo: boolean): { fa
   return { fallos: siguiente, avisar: cuenta === UMBRAL_FALLOS }
 }
 
-export const AVISO_BUCLE =
-  `[ahorro-tokens] Este mismo comando ya falló ${UMBRAL_FALLOS} veces seguidas. ` +
-  'Antes de reintentar, revisa la causa o cambia de enfoque: cada intento repetido vuelve a enviar todo el contexto.'
+export function avisoBucle(idioma: Idioma = 'es'): string {
+  return t(idioma).avisoBucle(UMBRAL_FALLOS)
+}

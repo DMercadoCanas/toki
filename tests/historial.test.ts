@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { agregarLeccion, claveDia, filasGrafica, leccionCambioModelo, sumarAlDia, totalDesde } from '../hooks/historial'
+import { agregarLeccion, claveDia, filasGrafica, fusionarHistorial, leccionCambioModelo, logrosNuevos, racha, sumarAlDia, totalDesde } from '../hooks/historial'
 import { tokiSvg } from '../hooks/toki-svg'
 
 const HOY = Date.UTC(2026, 9, 20, 17, 0, 0) // 20 oct 2026, mediodía en Bogotá
@@ -34,12 +34,43 @@ describe('historial', () => {
     expect(l.texto).toContain('$0.45')
     const lista = agregarLeccion(agregarLeccion([], l), l)
     expect(lista.length).toBe(1)
+    expect(leccionCambioModelo(120_000, 0, 'claude-sonnet-5-5', 'claude-opus-5-5', 'en').texto).toContain('from Sonnet to Opus')
+  })
+
+  test('junta el historial de la versión anterior sumando por día', async () => {
+    const h = fusionarHistorial({ '2026-10-19': 100, '2026-10-20': 50 }, { '2026-10-20': 25, '2026-10-18': 10, basura: 5 as number })
+    expect(h).toEqual({ '2026-10-18': 10, '2026-10-19': 100, '2026-10-20': 75 })
+  })
+
+  test('la gráfica habla inglés', async () => {
+    const filas = filasGrafica(sumarAlDia({}, HOY, 10), HOY, 1, 4, 'en')
+    expect(filas[0]?.etiqueta.startsWith('Tue')).toBe(true)
+  })
+})
+
+describe('rachas y logros', () => {
+  const DIA = 86_400_000
+  test('la racha cuenta días seguidos con ahorro, hasta hoy o hasta ayer', async () => {
+    let h = sumarAlDia({}, HOY - DIA, 100)
+    h = sumarAlDia(h, HOY - 2 * DIA, 100)
+    expect(racha(h, HOY)).toBe(2) // hoy aún no hay ahorro: la racha sigue viva
+    expect(racha(sumarAlDia(h, HOY, 5), HOY)).toBe(3)
+    expect(racha(sumarAlDia({}, HOY - 3 * DIA, 100), HOY)).toBe(0)
+    expect(racha({}, HOY)).toBe(0)
+  })
+
+  test('los logros se desbloquean una sola vez', async () => {
+    expect(logrosNuevos([], { total: 0, racha: 0 })).toEqual([])
+    expect(logrosNuevos([], { total: 12_000, racha: 1 })).toEqual(['primero', 'diez'])
+    expect(logrosNuevos(['primero', 'diez'], { total: 12_000, racha: 3, memoria: true })).toEqual(['racha3', 'memoria'])
+    expect(logrosNuevos(['primero'], { total: 50, racha: 1, rescate: true })).toEqual(['rescate'])
+    expect(logrosNuevos(['primero', 'diez', 'cien', 'millon', 'racha3', 'racha7', 'memoria', 'rescate'], { total: 5_000_000, racha: 30, memoria: true, rescate: true })).toEqual([])
   })
 })
 
 describe('Toki en vector', () => {
   test('cada estado produce un SVG válido con accesorio', async () => {
-    for (const a of ['tranquilo', 'pensando', 'leyendo', 'ejecutando', 'editando', 'compactando', 'esperando', 'listo', 'dormido', 'alerta'] as const) {
+    for (const a of ['tranquilo', 'pensando', 'leyendo', 'ejecutando', 'editando', 'compactando', 'esperando', 'listo', 'dormido', 'alerta', 'celebrando'] as const) {
       const svg = tokiSvg(a)
       expect(svg.startsWith('<svg')).toBe(true)
       expect(svg.endsWith('</svg>')).toBe(true)
@@ -47,5 +78,6 @@ describe('Toki en vector', () => {
     }
     expect(tokiSvg('listo')).toContain('#f4c35b')
     expect(tokiSvg('dormido')).toContain('>z<')
+    expect(tokiSvg('celebrando')).toContain('#bc8cff') // confeti
   })
 })

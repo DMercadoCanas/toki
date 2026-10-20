@@ -1,6 +1,9 @@
 // Toki, la alcancía: la mascota que cuida tus tokens.
 // Funciones puras: cuadros de animación, frases y medidores. Sin $.
 
+import { t } from './idioma'
+import type { Idioma } from './idioma'
+
 export type Actividad =
   | 'tranquilo'
   | 'pensando'
@@ -13,6 +16,7 @@ export type Actividad =
   | 'listo'
   | 'dormido'
   | 'alerta'
+  | 'celebrando'
 
 /** Cuadros por estado. Se avanza uno cada ~600 ms. */
 const CUADROS: Record<Actividad, readonly string[]> = {
@@ -27,6 +31,7 @@ const CUADROS: Record<Actividad, readonly string[]> = {
   listo: ['(^‿^) ✓', '(^‿^) ✓'],
   dormido: ['(−_−) z  ', '(−_−) zZ ', '(−_−) zZZ', '(−_−)    '],
   alerta: ['(•△•) !', '(•△•)  '],
+  celebrando: ['\\(^‿^)/ ✦', ' (^‿^)/ ✧', '\\(^‿^)/ ✦', ' (^‿^)/  '],
 }
 
 export function cuadro(actividad: Actividad, tick: number): string {
@@ -62,60 +67,50 @@ export function formatearTokens(tokens: number): string {
   return String(Math.round(tokens))
 }
 
-export function formatearMinutos(min: number): string {
+export function formatearMinutos(min: number, idioma: Idioma = 'es'): string {
+  const x = t(idioma)
   const m = Math.max(0, Math.round(min))
-  if (m < 60) return `${m} min`
+  if (m < 60) return `${m} ${x.min}`
   const h = Math.floor(m / 60)
   const r = m % 60
-  return r === 0 ? `${h} h` : `${h} h ${r} min`
+  return r === 0 ? `${h} ${x.h}` : `${h} ${x.h} ${r} ${x.min}`
 }
 
 /** La frase que Toki dice, con la acción sugerida cuando hay una. */
-export function frase(s: Situacion): { texto: string; tono: 'normal' | 'bien' | 'aviso' | 'peligro'; accion?: 'compactar' | 'limpiar' } {
-  const ahorro = s.ahorradoSesion > 0 ? ` Esta sesión te ahorré ~${formatearTokens(s.ahorradoSesion)} tokens.` : ''
+export function frase(s: Situacion, idioma: Idioma = 'es'): { texto: string; tono: 'normal' | 'bien' | 'aviso' | 'peligro'; accion?: 'compactar' | 'limpiar' } {
+  const x = t(idioma)
+  const ahorro = s.ahorradoSesion > 0 ? ` ${x.sesionAhorro(formatearTokens(s.ahorradoSesion))}` : ''
   switch (s.actividad) {
     case 'alerta':
       if ((s.contextoPct ?? 0) < 70 && (s.contextoTokens ?? 0) >= TOKENS_PESADOS) {
-        return {
-          texto: `Tu conversación ya pesa ~${formatearTokens(s.contextoTokens ?? 0)} tokens y se reenvía completa en cada mensaje. Si terminaste una tarea, compacta; si cambias de tema, /clear.`,
-          tono: 'aviso',
-          accion: 'compactar',
-        }
+        return { texto: x.frasePesada(formatearTokens(s.contextoTokens ?? 0)), tono: 'aviso', accion: 'compactar' }
       }
-      return {
-        texto: `Contexto al ${s.contextoPct ?? 0}%: compacta en esta pausa, antes de que se haga solo a mitad de una tarea.`,
-        tono: (s.contextoPct ?? 0) >= 85 ? 'peligro' : 'aviso',
-        accion: 'compactar',
-      }
+      return { texto: x.fraseContexto(s.contextoPct ?? 0), tono: (s.contextoPct ?? 0) >= 85 ? 'peligro' : 'aviso', accion: 'compactar' }
     case 'dormido':
-      return {
-        texto: `El caché se enfrió (sin actividad ${formatearMinutos(s.inactivoMinutos)}): el próximo mensaje reprocesa todo el contexto. Si cambias de tema, mejor /clear.`,
-        tono: 'aviso',
-        accion: 'limpiar',
-      }
+      return { texto: x.fraseDormido(formatearMinutos(s.inactivoMinutos, idioma)), tono: 'aviso', accion: 'limpiar' }
     case 'pensando':
-      return { texto: 'Claude está pensando…', tono: 'normal' }
+      return { texto: x.frasePensando, tono: 'normal' }
     case 'leyendo':
-      return { texto: 'Leyendo archivos. Si ya leyó uno sin cambios, Claude Code no lo vuelve a cargar.', tono: 'normal' }
+      return { texto: x.fraseLeyendo, tono: 'normal' }
     case 'buscando':
-      return { texto: 'Buscando en el proyecto. Le recordé que hay un mapa para no leer a ciegas.', tono: 'normal' }
+      return { texto: x.fraseBuscando, tono: 'normal' }
     case 'ejecutando':
-      return { texto: 'Ejecutando un comando. Si la salida es larga, te la compacto y guardo el original.', tono: 'normal' }
+      return { texto: x.fraseEjecutando, tono: 'normal' }
     case 'editando':
-      return { texto: 'Editando archivos.', tono: 'normal' }
+      return { texto: x.fraseEditando, tono: 'normal' }
     case 'compactando':
-      return { texto: 'Compactando el contexto. Los errores y decisiones importantes se conservan.', tono: 'normal' }
+      return { texto: x.fraseCompactando, tono: 'normal' }
     case 'esperando':
-      return { texto: 'Claude espera tu permiso para continuar.', tono: 'aviso' }
+      return { texto: x.fraseEsperando, tono: 'aviso' }
+    case 'celebrando':
+      return { texto: x.fraseCelebrando, tono: 'bien' }
     case 'listo':
-      if (s.bucleReciente) return { texto: 'Ojo: un comando falló 3 veces seguidas. Le pedí a Claude cambiar de enfoque.', tono: 'aviso' }
-      if (s.ultimoAhorro) {
-        return { texto: `Listo. En «${recortar(s.ultimoAhorro.comando, 28)}» te ahorré ~${formatearTokens(s.ultimoAhorro.tokens)} tokens.`, tono: 'bien' }
-      }
-      return { texto: `Listo.${ahorro}`, tono: 'bien' }
+      if (s.bucleReciente) return { texto: x.fraseBucle, tono: 'aviso' }
+      if (s.ultimoAhorro) return { texto: x.fraseListoAhorro(recortar(s.ultimoAhorro.comando, 28), formatearTokens(s.ultimoAhorro.tokens)), tono: 'bien' }
+      return { texto: x.fraseListo(ahorro), tono: 'bien' }
     case 'tranquilo':
     default:
-      return { texto: s.ahorradoSesion > 0 ? `Todo en orden.${ahorro}` : 'Todo en orden. Estoy pendiente de tus tokens.', tono: 'normal' }
+      return { texto: s.ahorradoSesion > 0 ? x.fraseTranquiloAhorro(formatearTokens(s.ahorradoSesion)) : x.fraseTranquilo, tono: 'normal' }
   }
 }
 
@@ -134,9 +129,11 @@ export function decidirActividad(
   hayTurnos: boolean,
   contextoTokens?: number,
   silenciado = false,
+  celebrando = false,
 ): Actividad {
-  if (trabajando) return base === 'tranquilo' || base === 'listo' || base === 'dormido' || base === 'alerta' ? 'pensando' : base
+  if (trabajando) return base === 'tranquilo' || base === 'listo' || base === 'dormido' || base === 'alerta' || base === 'celebrando' ? 'pensando' : base
   if (contextoPct !== undefined && contextoPct >= 70) return 'alerta'
+  if (celebrando) return 'celebrando'
   if (!silenciado && contextoTokens !== undefined && contextoTokens >= TOKENS_PESADOS) return 'alerta'
   if (hayTurnos && inactivoMinutos >= ttlMinutos) return 'dormido'
   return base
@@ -167,8 +164,8 @@ export function relojCache(restante: number | undefined, ttl: number): string {
   return '●'
 }
 
-export function formatearDuracion(ms: number): string {
+export function formatearDuracion(ms: number, idioma: Idioma = 'es'): string {
   const min = Math.floor(ms / 60_000)
-  if (min < 1) return 'menos de 1 min'
-  return formatearMinutos(min)
+  if (min < 1) return t(idioma).menosDe1Min
+  return formatearMinutos(min, idioma)
 }

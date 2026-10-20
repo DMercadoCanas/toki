@@ -13,7 +13,7 @@ export type Sesion = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'ahorro-tokens': {
+    'toki': {
       sesion: Sesion
       oculto: boolean
       compacto: boolean

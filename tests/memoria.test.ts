@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { porQueNoCompactable } from '../hooks/compresor'
-import { extraerDecisiones, instruccionesDeCompactacion, notaPostCompactacion, primerError, recordar, vacio } from '../hooks/memoria'
+import { estaVacia, extraerDecisiones, instruccionesDeCompactacion, notaPostCompactacion, primerError, recordar, vacio } from '../hooks/memoria'
 
 describe('memoria', () => {
   test('recuerda sin repetir y con tope', async () => {
@@ -28,6 +28,13 @@ describe('memoria', () => {
     const nota = notaPostCompactacion(p)
     expect(nota).toContain('lib/a.dart')
     expect(nota).toContain('Error: Y')
+    expect(notaPostCompactacion(p, 'en')).toContain('[Toki] Reminder saved before compaction:')
+    expect(instruccionesDeCompactacion(p, 'en')).toContain('Keep verbatim in the summary:')
+  })
+
+  test('sin nada que recordar, no hay nota', async () => {
+    expect(estaVacia(vacio(0))).toBe(true)
+    expect(estaVacia({ ...vacio(0), comandosRecientes: ['npm test'] })).toBe(false)
   })
 })
 

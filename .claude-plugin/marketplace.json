@@ -1,14 +1,14 @@
 {
-  "name": "kit-ahorro",
-  "description": "Kit de ahorro de tokens para Claude Code, en español.",
+  "name": "toki",
+  "description": "Toki: tu acompañante de ahorro de tokens para Claude Code (español e inglés).",
   "owner": {
-    "name": "ahorro-tokens"
+    "name": "DMercadoCanas"
   },
   "plugins": [
     {
-      "name": "ahorro-tokens",
+      "name": "toki",
       "source": "./",
-      "description": "Kit de ahorro de tokens para Claude Code, en español."
+      "description": "Toki: tu acompañante de ahorro de tokens para Claude Code."
     }
   ]
 }

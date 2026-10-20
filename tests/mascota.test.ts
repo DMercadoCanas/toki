@@ -8,6 +8,7 @@ describe('Toki', () => {
     expect(cuadro('tranquilo', 4)).toBe('(−‿−)')
     expect(cuadro('ejecutando', 0)).not.toBe(cuadro('ejecutando', 1))
     expect(cuadro('dormido', 2)).toContain('zZZ')
+    expect(cuadro('celebrando', 0)).toContain('(^‿^)/')
   })
 
   test('actúa según la herramienta', async () => {
@@ -26,6 +27,9 @@ describe('Toki', () => {
     expect(decidirActividad('alerta', true, 95, 0, 60, true)).toBe('pensando')
     expect(decidirActividad('tranquilo', false, 39, 0, 60, true, 342_000)).toBe('alerta')
     expect(decidirActividad('tranquilo', false, 39, 0, 60, true, 342_000, true)).toBe('tranquilo')
+    expect(decidirActividad('tranquilo', false, 30, 0, 60, true, 10_000, false, true)).toBe('celebrando')
+    expect(decidirActividad('celebrando', true, 30, 0, 60, true)).toBe('pensando')
+    expect(decidirActividad('tranquilo', false, 80, 0, 60, true, 10_000, false, true)).toBe('alerta')
     const pesada = frase({ actividad: 'alerta', contextoPct: 39, contextoTokens: 342_000, inactivoMinutos: 0, ahorradoSesion: 0 })
     expect(pesada.texto).toContain('~342.0k tokens')
     expect(pesada.accion).toBe('compactar')
@@ -40,6 +44,9 @@ describe('Toki', () => {
     expect(listo.texto).toContain('npm test')
     const dormido = frase({ actividad: 'dormido', inactivoMinutos: 788, ahorradoSesion: 0 })
     expect(dormido.texto).toContain('13 h 8 min')
+    expect(frase({ actividad: 'listo', inactivoMinutos: 0, ahorradoSesion: 2000 }).texto).toBe('Listo. Esta sesión te ahorré ~2.0k tokens.')
+    expect(frase({ actividad: 'listo', inactivoMinutos: 0, ahorradoSesion: 2000 }, 'en').texto).toBe('Done. This session I saved you ~2.0k tokens.')
+    expect(frase({ actividad: 'tranquilo', inactivoMinutos: 0, ahorradoSesion: 0 }, 'en').texto).toBe('All good. I am watching your tokens.')
   })
 
   test('los medidores', async () => {

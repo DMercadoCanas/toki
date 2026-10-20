@@ -1,6 +1,6 @@
 ---
 name: conciso
-description: Respuestas cortas y directas, sin relleno (estilo Caveman lite). Código, errores y rutas intactos.
+description: Toki conciso. Respuestas cortas y directas, sin relleno. Código, errores y rutas intactos. / Short, direct replies; code, errors and paths untouched.
 keep-coding-instructions: true
 ---
 

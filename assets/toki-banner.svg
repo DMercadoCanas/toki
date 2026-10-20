@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 240" width="880" height="240" role="img" aria-label="Toki: tu acompañante de ahorro de tokens. Cada token cuenta.">
+<defs>
+<linearGradient id="fondo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2b1a35"/><stop offset="1" stop-color="#16233a"/></linearGradient>
+<linearGradient id="barra" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#3fb950"/><stop offset="1" stop-color="#7ee787"/></linearGradient>
+</defs>
+<rect width="880" height="240" rx="24" fill="url(#fondo)"/>
+<g opacity="0.35" fill="#f4c35b">
+<circle cx="620" cy="-10" r="6"><animate attributeName="cy" values="-10;260" dur="5s" repeatCount="indefinite"/></circle>
+<circle cx="720" cy="-10" r="4"><animate attributeName="cy" values="-10;260" dur="6.5s" begin="1.2s" repeatCount="indefinite"/></circle>
+<circle cx="810" cy="-10" r="5"><animate attributeName="cy" values="-10;260" dur="5.8s" begin="2.4s" repeatCount="indefinite"/></circle>
+<circle cx="540" cy="-10" r="3"><animate attributeName="cy" values="-10;260" dur="7s" begin="0.6s" repeatCount="indefinite"/></circle>
+</g>
+<svg x="34" y="34" width="240" height="173" viewBox="0 0 50 36"><g><animateTransform attributeName="transform" type="translate" values="0 0;0 -0.8;0 0" dur="2s" repeatCount="indefinite"/><path d="M11 13 l-2 -7 l7 4 z" fill="#d9788a"/><path d="M37 13 l2 -7 l-7 4 z" fill="#d9788a"/><ellipse cx="24" cy="22" rx="16" ry="13" fill="#f29aa8"/><rect x="19" y="8.5" width="10" height="2" rx="1" fill="#d9788a"/><circle cx="24" cy="6" r="3" fill="#f4c35b" stroke="#b98d2e" stroke-width="0.8"><animate attributeName="cy" values="2;8;8" dur="1.2s" repeatCount="indefinite"/></circle><rect x="13" y="32" width="5" height="3.5" rx="1.5" fill="#d9788a"/><rect x="30" y="32" width="5" height="3.5" rx="1.5" fill="#d9788a"/><ellipse cx="24" cy="24.5" rx="5" ry="3.6" fill="#d9788a"/><circle cx="22.3" cy="24.5" r="0.9" fill="#2b2b2b"/><circle cx="25.7" cy="24.5" r="0.9" fill="#2b2b2b"/><path d="M15 20 q3 -3 6 0" stroke="#2b2b2b" stroke-width="1.8" fill="none" stroke-linecap="round"/><path d="M27 20 q3 -3 6 0" stroke="#2b2b2b" stroke-width="1.8" fill="none" stroke-linecap="round"/><path d="M20 28 q4 4 8 0" stroke="#d9788a" stroke-width="1.6" fill="none" stroke-linecap="round"/></g><path d="M38 8 l3 3 l6 -6" fill="none" stroke="#3fb950" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<text x="300" y="104" font-family="ui-rounded, 'SF Pro Rounded', 'Segoe UI', system-ui, sans-serif" font-size="68" font-weight="800" fill="#ffffff">Toki</text>
+<text x="302" y="144" font-family="ui-rounded, 'Segoe UI', system-ui, sans-serif" font-size="25" font-weight="600" fill="#f6c6cf">Tu acompañante de ahorro de tokens</text>
+<text x="302" y="176" font-family="ui-rounded, 'Segoe UI', system-ui, sans-serif" font-size="18" fill="#c9d1d9">Cada token cuenta. · Every token counts.</text>
+<g transform="translate(302 196)">
+<rect width="300" height="12" rx="6" fill="#ffffff" opacity="0.12"/>
+<rect width="0" height="12" rx="6" fill="url(#barra)"><animate attributeName="width" values="0;300;300;0" keyTimes="0;0.7;0.95;1" dur="4s" repeatCount="indefinite"/></rect>
+<text x="316" y="11" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="14" fill="#7ee787">ahorrado ~12.4k</text>
+</g>
+</svg>

@@ -1,7 +1,10 @@
 // Mapa del proyecto (idea de Graphify): estructura del código sin usar el LLM,
 // para que Claude se oriente sin leer archivos a ciegas. Funciones puras.
 
-export const RUTA_MAPA = '.claude/ahorro-tokens/MAPA.md'
+import { t } from './idioma'
+import type { Idioma } from './idioma'
+
+export const RUTA_MAPA = '.claude/toki/MAPA.md'
 
 export const CARPETAS_IGNORADAS = new Set([
   '.git', 'node_modules', 'dist', 'build', 'out', '.next', '.nuxt', '.svelte-kit', '.turbo',
@@ -99,7 +102,8 @@ function sinExtension(ruta: string): string {
 }
 
 /** Arma el MAPA.md: módulos más conectados y, por carpeta, cada archivo con sus símbolos. */
-export function construirMapa(fichas: FichaArchivo[], fecha: string, truncado: boolean): string {
+export function construirMapa(fichas: FichaArchivo[], fecha: string, truncado: boolean, idioma: Idioma = 'es'): string {
+  const x = t(idioma)
   const entradas = new Map<string, number>()
   for (const f of fichas) for (const destino of f.imports) entradas.set(destino, (entradas.get(destino) ?? 0) + 1)
 
@@ -117,19 +121,13 @@ export function construirMapa(fichas: FichaArchivo[], fecha: string, truncado: b
     carpetas.set(carpeta, lista)
   }
 
-  const lineas: string[] = [
-    '# Mapa del proyecto',
-    '',
-    `Generado por ahorro-tokens el ${fecha}, sin usar el modelo (solo análisis de texto). ${fichas.length} archivos de código${truncado ? ' (recortado: el proyecto es más grande)' : ''}.`,
-    'Úsalo para ubicar archivos y símbolos antes de buscar con grep o leer archivos completos. Puede estar desactualizado: confirma leyendo el archivo antes de editar.',
-    '',
-  ]
+  const lineas: string[] = [`# ${x.mapaTitulo}`, '', x.mapaCabecera(fecha, fichas.length, truncado), x.mapaUso, '']
   if (conectados.length > 0) {
-    lineas.push('## Módulos más usados (importados por más archivos)', '')
+    lineas.push(`## ${x.mapaModulos}`, '')
     for (const [destino, n] of conectados) lineas.push(`- ${porBase.get(destino)} ← ${n}`)
     lineas.push('')
   }
-  lineas.push('## Archivos y símbolos', '')
+  lineas.push(`## ${x.mapaArchivos}`, '')
   for (const carpeta of [...carpetas.keys()].sort()) {
     const lista = carpetas.get(carpeta) ?? []
     lineas.push(`### ${carpeta}/`)
@@ -151,6 +149,6 @@ export function esBusqueda(herramienta: string, comando?: string): boolean {
   return /^\s*(grep|rg|ag|find|fd|git\s+grep)\b/.test(comando)
 }
 
-export const AVISO_MAPA =
-  `[ahorro-tokens] Hay un mapa del proyecto en ${RUTA_MAPA} con los archivos, sus símbolos y los módulos más usados. ` +
-  'Consúltalo para ubicar código antes de buscar o leer archivos completos.'
+export function avisoMapa(idioma: Idioma = 'es'): string {
+  return t(idioma).avisoMapa(RUTA_MAPA)
+}

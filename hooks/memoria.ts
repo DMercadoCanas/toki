@@ -2,6 +2,9 @@
 // antes de compactar guardamos lo que no se puede perder, y después se lo
 // recordamos a Claude en una nota corta. Funciones puras.
 
+import { t } from './idioma'
+import type { Idioma } from './idioma'
+
 export type PuntoDeControl = {
   cuando: number
   tareaActual: string
@@ -39,60 +42,63 @@ export function primerError(texto: string): string | undefined {
 }
 
 /** Las instrucciones que se agregan al resumen de la compactación. */
-export function instruccionesDeCompactacion(p: PuntoDeControl): string {
-  const partes: string[] = ['Conserva textualmente en el resumen:']
-  if (p.tareaActual) partes.push(`- La tarea actual: ${p.tareaActual}`)
-  if (p.decisiones.length > 0) partes.push(`- Estas decisiones: ${p.decisiones.map(d => `«${d}»`).join(' ')}`)
-  if (p.archivosEditados.length > 0) partes.push(`- Los archivos editados: ${p.archivosEditados.join(', ')}`)
-  if (p.ultimosErrores.length > 0) partes.push(`- Los últimos errores vistos: ${p.ultimosErrores.join(' | ')}`)
-  partes.push('- Qué quedó pendiente y cuál era el siguiente paso.')
+export function instruccionesDeCompactacion(p: PuntoDeControl, idioma: Idioma = 'es'): string {
+  const x = t(idioma).instrucciones
+  const partes: string[] = [x.titulo]
+  if (p.tareaActual) partes.push(`- ${x.tarea}: ${p.tareaActual}`)
+  if (p.decisiones.length > 0) partes.push(`- ${x.decisiones}: ${p.decisiones.map(d => `«${d}»`).join(' ')}`)
+  if (p.archivosEditados.length > 0) partes.push(`- ${x.archivos}: ${p.archivosEditados.join(', ')}`)
+  if (p.ultimosErrores.length > 0) partes.push(`- ${x.errores}: ${p.ultimosErrores.join(' | ')}`)
+  partes.push(`- ${x.pendiente}`)
   return partes.join('\n')
 }
 
 /** La nota que Claude lee después de compactar. Corta: va al final del contexto. */
-export function notaPostCompactacion(p: PuntoDeControl): string {
-  const partes: string[] = ['[ahorro-tokens] Recordatorio guardado antes de compactar:']
-  if (p.tareaActual) partes.push(`- Tarea actual: ${p.tareaActual}`)
-  if (p.rama) partes.push(`- Rama: ${p.rama}`)
-  if (p.decisiones.length > 0) partes.push(`- Decisiones: ${p.decisiones.join(' · ')}`)
-  if (p.archivosEditados.length > 0) partes.push(`- Archivos ya editados (no los releas enteros, usa offset/limit si necesitas): ${p.archivosEditados.join(', ')}`)
-  if (p.comandosRecientes.length > 0) partes.push(`- Últimos comandos: ${p.comandosRecientes.join(' · ')}`)
-  if (p.ultimosErrores.length > 0) partes.push(`- Últimos errores: ${p.ultimosErrores.join(' | ')}`)
-  partes.push('Sigue con la tarea donde quedó; no vuelvas a explorar lo ya hecho.')
+export function notaPostCompactacion(p: PuntoDeControl, idioma: Idioma = 'es'): string {
+  const x = t(idioma).notaPost
+  const partes: string[] = [x.titulo]
+  if (p.tareaActual) partes.push(`- ${x.tarea}: ${p.tareaActual}`)
+  if (p.rama) partes.push(`- ${x.rama}: ${p.rama}`)
+  if (p.decisiones.length > 0) partes.push(`- ${x.decisiones}: ${p.decisiones.join(' · ')}`)
+  if (p.archivosEditados.length > 0) partes.push(`- ${x.archivos}: ${p.archivosEditados.join(', ')}`)
+  if (p.comandosRecientes.length > 0) partes.push(`- ${x.comandos}: ${p.comandosRecientes.join(' · ')}`)
+  if (p.ultimosErrores.length > 0) partes.push(`- ${x.errores}: ${p.ultimosErrores.join(' | ')}`)
+  partes.push(x.cierre)
   return partes.join('\n')
+}
+
+/** Sin nada que recordar: no vale la pena gastar tokens en una nota. */
+export function estaVacia(p: PuntoDeControl): boolean {
+  return p.tareaActual === '' && p.archivosEditados.length === 0 && p.comandosRecientes.length === 0 && p.ultimosErrores.length === 0 && p.decisiones.length === 0
 }
 
 export function vacio(cuando: number): PuntoDeControl {
   return { cuando, tareaActual: '', archivosEditados: [], comandosRecientes: [], ultimosErrores: [], decisiones: [] }
 }
 
-export function resumenCorto(p: PuntoDeControl): string {
+export function resumenCorto(p: PuntoDeControl, idioma: Idioma = 'es'): string {
+  const x = t(idioma).resumenMemoria
   const partes: string[] = []
-  if (p.archivosEditados.length > 0) partes.push(`${p.archivosEditados.length} archivos`)
-  if (p.decisiones.length > 0) partes.push(`${p.decisiones.length} decisiones`)
-  if (p.ultimosErrores.length > 0) partes.push(`${p.ultimosErrores.length} errores`)
-  return partes.length > 0 ? partes.join(', ') : 'la tarea actual'
+  if (p.archivosEditados.length > 0) partes.push(x.archivos(p.archivosEditados.length))
+  if (p.decisiones.length > 0) partes.push(x.decisiones(p.decisiones.length))
+  if (p.ultimosErrores.length > 0) partes.push(x.errores(p.ultimosErrores.length))
+  return partes.length > 0 ? partes.join(', ') : x.tarea
 }
 
 // ---------- Diagnóstico: por qué sí o por qué no se compactó ----------
 
 export type Decision = {
   comando: string
-  resultado: 'compactado' | 'sin-cambio'
+  resultado: 'compactado' | 'sin-cambio' | 'rescatado'
   motivo: string
   ahorro?: number
 }
 
-export const MOTIVOS = {
-  familia: 'el comando no es de una familia ruidosa (tests, builds, instalaciones, linters, logs)',
-  filtrado: 'Claude ya filtró la salida por su cuenta (| tail, | grep, | head…): no hacía falta compactar',
-  lector: 'es un comando de lectura de contenido exacto (cat, git diff, sed…)',
-  corta: 'la salida era corta: no valía la pena compactarla',
-  pocoAhorro: 'compactarla ahorraría menos del 30%',
-  segundoPlano: 'el comando corrió en segundo plano o fue interrumpido',
-  archivar: 'no se pudo guardar el original, así que no se tocó la salida',
-  apagado: 'la compactación está apagada en la configuración',
-} as const
+export type Motivo = 'familia' | 'filtrado' | 'lector' | 'corta' | 'pocoAhorro' | 'segundoPlano' | 'archivar' | 'apagado' | 'formato'
+
+export function motivo(clave: Motivo, idioma: Idioma = 'es'): string {
+  return t(idioma).motivos[clave]
+}
 
 export function registrarDecision(lista: Decision[], d: Decision): Decision[] {
   return [...lista, d].slice(-12)

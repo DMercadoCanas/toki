@@ -1,17 +1,22 @@
 {
-  "name": "ahorro-tokens",
-  "version": "0.5.0",
-  "description": "Kit de ahorro de tokens para Claude Code: compacta salidas ruidosas, detecta bucles, mapea tu proyecto y te avisa cuándo compactar. Cero dependencias, cero instrucciones fijas en el contexto.",
+  "name": "toki",
+  "version": "0.6.0",
+  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Compacta salidas ruidosas, rescata errores escondidos, recuerda lo importante al compactar, mapea tu proyecto y te avisa cuándo actuar. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
-    "name": "ahorro-tokens"
+    "name": "DMercadoCanas"
   },
   "license": "MIT",
   "keywords": [
+    "toki",
     "tokens",
     "ahorro",
+    "savings",
     "contexto",
+    "context",
     "costos",
-    "español"
+    "cost",
+    "español",
+    "english"
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -50,6 +55,24 @@
       "title": "Modo conciso automático",
       "description": "Cuando el contexto pasa del 50%, le pide a Claude respuestas más cortas sin recortar código ni errores.",
       "default": true
+    },
+    "idioma": {
+      "type": "string",
+      "title": "Idioma / Language",
+      "description": "auto: el idioma en que le escribes a Claude (o el del sistema). es: español. en: English. / auto follows the language you write in.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "es",
+        "en"
+      ]
+    },
+    "mantenerCache": {
+      "type": "boolean",
+      "title": "Mantener el caché caliente (solo API)",
+      "description": "Si pagas por token (API), un ping barato cada 4 min evita que el caché de 5 min se enfríe mientras lees o piensas. Máximo 30 min tras tu última actividad. Cuesta ~10% del contexto por ping; apagado por defecto.",
+      "default": false
     }
-  }
+  },
+  "displayName": "Toki: tu acompañante de ahorro de tokens"
 }

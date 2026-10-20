@@ -1,119 +1,140 @@
-# ahorro-tokens
+<p align="center">
+  <img src="assets/toki-banner.svg" alt="Toki: tu acompañante de ahorro de tokens. Cada token cuenta." width="880">
+</p>
 
-**El acompañante de ahorro de tokens para Claude Code.** Lo instalas y listo: no tienes que aprender qué skill usar ni cuándo compactar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen entre sí, y nunca sacrifica calidad para ahorrar.
+# Toki: tu acompañante de ahorro de tokens
 
-> Versión 0.5 (prototipo). Requiere Claude Code 2.1.287 o posterior.
+**Cada token cuenta.** Toki es una alcancía que vive sobre tu prompt en Claude Code. Lo instalas una vez y se encarga solo: compacta las salidas ruidosas, rescata los errores que se esconden, recuerda lo importante cuando Claude Code compacta, mapea tu proyecto y te avisa justo cuando conviene actuar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen y nunca sacrifica calidad para ahorrar.
+
+Habla español e inglés. No agrega ni un token fijo a tu contexto.
+
+> Versión 0.6. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+
+## Instalación
+
+En una sesión de Claude Code:
+
+```
+/plugin install toki --marketplace DMercadoCanas/toki
+```
+
+Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
+
+## Lo nuevo en 0.6
+
+- **Se llama Toki** y tiene logo, eslogan y voz propia.
+- **Rescate del `| tail`.** Claude suele cortar la salida de los tests con `| tail -n 80`, y el fallo queda en medio, fuera del corte. Toki guarda la salida completa en el camino y le agrega a Claude solo los errores que el corte escondió. En la prueba medida, **la misma tarea gastó la mitad de tokens** y Claude encontró el fallo a la primera.
+- **Inglés.** Toki habla el idioma en que le escribes a Claude (o el que elijas).
+- **Memoria a prueba de todo.** Si el hook de compactación no puede correr (Windows sin Git Bash) o el guardia de tu empresa lo bloquea, Toki detecta la compactación por su cuenta y le deja la nota a Claude igual.
+- **Aviso de cambio de modelo en cuentas de empresa,** donde antes no llegaba el evento.
+- **Mantener el caché caliente** (opcional, solo si pagas por token en la API).
+- **Rachas y logros:** 🔥 días seguidos ahorrando, medallas, confeti y una fanfarria corta cuando desbloqueas una.
+- **PowerShell:** en Windows sin Git Bash, Toki compacta, guarda la copia completa (con `Tee-Object`) y rescata lo que esconde un `| Select-Object -Last`. Probado con la herramienta PowerShell real de Claude Code.
+- **Si venías de ahorro-tokens,** la primera vez que arranca Toki trae tu total, tu historial y tu racha.
 
 ## Qué hace
 
 | Pieza | Qué hace | Inspirada en |
 |---|---|---|
-| **Compactador de salidas** | Cuando corres tests, builds, instalaciones, linters o logs, Claude recibe una versión compacta: agrupa líneas repetidas y parecidas, y conserva cada error, advertencia, el inicio y el final. El original completo queda guardado. | RTK, Token Optimizer |
-| **Rescate de errores escondidos** | Claude Code recorta por la mitad las salidas largas de los comandos que fallan, y justo ahí suele estar el error. ahorro-tokens copia la salida completa mientras el comando corre y le entrega a Claude el error real, en menos espacio. | Idea propia |
-| **Memoria que sobrevive la compactación** | Toki anota en silencio la tarea actual, las decisiones que Claude va tomando, los archivos editados, los últimos comandos y errores. Cuando Claude Code compacta el contexto, se lo recuerda en una nota corta para que siga donde quedó sin volver a explorar. | Token Optimizer |
-| **Detector de bucles** | Si el mismo comando falla 3 veces seguidas, le avisa a Claude que cambie de enfoque antes de seguir reintentando. | Token Optimizer |
-| **Mapa del proyecto** | Genera un mapa de archivos, símbolos y módulos más usados, sin gastar tokens del modelo. La primera vez que Claude busca algo en la sesión, le avisa que el mapa existe. | Graphify |
-| **Toki, el acompañante** | Una barra viva sobre el prompt con una mascota que actúa lo que Claude hace (piensa, lee, ejecuta, edita, compacta, duerme), medidores de contexto, caché, ahorro y límites del plan, una frase que dice qué pasa y un botón cuando hay algo que hacer. | Token Optimizer |
-| **Estilo conciso** | Respuestas cortas sin relleno. El código, los errores y las rutas no se tocan. Opcional. | Caveman (nivel lite) |
+| **Compactador de salidas** | Tests, builds, instalaciones, linters y logs llegan a Claude compactados: agrupa líneas repetidas y parecidas, y conserva cada error, advertencia, el inicio y el final. El original completo queda guardado. | RTK, Token Optimizer |
+| **Rescate de errores escondidos** | Claude Code recorta las salidas largas de los comandos que fallan, y justo ahí suele estar el error. Toki copia la salida completa mientras el comando corre y le entrega a Claude el error real, en menos espacio. | Idea propia |
+| **Rescate del `\| tail`** | Si Claude corta un test o un build con `\| tail`, Toki le agrega los errores que quedaron fuera del corte, con su contexto. Lo que Claude pidió llega intacto. | Idea propia |
+| **Memoria que sobrevive la compactación** | Toki anota la tarea, las decisiones, los archivos editados, los últimos comandos y errores. Cuando Claude Code compacta, se lo recuerda a Claude en una nota corta para que siga donde quedó. | Token Optimizer |
+| **Detector de bucles** | Si el mismo comando falla 3 veces seguidas, le pide a Claude cambiar de enfoque antes de seguir reintentando. | Token Optimizer |
+| **Mapa del proyecto** | Archivos, símbolos y módulos más usados, sin gastar tokens del modelo. La primera vez que Claude busca algo, le avisa que el mapa existe. | Graphify |
+| **Toki, el acompañante** | Una alcancía viva sobre el prompt que actúa lo que Claude hace, con medidores de contexto, caché, ahorro, racha y límites del plan, y un botón cuando hay algo que hacer. | Token Optimizer |
+| **Estilo conciso** | Respuestas cortas sin relleno; el código, los errores y las rutas no se tocan. Se activa solo al 50% de contexto o con `/output-style`. | Caveman (nivel lite) |
 
 ### Reglas que nunca rompe
 
-1. **Cero instrucciones fijas en el contexto.** No agrega skills ni texto que se cargue en cada mensaje.
-2. **No rompe el caché.** Todo lo que agrega va al final, nunca modifica lo que ya se envió.
-3. **Todo es reversible.** La salida original queda en `.claude/ahorro-tokens/salidas/` y Claude la puede leer cuando la necesite.
-4. **Nunca provoca reintentos.** Si no está seguro, no toca nada. No compacta lecturas de archivos, diffs ni salidas que ya filtraste con `| grep`, `| tail`, etc.
-5. **Si algo falla, no estorba.** Claude sigue trabajando normal.
-6. **Nada sale de tu computador.** Sin telemetría, sin red.
-
-## Instalación
-
-En una sesión de Claude Code en la terminal:
-
-```
-/plugin install ahorro-tokens --marketplace DMercadoCanas/ahorro-tokens
-```
-
-Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato.
-
-Desde la terminal del sistema:
-
-```
-claude plugin install ahorro-tokens --marketplace DMercadoCanas/ahorro-tokens
-```
-
-En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/ahorro-tokens` → **Add plugin**.
+1. **Cero tokens fijos en el contexto.** No agrega skills ni texto que se cargue en cada mensaje.
+2. **No rompe el caché.** Todo lo que agrega va al final; nunca modifica lo que ya se envió.
+3. **Todo es reversible.** La salida original queda en `.claude/toki/salidas/` y Claude la puede leer cuando la necesite.
+4. **Nunca provoca reintentos.** Si no está seguro, no toca nada. No compacta lecturas de archivos, diffs ni salidas que Claude ya filtró con `| grep`.
+5. **Nunca pide un permiso nuevo.** Solo cambia cómo corre un comando si Claude Code toma la misma decisión de permisos que con el original.
+6. **Si algo falla, no estorba.** Claude sigue trabajando normal.
+7. **Nada sale de tu computador.** Sin telemetría, sin red.
 
 ## La barra de Toki
 
 ```
-╭──────────────────────────────────────────────────────────────────────────────╮
-│ (•‿•) Toki · Todo en orden. Esta sesión te ahorré ~5.4k tokens.        − × │
-│ contexto ██████░░░░░░░░ 37% · caché ● 48 min · ahorrado ~5.4k · 5 h 25% · semana 12%   ▸ más │
-╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────╮
+│ (^‿^) ✓ Toki · Listo. En «npm test» te ahorré ~5.4k tokens.                    − × │
+│ contexto ██████░░░░░░░░ 37% · caché ● 48 min · ahorrado ~5.4k · 🔥 4 días · 5 h 25%  ▸ más │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-- **La mascota actúa lo que pasa:** `(•_•)···` pensando, `(⊙‿⊙)` leyendo, `(•‿•) ⠋` ejecutando, `✎` editando, `(>‿<)` compactando, `(•o•)?` esperando tu permiso, `(^‿^)✓` listo, `(−_−)zZ` caché frío, `(•△•)!` contexto alto.
-- **Una frase y, si hace falta, un botón:** al 70% de contexto aparece **Compactar ahora** (atajo `c`).
-- **Medidores:** contexto (verde, amarillo, rojo), reloj del caché (`●` lleno → `○` frío), tokens ahorrados en la sesión y, en planes con suscripción, los límites de 5 horas y semana.
-- **Cada vez que ahorra, te lo dice:** aparece un aviso corto ("Toki te ahorró ~5.4k tokens en «npm test»").
-- **`▸ más`** muestra duración, llamadas, salidas compactadas, bucles e histórico. **`−`** la deja en una sola línea. **`×`** la oculta (vuelve con `/ahorro`).
-- **En la app de escritorio, Toki es un dibujo vectorial animado** (respira, parpadea, y cambia de cara y accesorio según lo que Claude hace). En la terminal usa caras de texto.
-- **Sonidos suaves** (solo macOS): una campanita al ahorrar, un acorde al terminar con ahorro y un tono bajo al avisar. Se apagan en la configuración del plugin.
-- **Toki aprende:** te avisa (y lo guarda en "Lo que Toki notó esta sesión" dentro de `/ahorro`) cuando cambias de modelo con el caché caliente, cuando un comando falla en bucle, cuando Claude relee el mismo archivo completo una y otra vez, cuando hay varias salidas enormes seguidas (mejor un subagente con Haiku), cuando la sesión pasa de 3 horas y cuando van 3 compactaciones.
-- **Modo conciso automático:** al pasar del 50% de contexto, le pide a Claude respuestas más cortas, sin recortar código ni errores. Se añade al final del contexto, así que no rompe el caché.
-- Los porcentajes de ahorro son estimados (unos 4 caracteres por token).
+- **Toki actúa lo que pasa:** `(•_•)···` pensando, `(⊙‿⊙)` leyendo, `(•‿•) ⠋` ejecutando, `✎` editando, `(>‿<)` compactando, `(•o•)?` esperando tu permiso, `(^‿^)✓` listo, `\(^‿^)/ ✦` celebrando un logro, `(−_−)zZ` caché frío, `(•△•)!` contexto alto. En la app de escritorio es un dibujo animado que respira, parpadea, guarda monedas y lanza confeti.
+- **Una frase y, si hace falta, un botón:** al 70% de contexto (o si la conversación ya pesa más de 200k tokens) aparece **Compactar ahora** (atajo `c`).
+- **Medidores:** contexto, reloj del caché (`●` lleno → `○` frío), tokens ahorrados en la sesión, tu racha y, en planes con suscripción, los límites de 5 horas y de la semana.
+- **Cada ahorro y cada rescate te lo dice** con un aviso corto, y una campanita (solo macOS).
+- **`▸ más`** muestra duración, llamadas, salidas compactadas, bucles, cuánto del último turno salió del caché e histórico. **`−`** la deja en una línea. **`×`** la oculta (vuelve con `/toki`).
+- **Toki aprende** y lo anota en "Lo que Toki notó": cambios de modelo con el caché caliente, bucles, relecturas del mismo archivo, varias salidas enormes seguidas (mejor un subagente con Haiku), sesiones de más de 3 horas y compactaciones repetidas.
 
-## El panel `/ahorro`
+## El panel `/toki`
 
-Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), una gráfica de barras del ahorro por día en las últimas dos semanas, qué ocupa tu contexto ahora, lo que Toki notó en la sesión y sugerencias concretas. El historial se guarda en tu máquina, por proyecto.
+Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), tu racha y tus logros, una gráfica del ahorro por día de las últimas dos semanas, qué ocupa tu contexto ahora, los últimos comandos y qué hizo Toki con cada uno, lo que notó en la sesión y sugerencias concretas.
 
-## Cómo se usa
+### Logros
 
-No tienes que hacer nada. Además:
+✓ Primer ahorro · 10k tokens · 100k tokens · 1M tokens · 3 días seguidos · 7 días seguidos · Memoria a prueba de compactación · Rescate de errores
 
-- **`/ahorro`**: abre un reporte con lo ahorrado, qué ocupa tu contexto y sugerencias concretas.
-- **`/ahorro-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
-- **`/ahorro-por-que`**: la lista de los últimos comandos y, para cada uno, si se compactó (y cuánto ahorró) o por qué no se tocó. Si crees que Toki no está ahorrando, empieza por aquí.
-- **`/output-style`** → `ahorro-tokens:conciso`: activa las respuestas cortas.
+## Comandos
 
-### Configuración
+- **`/toki`**: el panel con todo lo anterior.
+- **`/toki-por-que`**: los últimos comandos y, para cada uno, si se compactó (y cuánto ahorró), si se rescató algo o por qué no se tocó. Si crees que Toki no está ahorrando, empieza por aquí.
+- **`/toki-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
+- **`/output-style`** → `toki:conciso`: respuestas cortas desde ya.
 
-Con `/plugin configure ahorro-tokens@kit-ahorro` puedes apagar cualquiera de las piezas automáticas: compactador, mapa automático, acompañante, sonidos, memoria y modo conciso.
+## Configuración
 
-### Si crees que no está ahorrando
+En `/plugin`, elige Toki y abre su configuración. Puedes apagar cualquier pieza (compactador, mapa automático, acompañante, sonidos, memoria, modo conciso), fijar el idioma y activar **Mantener el caché caliente**:
 
-1. Escribe `/ahorro-por-que`. Verás cada comando reciente con el motivo exacto.
-2. Los motivos más comunes: Claude usó `| tail` o `| grep` (la salida ya venía filtrada), la salida era corta, o el comando no es de una familia ruidosa.
-3. Después de actualizar el plugin, usa `/reload-plugins`. Si dice `register.tsx unchanged`, reinicia la sesión: Claude Code no recompiló el módulo.
+- Solo sirve si pagas por token en la API, donde el caché dura 5 minutos. Con una suscripción el caché normalmente dura una hora y Toki no hace nada.
+- Mientras lees o piensas, Toki hace un "ping" que solo lee el caché cada ~4 minutos, como máximo 30 minutos después de tu último mensaje. Cada ping cuesta ~10% del precio normal de tu contexto; volver con el caché frío cuesta ~125%.
+- Se detiene solo si el caché ya se enfrió, si cambias de modelo o si no hay nada que mantener. Viene apagado.
 
-## Resultados medidos (con y sin plugin)
+## Resultados medidos (con y sin Toki)
 
-Misma pregunta, mismo modelo (Haiku), dos corridas por escenario, tokens de entrada totales reportados por Claude Code (incluye caché):
+Misma pregunta, mismo modelo (Haiku), dos corridas por escenario, tokens de entrada totales que reporta Claude Code (incluye caché):
 
-| Escenario | Sin plugin | Con plugin | Diferencia |
+| Escenario | Sin Toki | Con Toki | Diferencia |
 |---|---|---|---|
-| `npm test` con 1 fallo entre 421 tests (26 KB de salida) | 94.5k tokens · 2 turnos | 89.8k–94.5k tokens · 2 turnos | hasta −4.7k (−5%) |
-| `npm run enorme`: 1,6 MB de salida con el error en la última línea | 134.2k tokens · 3 turnos | 88.0k tokens · 2 turnos | **−46k (−34%) y un turno menos** |
+| "Corre npm test y dime qué test falla": Claude corta la salida con `\| tail` y el fallo queda en medio | 184.6k–192.6k tokens · 3 comandos | 93.1k tokens · 1 comando | **−50% y dos comandos menos** |
+| "Corre npm run enorme y dime qué error aparece al final": 1,6 MB de salida con el error en la última línea | 134.2k–179.9k tokens · 3–4 turnos | 88.1k tokens · 2 turnos | **−34% a −51%** |
+| PowerShell: "Corre npm test y dime qué test falla" (Claude Code recorta la salida del fallo por el medio) | 154.7k–208.0k tokens · 4 turnos | 97.1k–97.2k tokens · 2 turnos | **−37% a −53%** |
+| PowerShell: `npm test \| Select-Object -Last 30` | ~96k tokens, y Claude **no pudo decir** qué test fallaba | ~96k tokens, respuesta correcta a la primera | misma cifra, la respuesta cambia |
+| `npm test` con 1 fallo entre 421 tests (26 KB de salida, sin filtrar) | 94.5k tokens · 2 turnos | 89.8k–94.5k tokens · 2 turnos | hasta −5% |
 
-Lo honesto: el ahorro grande aparece con salidas enormes, donde Claude Code sin ayuda entrega solo una vista previa del inicio y Claude tiene que hacer una segunda llamada para buscar el error. En salidas medianas el ahorro es de unos miles de tokens por comando. Y en una sesión real larga, cada turno que se evita vale mucho más que aquí, porque reenvía toda la conversación.
+Lo honesto: el ahorro grande aparece cuando Toki le evita a Claude volver a correr o volver a buscar. En una sesión real larga, cada llamada que se evita vale mucho más que aquí, porque reenvía toda la conversación.
 
-Lo que muestra Toki como "tokens ahorrados" es la diferencia entre lo que Claude habría leído sin el plugin (como máximo 30 KB, o la vista previa de 2 KB cuando Claude Code guarda la salida en archivo) y lo que leyó con él, a ~4 caracteres por token. Es una estimación y siempre lleva "~".
+Lo que la barra muestra como "ahorrado" es la diferencia entre lo que Claude habría leído sin Toki (como máximo 30 KB, o la vista previa de 2 KB cuando Claude Code guarda la salida en un archivo) y lo que leyó con él, a ~4 caracteres por token. Es una estimación conservadora y siempre lleva "~": los rescates y los turnos evitados no se suman.
 
-### Evals formales
+En `evals/` hay una suite para `claude plugin eval`, que corre cada caso con y sin el plugin y califica el resultado (necesita el sandbox del sistema; en macOS viene incluido).
 
-En `evals/` hay una suite para la herramienta oficial de Anthropic, que corre cada caso con y sin el plugin y califica el resultado. Necesita el sandbox del sistema (en macOS viene incluido):
+## Límites conocidos
 
-```bash
-claude plugin eval . --scaffold --allow-tools "Bash(npm *)" --runs 3
+- La copia completa y los rescates funcionan con bash y zsh (macOS, Linux, WSL, Git Bash) y con PowerShell. PowerShell está probado con la herramienta real de Claude Code y PowerShell 7; con Windows PowerShell 5.1 (que guarda la copia en UTF-16) solo con pruebas automáticas. Si ves algo raro, `/toki-por-que` lo explica y puedes apagar el compactador en la configuración.
+- Toki solo envuelve un comando si Claude Code le da exactamente el mismo permiso que al original. Si tienes reglas finas (por ejemplo `Bash(npm test:*)`), el comando envuelto ya no calza con la regla, así que Toki compacta lo que entrega Claude Code sin copia completa, y lo dice en el encabezado si Claude Code ya había recortado algo.
+- En cuentas de empresa (Team o Enterprise), Claude Code carga un guardia que no deja a los plugins intervenir en la compactación ni recibir el evento de cambio de modelo. Toki lo compensa: detecta ambas cosas por su cuenta.
+- La franja se dibuja en la terminal y en la app de escritorio. En la extensión de VS Code y en `claude -p` el motor funciona igual, sin franja; `/toki` responde con el reporte en texto.
+- El mapa es análisis de texto, no un árbol sintáctico completo: puede omitir símbolos en código poco convencional.
+
+## English
+
+**Toki: your token-saving companion. Every token counts.**
+
+Toki is a piggy bank that lives above your Claude Code prompt. Install it once and it takes care of the rest: it compacts noisy command output (tests, builds, installs, linters, logs) while keeping every error, rescues the errors Claude Code's truncation or a `| tail` would hide, reminds Claude of the task after a compaction, maps your project without using the model, and tells you when it is the right moment to compact or clear. It adds zero always-on tokens to your context and never touches file reads or diffs.
+
+```
+/plugin install toki --marketplace DMercadoCanas/toki
 ```
 
-## Límites conocidos de esta versión
-
-- La captura completa de salidas funciona con bash y zsh (macOS, Linux, WSL). En otros shells, el plugin compacta lo que entrega Claude Code sin rescatar la parte recortada.
-- Solo envuelve comandos que ya tienen permiso para ejecutarse sin preguntar. Nunca genera una solicitud de permiso nueva.
-- En cuentas de empresa (Team o Enterprise) Claude Code carga un guardia que no deja a los plugins de usuario intervenir en la compactación. Por eso la memoria usa un hook de comando (`SessionStart` con `compact`), que funciona siempre. En Windows ese hook necesita Git Bash.
-- La franja se dibuja en la terminal y en la app de escritorio. En la extensión de VS Code y en `claude -p`, el motor funciona igual pero sin franja; `/ahorro` responde con el reporte en texto.
-- El mapa es análisis de texto, no un árbol sintáctico completo: puede omitir símbolos en código poco convencional.
+- Toki speaks the language you write to Claude in. You can pin it to `en` or `es` in its settings.
+- `/toki` opens the panel: savings for this session, today, 7 and 30 days, your 🔥 streak, achievements, a 14-day chart, what fills your context, and suggestions.
+- `/toki-por-que` explains, command by command, what Toki did and why.
+- Measured with Haiku: when Claude cuts test output with `| tail` and the failure sits in the middle, the same task used **half the tokens** with Toki (93.1k vs 184.6k–192.6k) and needed one command instead of three. With a 1.6 MB output, 88.1k vs 134.2k–179.9k.
+- Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 
 ## Para desarrollar
 
@@ -123,11 +144,11 @@ claude plugin test .
 claude --plugin-dir .
 ```
 
-Las pruebas viven en `tests/`. La lógica pura está en `hooks/compresor.ts`, `hooks/bucles.ts`, `hooks/mapa.ts`, `hooks/mascota.ts`, `hooks/toki-svg.ts` y `hooks/historial.ts`; `hooks/register.tsx` la conecta con Claude Code. Los sonidos de `sonidos/` son sintéticos (generados con Python, sin derechos de terceros).
+La lógica pura vive en `hooks/` (`compresor.ts`, `cache.ts`, `bucles.ts`, `mapa.ts`, `mascota.ts`, `toki-svg.ts`, `historial.ts`, `memoria.ts`, `idioma.ts`); `hooks/register.tsx` la conecta con Claude Code. Las pruebas están en `tests/`. Los sonidos de `sonidos/` son sintéticos (generados con Python, sin derechos de terceros).
 
 ## Créditos
 
-Este proyecto se inspira en las ideas de otros, reimplementadas desde cero:
+Toki se inspira en las ideas de otros, reimplementadas desde cero:
 
 - [Caveman](https://github.com/JuliusBrussee/caveman), de Julius Brussee: respuestas concisas.
 - [RTK](https://github.com/rtk-ai/rtk), de rtk-ai: filtros de salida por familia de comandos.

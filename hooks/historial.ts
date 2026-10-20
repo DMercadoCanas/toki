@@ -1,5 +1,7 @@
 // Historial de ahorro por día y la gráfica del panel. Funciones puras.
 
+import { t } from './idioma'
+import type { Idioma } from './idioma'
 import { formatearTokens } from './mascota'
 
 export type Historial = Record<string, number> // 'AAAA-MM-DD' → tokens ahorrados ese día
@@ -22,21 +24,32 @@ export function sumarAlDia(historial: Historial, ms: number, tokens: number): Hi
   return siguiente
 }
 
+/** Junta dos historiales sumando día a día (p. ej. el de la versión anterior del plugin). */
+export function fusionarHistorial(a: Historial, b: Historial): Historial {
+  let salida: Historial = { ...a }
+  for (const [dia, tokens] of Object.entries(b)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia) || typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) continue
+    salida = { ...salida, [dia]: (salida[dia] ?? 0) + tokens }
+  }
+  const claves = Object.keys(salida).sort()
+  for (const vieja of claves.slice(0, Math.max(0, claves.length - DIAS_GUARDADOS))) delete salida[vieja]
+  return salida
+}
+
 export function totalDesde(historial: Historial, ms: number, dias: number): number {
   let total = 0
   for (let i = 0; i < dias; i++) total += historial[claveDia(ms - i * 86_400_000)] ?? 0
   return total
 }
 
-const DIAS_SEMANA = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
-
 /** Filas de la gráfica: últimos N días, con barra proporcional al máximo. */
-export function filasGrafica(historial: Historial, ms: number, dias: number, anchoBarra: number): { etiqueta: string; barra: string; valor: string; tokens: number; esHoy: boolean }[] {
+export function filasGrafica(historial: Historial, ms: number, dias: number, anchoBarra: number, idioma: Idioma = 'es'): { etiqueta: string; barra: string; valor: string; tokens: number; esHoy: boolean }[] {
+  const DIAS_SEMANA = t(idioma).diasSemana
   const filas: { clave: string; tokens: number; fecha: Date }[] = []
   for (let i = dias - 1; i >= 0; i--) {
-    const t = ms - i * 86_400_000
-    const clave = claveDia(t)
-    filas.push({ clave, tokens: historial[clave] ?? 0, fecha: new Date(t) })
+    const momento = ms - i * 86_400_000
+    const clave = claveDia(momento)
+    filas.push({ clave, tokens: historial[clave] ?? 0, fecha: new Date(momento) })
   }
   const maximo = Math.max(1, ...filas.map(f => f.tokens))
   return filas.map((f, i) => {
@@ -60,12 +73,47 @@ export function agregarLeccion(lista: Leccion[], leccion: Leccion): Leccion[] {
 }
 
 /** Lección del cambio de modelo con el caché caliente. */
-export function leccionCambioModelo(contextTokens: number, usd: number, deModelo: string, aModelo: string): Leccion {
+export function leccionCambioModelo(contextTokens: number, usd: number, deModelo: string, aModelo: string, idioma: Idioma = 'es'): Leccion {
   const costo = usd >= 0.01 ? ` (~$${usd.toFixed(2)})` : ''
-  return {
-    clave: 'cambio-modelo',
-    texto: `Cambiaste de ${nombreModelo(deModelo)} a ${nombreModelo(aModelo)} con el caché caliente: el próximo mensaje reprocesó ~${formatearTokens(contextTokens)} tokens${costo}. Elige el modelo al inicio de la sesión; para una tarea chica, delega a un subagente con model: haiku.`,
+  return { clave: 'cambio-modelo', texto: t(idioma).leccionModelo(nombreModelo(deModelo), nombreModelo(aModelo), formatearTokens(contextTokens), costo) }
+}
+
+/** Días seguidos (hasta hoy, o hasta ayer si hoy aún no hay ahorro) con algún ahorro. */
+export function racha(historial: Historial, ms: number): number {
+  let n = 0
+  let i = (historial[claveDia(ms)] ?? 0) > 0 ? 0 : 1
+  while ((historial[claveDia(ms - i * 86_400_000)] ?? 0) > 0) {
+    n += 1
+    i += 1
   }
+  return n
+}
+
+export const LOGROS = ['primero', 'diez', 'cien', 'millon', 'racha3', 'racha7', 'memoria', 'rescate'] as const
+export type Logro = (typeof LOGROS)[number]
+
+export type Cifras = {
+  total: number
+  racha: number
+  /** Toki le recordó la tarea a Claude después de una compactación. */
+  memoria?: boolean
+  /** Toki rescató errores que un `| tail` escondía. */
+  rescate?: boolean
+}
+
+/** Qué logros se desbloquean con las cifras actuales (solo los que faltaban). */
+export function logrosNuevos(ya: readonly string[], c: Cifras): Logro[] {
+  const cumple: Record<Logro, boolean> = {
+    primero: c.total > 0,
+    diez: c.total >= 10_000,
+    cien: c.total >= 100_000,
+    millon: c.total >= 1_000_000,
+    racha3: c.racha >= 3,
+    racha7: c.racha >= 7,
+    memoria: c.memoria === true,
+    rescate: c.rescate === true,
+  }
+  return LOGROS.filter(l => cumple[l] && !ya.includes(l))
 }
 
 export function nombreModelo(id: string): string {
