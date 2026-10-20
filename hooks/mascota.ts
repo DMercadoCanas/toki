@@ -42,9 +42,13 @@ export function actividadDeHerramienta(herramienta: string): Actividad {
   return 'pensando'
 }
 
+/** A partir de aquí la conversación es pesada aunque el porcentaje parezca bajo (ventanas de 1M). */
+export const TOKENS_PESADOS = 200_000
+
 export type Situacion = {
   actividad: Actividad
   contextoPct?: number
+  contextoTokens?: number
   cacheMinutosRestantes?: number
   inactivoMinutos: number
   ahorradoSesion: number
@@ -71,6 +75,13 @@ export function frase(s: Situacion): { texto: string; tono: 'normal' | 'bien' | 
   const ahorro = s.ahorradoSesion > 0 ? ` Esta sesión te ahorré ~${formatearTokens(s.ahorradoSesion)} tokens.` : ''
   switch (s.actividad) {
     case 'alerta':
+      if ((s.contextoPct ?? 0) < 70 && (s.contextoTokens ?? 0) >= TOKENS_PESADOS) {
+        return {
+          texto: `Tu conversación ya pesa ~${formatearTokens(s.contextoTokens ?? 0)} tokens y se reenvía completa en cada mensaje. Si terminaste una tarea, compacta; si cambias de tema, /clear.`,
+          tono: 'aviso',
+          accion: 'compactar',
+        }
+      }
       return {
         texto: `Contexto al ${s.contextoPct ?? 0}%: compacta en esta pausa, antes de que se haga solo a mitad de una tarea.`,
         tono: (s.contextoPct ?? 0) >= 85 ? 'peligro' : 'aviso',
@@ -114,9 +125,19 @@ export function recortar(texto: string, max: number): string {
 }
 
 /** Decide el estado visible a partir de la actividad y las condiciones. */
-export function decidirActividad(base: Actividad, trabajando: boolean, contextoPct: number | undefined, inactivoMinutos: number, ttlMinutos: number, hayTurnos: boolean): Actividad {
+export function decidirActividad(
+  base: Actividad,
+  trabajando: boolean,
+  contextoPct: number | undefined,
+  inactivoMinutos: number,
+  ttlMinutos: number,
+  hayTurnos: boolean,
+  contextoTokens?: number,
+  silenciado = false,
+): Actividad {
   if (trabajando) return base === 'tranquilo' || base === 'listo' || base === 'dormido' || base === 'alerta' ? 'pensando' : base
   if (contextoPct !== undefined && contextoPct >= 70) return 'alerta'
+  if (!silenciado && contextoTokens !== undefined && contextoTokens >= TOKENS_PESADOS) return 'alerta'
   if (hayTurnos && inactivoMinutos >= ttlMinutos) return 'dormido'
   return base
 }

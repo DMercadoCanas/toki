@@ -24,6 +24,11 @@ describe('Toki', () => {
     expect(decidirActividad('tranquilo', false, 30, 75, 60, false)).toBe('tranquilo')
     expect(decidirActividad('leyendo', true, 95, 0, 60, true)).toBe('leyendo')
     expect(decidirActividad('alerta', true, 95, 0, 60, true)).toBe('pensando')
+    expect(decidirActividad('tranquilo', false, 39, 0, 60, true, 342_000)).toBe('alerta')
+    expect(decidirActividad('tranquilo', false, 39, 0, 60, true, 342_000, true)).toBe('tranquilo')
+    const pesada = frase({ actividad: 'alerta', contextoPct: 39, contextoTokens: 342_000, inactivoMinutos: 0, ahorradoSesion: 0 })
+    expect(pesada.texto).toContain('~342.0k tokens')
+    expect(pesada.accion).toBe('compactar')
   })
 
   test('las frases dicen qué pasa y qué hacer', async () => {

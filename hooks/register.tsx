@@ -60,7 +60,7 @@ import {
 import type { Decision, PuntoDeControl } from './memoria'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.4.0'
+export const VERSION = '0.4.1'
 
 type $ = EngineInterface
 
@@ -137,7 +137,8 @@ const vivo: {
   tick: number
   ultimoAhorro?: { tokens: number; comando: string }
   bucleReciente: boolean
-  usoCache?: { pct?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean }
+  usoCache?: { pct?: number; tokens?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean }
+  silencioPesadoHasta: number
   usoLeido: number
   lecciones: Leccion[]
   sonidos: boolean
@@ -166,6 +167,7 @@ const vivo: {
   nudgeLecturas: false,
   salidasGrandesEnTurno: 0,
   ultimaCompactacionVista: 0,
+  silencioPesadoHasta: 0,
 }
 
 /** Dos salidas enormes en un mismo turno: mejor delegar a un subagente. */
@@ -261,6 +263,7 @@ async function refrescarUso($: $): Promise<void> {
     const limite = (kind: string) => uso.rateLimits.find(r => r.kind === kind)?.percentUsed
     vivo.usoCache = {
       pct: uso.context.percent,
+      tokens: uso.context.tokens,
       cincoHoras: limite('five_hour'),
       semana: limite('seven_day'),
       costo: uso.cost?.usd,
@@ -493,6 +496,12 @@ export const register: Register = (on, options) => {
       if (memoriaActiva) await guardarMemoria($)
       await refrescarUso($)
       const uso = vivo.usoCache
+      if ((uso?.tokens ?? 0) >= 200_000) {
+        vivo.lecciones = agregarLeccion(vivo.lecciones, {
+          clave: 'conversacion-pesada',
+          texto: `La conversación pesa ~${formatearTokens(uso?.tokens ?? 0)} tokens y se reenvía completa en cada mensaje, aunque el porcentaje de la ventana parezca bajo. Esto es lo que más consume de tus límites: al terminar una tarea, /compact; al cambiar de tema, /clear.`,
+        })
+      }
       if (uso !== undefined && ahora - uso.inicio > 3 * 3_600_000) {
         vivo.lecciones = agregarLeccion(vivo.lecciones, {
           clave: 'sesion-larga',
@@ -834,10 +843,11 @@ export const register: Register = (on, options) => {
     const ttl = uso?.esSuscripcion ? 60 : 5 // Suscripción: 1 h de caché. API: 5 min.
     const inactivo = s.ultimaActividad > 0 ? (ahora - s.ultimaActividad) / 60_000 : 0
     const cacheRestante = s.ultimaActividad > 0 ? Math.max(0, ttl - inactivo) : undefined
-    const actividad = decidirActividad(vivo.actividad, e.props.isWorking, pct, inactivo, ttl, s.ultimaActividad > 0)
+    const actividad = decidirActividad(vivo.actividad, e.props.isWorking, pct, inactivo, ttl, s.ultimaActividad > 0, uso?.tokens, ahora < vivo.silencioPesadoHasta)
     const dicho = frase({
       actividad,
       contextoPct: pct,
+      contextoTokens: uso?.tokens,
       cacheMinutosRestantes: cacheRestante,
       inactivoMinutos: inactivo,
       ahorradoSesion: s.tokensAhorrados,
@@ -906,6 +916,18 @@ export const register: Register = (on, options) => {
           </Text>
           {dicho.accion === 'compactar' && (
             <Button key="compactar" variant="primary" hotkey="c" label="Compactar ahora" onPress={() => void $.session.compact({})} />
+          )}
+          {dicho.accion === 'compactar' && (pct ?? 0) < 70 && (
+            <Button
+              key="luego"
+              plain
+              dimColor
+              label="en 30 min"
+              onPress={() => {
+                vivo.silencioPesadoHasta = ahora + 30 * 60_000
+                $.ui.invalidate('ui.render')
+              }}
+            />
           )}
           <Box flexGrow={1} />
           {botonTamano}

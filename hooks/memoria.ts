@@ -85,7 +85,7 @@ export type Decision = {
 
 export const MOTIVOS = {
   familia: 'el comando no es de una familia ruidosa (tests, builds, instalaciones, linters, logs)',
-  filtrado: 'la salida ya venía filtrada (| tail, | grep, | head…)',
+  filtrado: 'Claude ya filtró la salida por su cuenta (| tail, | grep, | head…): no hacía falta compactar',
   lector: 'es un comando de lectura de contenido exacto (cat, git diff, sed…)',
   corta: 'la salida era corta: no valía la pena compactarla',
   pocoAhorro: 'compactarla ahorraría menos del 30%',
