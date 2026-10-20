@@ -24,8 +24,21 @@ const PALABRAS_EN = new Set([
 ])
 
 /** ¿En qué idioma escribe la persona? undefined si el texto es muy corto o ambiguo. */
+/**
+ * Quita los bloques que la app mete en el mensaje (<system-reminder>, <task-notification>…).
+ * Vienen en inglés y no son lo que escribió la persona. Solo toca etiquetas con guion o
+ * guion bajo, para no comerse el HTML que alguien pegue a propósito.
+ */
+export function quitarEtiquetasDeSistema(texto: string): string {
+  return texto
+    .replace(/<([a-z]+[-_][\w-]*)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<\/?[a-z]+[-_][\w-]*\b[^>]*>/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function idiomaDeTexto(texto: string): Idioma | undefined {
-  const limpio = texto
+  const limpio = quitarEtiquetasDeSistema(texto)
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`[^`]*`/g, ' ')
     .replace(/https?:\/\/\S+/g, ' ')

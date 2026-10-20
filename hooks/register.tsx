@@ -30,7 +30,7 @@ import {
 import type { Compactado } from './compresor'
 import { agregarLeccion, filasGrafica, fusionarHistorial, leccionCambioModelo, LOGROS, logrosNuevos, nombreModelo, racha, sumarAlDia, totalDesde } from './historial'
 import type { Historial, Leccion, Logro } from './historial'
-import { detectarIdioma, idiomaDeTexto, t } from './idioma'
+import { detectarIdioma, idiomaDeTexto, quitarEtiquetasDeSistema, t } from './idioma'
 import type { Idioma, Textos } from './idioma'
 import { avisoMapa, CARPETAS_IGNORADAS, construirMapa, esBusqueda, extraerFicha, lenguaje, LIMITES_MAPA, RUTA_MAPA } from './mapa'
 import type { FichaArchivo } from './mapa'
@@ -152,6 +152,9 @@ const vivo: {
   pingsTotales: number
   tokensLeidosPing: number
   celebrandoHasta: number
+  /** La franja sobre el prompt se llegó a dibujar (en la app de Claude puede no existir). */
+  bandaDibujada: boolean
+  panelDibujado: boolean
   racha: number
   total: number
 } = {
@@ -188,6 +191,8 @@ const vivo: {
   pingsTotales: 0,
   tokensLeidosPing: 0,
   celebrandoHasta: 0,
+  bandaDibujada: false,
+  panelDibujado: false,
   racha: 0,
   total: 0,
 }
@@ -710,6 +715,38 @@ async function mantenerCaliente($: $): Promise<void> {
 }
 
 /** Cada 5 s: cifras del contexto (y compactaciones a mitad de turno) y el modelo. */
+/**
+ * Donde la franja sobre el prompt no se dibuja (por ejemplo, la app de Claude con una
+ * sesión remota), Toki se muestra en su panel. Deja una línea de diagnóstico.
+ */
+async function abrirPanelSiNoHayFranja($: $): Promise<void> {
+  try {
+    const superficies = await $.session.surfaces()
+    if (vivo.bandaDibujada) {
+      await anotarDiagnostico($, `franja dibujada; superficies: ${superficies.join(', ') || 'ninguna'}`)
+      return
+    }
+    const abierto = await $.ui.open({ id: PANEL, title: 'Toki' })
+    await anotarDiagnostico($, `superficies: ${superficies.join(', ') || 'ninguna'}; panel: ${abierto.isPlaced ? 'abierto' : `no (${abierto.reason})`}`)
+    // Y una línea de estado, por si la superficie muestra esa y no los paneles.
+    $.ui.status(`Toki · ${tx().lema}`)
+  } catch (err) {
+    await anotarDiagnostico($, `panel automático falló: ${String(err)}`)
+  }
+}
+
+/** Un registro corto de lo que la superficie hace con Toki: sirve para saber por qué no se ve. */
+const diagnostico: string[] = []
+async function anotarDiagnostico($: $, linea: string): Promise<void> {
+  try {
+    diagnostico.push(`${new Date(await $.clock.now()).toISOString()} ${linea}`)
+    await asegurarCarpeta($)
+    await $.fs.write(`${CARPETA}/diagnostico.txt`, `${diagnostico.slice(-20).join('\n')}\n`)
+  } catch {
+    // Sin diagnóstico no pasa nada.
+  }
+}
+
 async function vigilar($: $): Promise<void> {
   await refrescarUso($)
   await revisarModelo($)
@@ -1080,6 +1117,11 @@ export const register: Register = (on, options) => {
     $.clock.every(5_000, () => void vigilar($))
     if (config.mantenerCache) $.clock.every(30_000, () => void mantenerCaliente($))
     if (config.mapaAuto) $.clock.after(3_000, () => void mapaAutomatico($))
+    if (config.acompanante) $.clock.after(6_000, () => void abrirPanelSiNoHayFranja($))
+    void $.session
+      .surfaces()
+      .then(superficies => anotarDiagnostico($, `inicio ${VERSION}: superficie=${String(e.surface)} interactiva=${String(e.isInteractive)} superficies=${superficies.join(', ') || 'ninguna'}`))
+      .catch(() => undefined)
     try {
       vivo.modelo = await $.session.model()
     } catch {
@@ -1125,7 +1167,8 @@ export const register: Register = (on, options) => {
       vivo.pingsEnPausa = 0
       vivo.apagadoEnPausa = false
       vivo.mensaje = undefined
-      const texto = e.text.trim()
+      // Avisos de la app (<task-notification>…) no son la tarea ni el idioma de la persona.
+      const texto = quitarEtiquetasDeSistema(e.text)
       if (texto !== '' && !texto.startsWith('/')) await aprenderIdioma($, texto)
       // ¿Se compactó entre turnos? El contexto queda sin cifra hasta la próxima respuesta.
       // Va antes de anotar la tarea nueva: la nota lleva la tarea de antes de compactar.
@@ -1137,7 +1180,7 @@ export const register: Register = (on, options) => {
       }
       // Un "sí", "dale" o "sigue" no es una tarea nueva: se conserva la anterior.
       if (texto !== '' && !texto.startsWith('/') && (texto.length >= 25 || vivo.memoria.tareaActual === '')) {
-        vivo.memoria.tareaActual = recortar(e.text, LIMITES_MEMORIA.tarea)
+        vivo.memoria.tareaActual = recortar(texto, LIMITES_MEMORIA.tarea)
       }
       void revisarModelo($)
     }
@@ -1385,11 +1428,68 @@ export const register: Register = (on, options) => {
         <Text dimColor>{etiqueta}</Text>
       </Box>
     )
+    if (!vivo.panelDibujado) void anotarDiagnostico($, `panel pedido por la superficie ${e.surface}`)
+    vivo.panelDibujado = true
+    // Toki en vivo arriba del panel: la misma cara y frase que la franja.
+    const s = r.sesion
+    const ahora = await $.clock.now()
+    const uso = vivo.usoCache
+    const ttl = ttlMinutos()
+    const ultimoUso = Math.max(vivo.ultimoUsoCache, s.ultimaActividad)
+    const desdeCache = ultimoUso > 0 ? (ahora - ultimoUso) / 60_000 : 0
+    const actividad = decidirActividad(
+      vivo.actividad,
+      vivo.enTurno,
+      uso?.pct,
+      vivo.enTurno ? 0 : desdeCache,
+      ttl,
+      s.ultimaActividad > 0,
+      uso?.tokens,
+      ahora < vivo.silencioPesadoHasta,
+      ahora < vivo.celebrandoHasta,
+    )
+    const dicho = frase(
+      {
+        actividad,
+        contextoPct: uso?.pct,
+        contextoTokens: uso?.tokens,
+        inactivoMinutos: s.ultimaActividad > 0 ? (ahora - s.ultimaActividad) / 60_000 : 0,
+        ahorradoSesion: s.tokensAhorrados,
+        ultimoAhorro: vivo.ultimoAhorro,
+        bucleReciente: vivo.bucleReciente,
+      },
+      vivo.idioma,
+    )
+    if (vivo.mensaje !== undefined && ahora < vivo.mensaje.hasta && (actividad === 'tranquilo' || actividad === 'listo' || actividad === 'celebrando')) {
+      dicho.texto = vivo.mensaje.texto
+      dicho.tono = vivo.mensaje.tono
+    }
+    const colorFrase = dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : dicho.tono === 'bien' ? 'success' : 'text'
+    const cacheRestante = vivo.enTurno ? ttl : ultimoUso > 0 ? Math.max(0, ttl - desdeCache) : undefined
+    const medidores = `${x.contexto} ${uso?.pct === undefined ? '—' : `${uso.pct}%`} · ${x.cache} ${relojCache(cacheRestante, ttl)} ${cacheRestante === undefined ? '—' : cacheRestante <= 0 ? x.frio : formatearMinutos(cacheRestante, vivo.idioma)} · ${x.ahorrado} ~${formatearTokens(s.tokensAhorrados)}`
     return (
       <Box flexDirection="column" paddingX={1}>
+        {e.surface !== 'terminal' &&
+          (() => {
+            const { Svg } = $.ui.resolve(e)
+            return (
+              <Box flexDirection="row" gap={2} alignItems="center" marginBottom={1}>
+                <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={96} height={84} isInteractive />
+                <Box flexDirection="column" flexGrow={1}>
+                  <Text color="claude" bold>
+                    Toki
+                  </Text>
+                  <Text color={colorFrase} wrap="wrap">
+                    {dicho.texto}
+                  </Text>
+                  <Text dimColor>{medidores}</Text>
+                </Box>
+              </Box>
+            )
+          })()}
         <Box flexDirection="row" gap={1}>
           <Text color="claude" bold>
-            {cuadro(vivo.actividad, vivo.tick)} {x.panelTitulo}
+            {cuadro(actividad, vivo.tick)} {x.panelTitulo}
           </Text>
           <Text dimColor>· {x.eslogan}</Text>
         </Box>
@@ -1503,6 +1603,8 @@ export const register: Register = (on, options) => {
   // La franja de Toki sobre el prompt.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!config.acompanante || e.props.hasSurvey || (await read($, oculto))) return next(e)
+    if (!vivo.bandaDibujada) void anotarDiagnostico($, `franja pedida por la superficie ${e.surface}`)
+    vivo.bandaDibujada = true
     const { Box, Button, Text } = $.ui.resolve(e)
     const x = tx()
     const s = await read($, sesion)
