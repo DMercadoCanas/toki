@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: ruta-trivial
+description: A/B de la ruta de modelo. Una pregunta trivial con Opus; con Toki debería ir por un modelo o esfuerzo más barato sin perder la respuesta.
+context:
+  scaffold_script: fixture.sh

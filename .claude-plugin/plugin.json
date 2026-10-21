@@ -1,10 +1,12 @@
 {
   "name": "toki",
-  "version": "0.12.1",
-  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, compacta antes en modelos de 1M, recorta salidas ruidosas, evita repetir salidas idénticas, rescata errores escondidos, recuerda lo importante al compactar y te muestra a dónde se va cada token. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
+  "version": "0.13.0",
+  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, pone un presupuesto por tarea, compacta antes en modelos de 1M, recorta salidas ruidosas y búsquedas enormes, frena lecturas de archivos generados, guarda en un archivo los textos pegados enormes, rescata errores escondidos, recuerda lo importante al compactar y cada lunes te muestra una tarjeta con tu semana. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
     "name": "DMercadoCanas"
   },
+  "homepage": "https://github.com/DMercadoCanas/toki",
+  "repository": "https://github.com/DMercadoCanas/toki",
   "license": "MIT",
   "keywords": [
     "toki",

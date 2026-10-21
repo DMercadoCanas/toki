@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: ruta-compleja
+description: A/B de la ruta de modelo. Un fallo sutil que pide razonar; Toki no debe bajar el modelo hasta perder la respuesta.
+context:
+  scaffold_script: fixture.sh

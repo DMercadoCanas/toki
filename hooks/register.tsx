@@ -102,15 +102,20 @@ import {
 } from './gasto'
 import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
+import { PRUEBA_A, PRUEBA_B } from './prueba-3d'
 import { TRAMO_GENERADO, textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
 import type { TipoBusqueda } from './busquedas'
+import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjetaPendiente, tarjetaSemana } from './semana'
+import type { Delta, Semanas, TipoAhorro } from './semana'
+import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
+import type { Presupuesto, TipoOpcionPresupuesto } from './presupuesto'
 import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, opcionesFrio, preguntaFrio, proyectar, textosGuardia, VENTANAS } from './guardia'
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.12.1'
+export const VERSION = '0.13.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -133,6 +138,8 @@ const CLAVE_LOGROS = 'logros'
 const CLAVE_IDIOMA = 'idiomaDetectado'
 const CLAVE_MIGRADO = 'migradoDesdeAhorroTokens'
 const CLAVE_RELECTURAS = 'relecturasEvitadasTotal'
+const CLAVE_SEMANAS = 'semanas'
+const CLAVE_TARJETA = 'tarjetaSemanalMostrada'
 /** El valor que Toki puso en la variable, para no confundirlo con uno tuyo. */
 const CLAVE_VENTANA = 'ventanaPuestaPorToki'
 /** La ventana que Claude Code usaría sin Toki, por modelo. */
@@ -185,6 +192,10 @@ const vivo: {
   bucleReciente: boolean
   usoCache?: { pct?: number; ventana: number; tokens?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean; reinicios: Partial<Record<VentanaLimite, number>> }
   usoLeido: number
+  /** Costo de la sesión ya sumado a la semana. */
+  costoContado: number
+  /** Tokens que leyó la API en esta sesión (principal y subagentes): la base del presupuesto en tokens. */
+  tokensSesion: number
   silencioPesadoHasta: number
   lecciones: Leccion[]
   sonidos: boolean
@@ -246,6 +257,8 @@ const vivo: {
   tokensUltimoTurno: 0,
   bucleReciente: false,
   usoLeido: 0,
+  costoContado: 0,
+  tokensSesion: 0,
   silencioPesadoHasta: 0,
   lecciones: [],
   sonidos: true,
@@ -578,8 +591,136 @@ async function revisarLogros($: $, extra: { memoria?: boolean; rescate?: boolean
   }
 }
 
-async function sumarAhorro($: $, caracteres: number, comando: string, principal = true): Promise<void> {
+// ---------- Presupuesto por tarea ----------
+
+const tarea: { p?: Presupuesto } = {}
+
+function xp() {
+  return textosPresupuesto(vivo.idioma)
+}
+
+function actualDe(p: Presupuesto): number {
+  return p.unidad === 'usd' ? vivo.costoContado : vivo.tokensSesion
+}
+
+function textoGastado(p: Presupuesto): { g: string; limite: string; pct: number } {
+  const actual = actualDe(p)
+  return { g: formatearPresupuesto(p.unidad, gastado(p, actual)), limite: formatearPresupuesto(p.unidad, p.limite), pct: porcentaje(p, actual) }
+}
+
+/** Tras cada pedido (o cada cambio de costo): avisa al 50 %, al 80 % y al pasarlo. */
+async function revisarPresupuesto($: $): Promise<void> {
+  const p = tarea.p
+  if (p === undefined) return
+  const u = umbralCruzado(p, actualDe(p))
+  if (u === undefined) return
+  tarea.p = marcarAvisado(p, u)
+  const { g, limite } = textoGastado(p)
+  const ahora = await $.clock.now()
+  const texto = u >= 100 ? xp().pasado(g, limite) : xp().aviso(u, g, limite)
+  decir(ahora, texto.replace(/^Toki: /, ''), u >= 100 ? 'peligro' : 'aviso', 20_000)
+  $.ui.toast(texto, { timeoutMs: 9_000 })
+  sonar($, 'aviso')
+  $.ui.invalidate('ui.render')
+}
+
+/** Antes de tu mensaje, si la tarea ya pasó su presupuesto: ¿modo ahorro, subirlo o parar? Una vez por tope. */
+async function guardiaPresupuesto($: $, texto: string): Promise<ResultadoGuardia | undefined> {
+  const p = tarea.p
+  if (p === undefined || p.preguntado || p.ahorro || porcentaje(p, actualDe(p)) < 100) return undefined
+  tarea.p = { ...p, preguntado: true }
+  const x = xp()
+  const { g, limite } = textoGastado(p)
+  const subido = subir(p, actualDe(p))
+  const opciones: { tipo: TipoOpcionPresupuesto; etiqueta: string }[] = [
+    { tipo: 'ahorro', etiqueta: x.opcion.ahorro },
+    { tipo: 'subir', etiqueta: x.opcion.subir(formatearPresupuesto(p.unidad, subido.limite)) },
+    { tipo: 'parar', etiqueta: x.opcion.parar },
+    { tipo: 'quitar', etiqueta: x.opcion.quitar },
+  ]
+  sonar($, 'aviso')
+  let respuesta: string
+  try {
+    respuesta = await $.ui.ask(x.pregunta(g, limite), { header: 'Toki', options: opciones.map(o => o.etiqueta) })
+  } catch {
+    return undefined
+  }
+  const tipo: TipoOpcionPresupuesto =
+    opciones.find(o => o.etiqueta === respuesta)?.tipo ??
+    (/par|stop/i.test(respuesta) ? 'parar' : /sub|rais/i.test(respuesta) ? 'subir' : /sin|without|quit/i.test(respuesta) ? 'quitar' : 'ahorro')
+  void anotarDiagnostico($, `presupuesto pasado (${g} de ${limite}): ${tipo}`)
+  if (tipo === 'parar') {
+    $.clock.after(100, () => void $.prompt.fill({ text: texto, mode: 'replace' }).catch(() => undefined))
+    $.ui.toast(x.parado, { timeoutMs: 9_000 })
+    return { drop: x.parado, silenciar: true }
+  }
+  if (tipo === 'subir') {
+    tarea.p = subido
+    $.ui.toast(x.subido(formatearPresupuesto(p.unidad, subido.limite)), { timeoutMs: 6_000 })
+  } else if (tipo === 'quitar') {
+    tarea.p = undefined
+    $.ui.toast(x.quitado, { timeoutMs: 6_000 })
+  } else {
+    tarea.p = { ...p, preguntado: true, ahorro: true }
+    $.ui.toast(x.enAhorro, { timeoutMs: 9_000 })
+  }
+  $.ui.invalidate('ui.render')
+  return { silenciar: true }
+}
+
+async function comandoPresupuesto($: $, args: string): Promise<string> {
+  const x = xp()
+  const orden = leerOrden(args)
+  if (orden.tipo === 'invalida') return x.invalida
+  if (orden.tipo === 'quitar') {
+    const habia = tarea.p !== undefined
+    tarea.p = undefined
+    $.ui.invalidate('ui.render')
+    return habia ? x.quitado : x.ninguno
+  }
+  await refrescarUso($, true)
+  if (orden.tipo === 'estado') {
+    if (tarea.p === undefined) return x.ninguno
+    const { g, limite, pct } = textoGastado(tarea.p)
+    return x.estado(g, limite, pct, tarea.p.ahorro)
+  }
+  if (orden.unidad === 'usd' && vivo.usoCache?.costo === undefined) return x.sinCosto
+  const p = nuevoPresupuesto(orden.unidad, orden.limite, orden.unidad === 'usd' ? vivo.costoContado : vivo.tokensSesion)
+  tarea.p = p
+  $.ui.invalidate('ui.render')
+  return x.fijado(formatearPresupuesto(p.unidad, p.limite), p.unidad, vivo.usoCache?.esSuscripcion === true)
+}
+
+/** Primer inicio de la semana: un aviso corto con lo que ahorró la pasada. */
+async function avisarSemana($: $, ahora: number): Promise<void> {
+  try {
+    const semanas = await leerSemanasDe($)
+    const lunes = tarjetaPendiente(semanas, ahora, await $.store.get(CLAVE_TARJETA))
+    if (lunes === undefined) return
+    await $.store.set(CLAVE_TARJETA, lunes)
+    const texto = avisoSemana(semanas, lunes, vivo.idioma)
+    $.clock.after(8_000, () => $.ui.toast(texto, { timeoutMs: 12_000 }))
+  } catch {
+    // Sin tarjeta esta vez.
+  }
+}
+
+async function leerSemanasDe($: $): Promise<Semanas> {
+  return leerSemanas(await $.store.get(CLAVE_SEMANAS))
+}
+
+/** Suma a la tarjeta de la semana. Nunca falla: es solo estadística. */
+async function alaSemana($: $, d: Delta): Promise<void> {
+  try {
+    await $.store.set(CLAVE_SEMANAS, sumarSemana(await leerSemanasDe($), await $.clock.now(), d))
+  } catch {
+    // Sin store: la tarjeta queda sin esta cifra.
+  }
+}
+
+async function sumarAhorro($: $, caracteres: number, comando: string, principal = true, tipo: TipoAhorro = 'salida'): Promise<void> {
   const tokens = tokensAprox(caracteres)
+  if (tokens > 0) await alaSemana($, { tipo, ahorro: tokens })
   await update($, sesion, s => ({ ...s, tokensAhorrados: s.tokensAhorrados + tokens, compactaciones: s.compactaciones + 1 }))
   if (tokens <= 0) return
   // Lo que salió del contexto principal ya no se relee en los pedidos siguientes.
@@ -600,14 +741,22 @@ async function sumarRelecturas($: $, tokens: number): Promise<void> {
   await update($, sesion, s => ({ ...s, relecturasEvitadas: (s.relecturasEvitadas ?? 0) + tokens }))
   const total = Number((await $.store.get(CLAVE_RELECTURAS)) ?? 0)
   await $.store.set(CLAVE_RELECTURAS, total + tokens)
+  await alaSemana($, { relecturas: tokens })
 }
 
 /** Cada pedido al modelo: lo que costó de verdad y lo que Toki evitó que se releyera. */
 async function alPedido($: $, subagente: boolean, u: UsoPedido): Promise<void> {
   await update($, gasto, g => sumarPedido(g, u, subagente))
-  if (subagente) return
+  const leidos = tamanoDelPedido(u) + u.output_tokens
+  vivo.tokensSesion += leidos
+  await revisarPresupuesto($)
+  if (subagente) {
+    if (leidos > 0) await alaSemana($, { tokensLeidos: leidos })
+    return
+  }
   const contexto = tamanoDelPedido(u)
   if (contexto <= 0) return
+  await alaSemana($, { pedidos: 1, tokensLeidos: leidos, pedidosLargos: contexto > CONTEXTO_LARGO ? 1 : 0 })
   const anterior = vivo.contextoPedido
   vivo.contextoPedido = contexto
   // El pedido cayó a menos de la mitad del anterior: se compactó.
@@ -720,7 +869,7 @@ async function revisarRepetida(
   const linea = x.salidaRepetida(Math.round((actual.cuando - (previa?.cuando ?? actual.cuando)) / 60_000), kb(texto.length), ruta)
   // Contrafactual honesto: sin Toki, Claude habría leído lo que entrega Claude Code (máx. 30 KB).
   const ahorrado = Math.max(0, Math.min(texto.length, LIMITE_CLAUDE_CODE) - linea.length)
-  await sumarAhorro($, ahorrado, comando, agente === undefined)
+  await sumarAhorro($, ahorrado, comando, agente === undefined, 'repetida')
   anotar(comando, 'compactado', x.detalleRepetida, tokensAprox(ahorrado))
   return { stdout: linea, stderr: '' }
 }
@@ -745,6 +894,14 @@ async function refrescarUso($: $, forzar = false): Promise<void> {
       inicio: uso.startedAt,
       esSuscripcion: uso.rateLimits.length > 0,
       reinicios: reiniciosDe(uso.rateLimits),
+    }
+    const costo = uso.cost?.usd
+    if (costo !== undefined && Number.isFinite(costo)) {
+      // Si el costo bajó, la sesión empezó de nuevo: se cuenta desde cero.
+      const delta = costo >= vivo.costoContado ? costo - vivo.costoContado : costo
+      vivo.costoContado = costo
+      if (delta > 0) await alaSemana($, { costo: delta })
+      if (delta > 0) await revisarPresupuesto($)
     }
     await revisarLimites($, ahora)
     // ¿Se compactó a mitad de un turno? El contexto cae de golpe.
@@ -1121,7 +1278,7 @@ async function resumirBusquedaShell(
   // Contrafactual honesto, como con las salidas ruidosas: sin Toki, como mucho 30 KB (o la vista previa de 2 KB).
   const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
   const ahorrado = Math.max(0, leidoSinToki - resumen.caracteresDespues)
-  await sumarAhorro($, ahorrado, comando, esPrincipal)
+  await sumarAhorro($, ahorrado, comando, esPrincipal, 'busqueda')
   anotar(comando, 'compactado', tx().detalleCompactado(kb(resumen.caracteresAntes), kb(resumen.caracteresDespues), true), tokensAprox(ahorrado))
   registrarSalidaGrande($, fuente.length)
   return { stdout: resumen.texto, stderr: copia.existe ? '' : r.stderr }
@@ -1526,7 +1683,7 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   })
   let modo = decidirInterfaz(ruta.modo, p, ruta.silenciado || silenciar)
   // Modo ahorro por límite (lo elegiste al 90 %): la opción barata, sin preguntar, hasta que se renueve.
-  const enAhorro = guardia.ahorroHasta > (await $.clock.now())
+  const enAhorro = guardia.ahorroHasta > (await $.clock.now()) || tarea.p?.ahorro === true
   const ahorro = enAhorro ? p.opciones.find(o => o.tipo === 'ahorro') : undefined
   if (enAhorro) modo = ahorro !== undefined && !igual(ahorro, p.actual) && ahorro.usd <= p.actual.usd ? 'auto' : 'nada'
   ruta.ultima = { nivel, motivo, actual: p.actual, recomendada: p.recomendada, decision: modo === 'nada' ? (igual(p.recomendada, p.actual) ? 'ya-va-asi' : 'callado') : modo }
@@ -1768,7 +1925,7 @@ async function guardiaPegado($: $, texto: string): Promise<{ texto: string; sile
     $.ui.log(`Toki, pegado: ${String(err)}`, { to: 'debug' })
     return { texto, silenciar: true }
   }
-  await sumarAhorro($, texto.length - recorte.texto.length, vivo.idioma === 'en' ? 'pasted text' : 'texto pegado')
+  await sumarAhorro($, texto.length - recorte.texto.length, vivo.idioma === 'en' ? 'pasted text' : 'texto pegado', true, 'pegado')
   return { texto: recorte.texto, silenciar: true }
 }
 
@@ -1776,6 +1933,8 @@ async function guardiaPegado($: $, texto: string): Promise<{ texto: string; sile
 async function guardiasAntesDeEnviar($: $, textoCrudo: string): Promise<ResultadoGuardia> {
   const texto = quitarEtiquetasDeSistema(textoCrudo)
   if (!ruta.interactivo || texto === '' || texto.startsWith('/')) return { silenciar: false }
+  const tope = await guardiaPresupuesto($, textoCrudo)
+  if (tope !== undefined) return tope
   if (!config.guardiaLimites && !config.avisoCacheFrio) return { silenciar: false }
   await refrescarUso($, true)
   return (await guardiaLimite($, texto)) ?? (await guardiaFrio($, texto)) ?? { silenciar: false }
@@ -1956,6 +2115,12 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'toki-mapa', description: x.cmdMapa })
     await $.command.register({ name: 'toki-por-que', description: x.cmdPorQue })
     await $.command.register({ name: 'toki-modelo', description: xr().cmd, argumentHint: 'preguntar | siempre | automatico | no' })
+    await $.command.register({
+      name: 'toki-semana',
+      description: vivo.idioma === 'en' ? 'Toki: your weekly savings card' : 'Toki: tu tarjeta semanal de ahorro',
+      argumentHint: vivo.idioma === 'en' ? '[last]' : '[pasada]',
+    })
+    await $.command.register({ name: 'toki-presupuesto', description: xp().cmd, argumentHint: xp().pista })
     ruta.interactivo = e.isInteractive === true
     try {
       const guardado = await $.store.get(CLAVE_MODO_RUTA)
@@ -2003,6 +2168,9 @@ export const register: Register = (on, options) => {
       $.ui.toast(`Toki: ${x.migrado(formatearTokens(migrado))}`, { timeoutMs: 8000 })
     }
     await revisarLogros($)
+    vivo.costoContado = 0
+    await alaSemana($, { sesiones: 1 })
+    if (e.isInteractive) await avisarSemana($, ahora)
     if (e.isInteractive && config.acompanante && vivo.mensaje === undefined) decir(ahora, x.saludo(vivo.total > 0 ? formatearTokens(vivo.total) : undefined, vivo.racha), 'normal', 15_000)
     return next(e)
   })
@@ -2010,6 +2178,7 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     reiniciarSeguimiento()
     if (e.reason === 'clear') {
+      tarea.p = undefined
       reiniciarConversacion()
       reiniciarRuta()
       await update($, sesion, () => SESION_VACIA)
@@ -2204,6 +2373,7 @@ export const register: Register = (on, options) => {
         const nombre = entrada.file_path.split(/[\\/]/).pop() ?? entrada.file_path
         const tg = textosGenerados[vivo.idioma === 'en' ? 'en' : 'es']
         $.ui.toast(tg.toast(nombre), { timeoutMs: 6000 })
+        await alaSemana($, { frenos: 1 })
         return { deny: tg.frenado(nombre, tipo) }
       }
       // En vivo, Claude repetía la lectura entera de inmediato: la segunda trae solo un tramo; la tercera, todo.
@@ -2390,6 +2560,18 @@ export const register: Register = (on, options) => {
     return { text: reporteEnTexto(await reporte($)) }
   })
 
+  on('command.run', { command: 'toki-presupuesto' }, async ($, e) => ({ text: await comandoPresupuesto($, e.args) }))
+
+  on('command.run', { command: 'toki-semana' }, async ($, e) => {
+    const ahora = await $.clock.now()
+    const semanas = await leerSemanasDe($)
+    const pasada = /^(pasada|last|anterior|prev)/i.test(e.args.trim())
+    const actual = lunesDe(ahora)
+    const lunes = pasada ? (Object.keys(semanas).filter(k => k < actual).sort().pop() ?? actual) : actual
+    const historial = await leerHistorial($)
+    return { text: tarjetaSemana(semanas, lunes, ahora, historial, { idioma: vivo.idioma, mostrarCosto: vivo.usoCache?.esSuscripcion !== true, racha: racha(historial, ahora) }) }
+  })
+
   on('command.run', { command: 'toki-por-que' }, async $ => ({ text: await textoDecisiones($) }))
 
   on('command.run', { command: 'toki-modelo' }, async ($, e) => {
@@ -2476,6 +2658,9 @@ export const register: Register = (on, options) => {
             return (
               <Box flexDirection="row" gap={2} alignItems="center" marginBottom={1}>
                 <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={96} height={84} isInteractive />
+                <Svg source={PRUEBA_A} alt="prueba A: webp interactivo" width={96} height={96} isInteractive />
+                <Svg source={PRUEBA_A} alt="prueba A2: webp no interactivo" width={96} height={96} />
+                <Svg source={PRUEBA_B} alt="prueba B: png interactivo" width={96} height={96} isInteractive />
                 <Box flexDirection="column" flexGrow={1}>
                   <Text color="claude" bold>
                     Toki
@@ -2717,6 +2902,8 @@ export const register: Register = (on, options) => {
     const esfuerzoToki = ruta.esfuerzo !== undefined && ruta.turno !== undefined ? ruta.esfuerzo : ruta.pendiente?.esfuerzo
     const partesChip = [ruta.modeloPrincipal !== undefined ? nombreCorto(ruta.modeloPrincipal) : undefined, esfuerzoToki !== undefined ? xr().esfuerzo[esfuerzoToki] : undefined].filter((p): p is string => p !== undefined)
     const chipModelo = partesChip.length > 0 && avisoRuta === undefined ? `${partesChip.join(' · ')} · ${xr().porToki}` : undefined
+    const pctTope = tarea.p !== undefined ? porcentaje(tarea.p, actualDe(tarea.p)) : undefined
+    const chipTope = pctTope !== undefined ? { texto: xp().chip(pctTope), color: pctTope >= 100 ? 'error' : pctTope >= 80 ? 'warning' : 'inactive' } as const : undefined
 
     if (esCompacto) {
       return (
@@ -2732,6 +2919,7 @@ export const register: Register = (on, options) => {
             ~{formatearTokens(s.tokensAhorrados)} {x.ahorrados}
           </Text>
           {conRacha && <Text color="warning">· 🔥{vivo.racha}</Text>}
+          {chipTope !== undefined && <Text color={chipTope.color}>· {chipTope.texto}</Text>}
           {chipModelo !== undefined && <Text dimColor>· {chipModelo}</Text>}
           {avisoRuta !== undefined && (
             <Text color="warning" bold={destello}>
@@ -2782,6 +2970,7 @@ export const register: Register = (on, options) => {
             />
           )}
           <Box flexGrow={1} />
+          {chipTope !== undefined && <Text color={chipTope.color}>{chipTope.texto}</Text>}
           {chipModelo !== undefined && <Text dimColor>{chipModelo}</Text>}
           {botonTamano}
           {botonOcultar}

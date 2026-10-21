@@ -8,7 +8,7 @@
 
 Habla español e inglés. No agrega ni un token fijo a tu contexto.
 
-> Versión 0.6. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+> Versión 0.13. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
 ## Instalación
 
@@ -19,6 +19,21 @@ En una sesión de Claude Code:
 ```
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
+
+## Lo nuevo en 0.13
+
+**Tarjeta semanal.** El primer lunes que abres Claude Code, Toki te avisa que la semana anterior ya está lista. Con `/toki-semana` ves la semana en curso; con `/toki-semana pasada`, la anterior. La tarjeta muestra cuánto ahorró por tipo (salidas compactadas, salidas repetidas, búsquedas, textos pegados), cómo te fue contra la semana previa, relecturas evitadas, lecturas frenadas, tokens leídos, pedidos y sesiones, tu mejor día y tu racha. El costo solo aparece si pagas por token. Cierra con un consejo según tu semana: por ejemplo, si muchos pedidos fueron con contexto largo, usa `/clear` o `/compact` entre tareas.
+
+**Presupuesto por tarea.** `/toki-presupuesto $2` o `/toki-presupuesto 500k` pone un tope a lo que estás haciendo. Toki avisa al 50 % y al 80 % (y la barra muestra `tope 80%`). Si pasas el tope, antes de tu próximo mensaje te pregunta qué hacer:
+
+- seguir en modo ahorro (modelo y esfuerzo más baratos hasta que termine la tarea);
+- subir el tope un 50 %;
+- parar, con tu mensaje de vuelta en el cuadro;
+- quitar el tope.
+
+El tope se borra con `/clear` o con `/toki-presupuesto quitar`. Con suscripción, en tokens es más fiel que en dólares.
+
+**Benchmark con la herramienta oficial.** `evals/` tiene ahora siete casos para `claude plugin eval`, y `evals/benchmark.py` convierte el resultado en una tabla de nota y costo con y sin Toki (ver [Resultados medidos](#resultados-medidos-con-y-sin-toki)).
 
 ## Lo nuevo en 0.12
 
@@ -159,6 +174,8 @@ Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), lo que costó
 - **`/toki`**: el panel con todo lo anterior.
 - **`/toki-por-que`**: los últimos comandos y, para cada uno, si se compactó (y cuánto ahorró), si se rescató algo o por qué no se tocó. Si crees que Toki no está ahorrando, empieza por aquí.
 - **`/toki-modelo`**: qué modelo y esfuerzo eligió para cada mensaje, y el modo (`preguntar`, `siempre`, `automatico`, `no`).
+- **`/toki-semana`** (o `/toki-semana pasada`): la tarjeta de la semana.
+- **`/toki-presupuesto`** `$2` · `500k` · `quitar`: un tope para la tarea actual; sin argumentos, cómo va.
 - **`/toki-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
 - **`/output-style`** → `toki:conciso`: respuestas cortas desde ya.
 
@@ -172,7 +189,22 @@ En `/plugin`, elige Toki y abre su configuración. Puedes apagar cualquier pieza
 
 ## Resultados medidos (con y sin Toki)
 
-Misma pregunta, mismo modelo (Haiku), dos corridas por escenario, tokens de entrada totales que reporta Claude Code (incluye caché):
+**Con `claude plugin eval` (0.13, Opus 5.5, 3 corridas por brazo, costo que informa Claude Code por corrida):**
+
+| Caso | Con Toki | Sin Toki | Ahorro | Nota (con / sin) |
+|---|---|---|---|---|
+| `ruta-trivial`: "Renombra la función sumar a add" | $0.039 | $0.086 | **−54 %** | 100 % / 100 % |
+| `ruta-compleja`: por qué falla un test de citas que se pisan | $0.074 | $0.074 | 0 % | 100 % / 100 % |
+| `lockfile-version`: qué versión hay en un `package-lock.json` de 200 KB | $0.066 | $0.066 | 0 % | 100 % / 100 % |
+
+En la tarea mecánica, Toki la mandó en Sonnet con esfuerzo bajo, sin perder la respuesta. En la que pide razonar, no bajó nada. En el lockfile, Opus fue directo a Grep, así que Toki no tuvo que frenar nada. Los casos con Bash (`test-con-fallo`, `tail-esconde-error`, `salida-enorme`, `busqueda-enorme`) necesitan el sandbox del sistema: se corren en macOS o Linux con bubblewrap:
+
+```bash
+claude plugin eval . --scaffold --trust-plugin --allow-tools Edit "Bash(npm *)" "Bash(grep *)" --runs 3 --json evals/results/r.json
+python3 evals/benchmark.py evals/results/r.json
+```
+
+**Antes, a mano con `claude -p`:** misma pregunta, mismo modelo (Haiku), dos corridas por escenario, tokens de entrada totales que reporta Claude Code (incluye caché):
 
 | Escenario | Sin Toki | Con Toki | Diferencia |
 |---|---|---|---|
@@ -188,7 +220,7 @@ Las **relecturas evitadas** son otra cuenta, aparte: lo que Toki sacó del conte
 
 Lo que la barra muestra como "ahorrado" es la diferencia entre lo que Claude habría leído sin Toki (como máximo 30 KB, o la vista previa de 2 KB cuando Claude Code guarda la salida en un archivo) y lo que leyó con él, a ~4 caracteres por token. Es una estimación conservadora y siempre lleva "~": los rescates y los turnos evitados no se suman.
 
-En `evals/` hay una suite para `claude plugin eval`, que corre cada caso con y sin el plugin y califica el resultado (necesita el sandbox del sistema; en macOS viene incluido).
+En `evals/` está la suite para `claude plugin eval`: corre cada caso con y sin el plugin y califica el resultado. `evals/README.md` explica cada caso.
 
 ## Límites conocidos
 
@@ -215,6 +247,8 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **Before you send (0.9).** If the cache expired (1 h on a subscription, 5 min on the API) and the conversation is over 60k tokens, Toki asks first and shows the cost, in normal messages or in dollars. You can compact and send (Toki resends your message), send as is, or start fresh: `/clear`, with your message put back in the box with a note of the task. On a subscription, Toki projects when your 5-hour and weekly limits run out at your current pace. It warns once if a limit runs out before it resets. At 90% it offers a saving mode until the reset.
 - Settings: **Compact at…** (200k, 300k, 400k, 500k, or "no" to keep Claude Code's); if you already chose a window, Toki leaves it alone.
 - Measured with Haiku: when Claude cuts test output with `| tail` and the failure sits in the middle, the same task used **half the tokens** with Toki (93.1k vs 184.6k–192.6k) and needed one command instead of three. With a 1.6 MB output, 88.1k vs 134.2k–179.9k.
+- **Weekly card and per-task budget (0.13).** On the first Monday of the week Toki tells you last week's card is ready: `/toki-semana` shows the current week and `/toki-semana last` the previous one. The card shows savings by type, the change against the week before, and one tip. `/toki-presupuesto $2` or `/toki-presupuesto 500k` caps the task at hand. Toki warns at 50% and 80%. Past the cap, it asks before your next message: go on in saving mode, raise the cap 50%, stop, or remove it.
+- Measured with `claude plugin eval` on Opus: a mechanical rename cost **54% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 
 ## Para desarrollar

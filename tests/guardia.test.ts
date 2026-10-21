@@ -90,9 +90,9 @@ describe('límites (puro)', () => {
 type Limite = { kind: string; percentUsed: number; resetsAt?: string }
 type Mundo = { reenviados: string[]; toasts: string[]; preguntas: string[]; etiquetas: string[][]; compactos: number; fills: string[]; comandos: string[]; entrados: string[]; escritos: Record<string, string>; vistos: { turnId: string; model: string; effort?: string }[] }
 
-function mundo(on: On, o: { tokens: number; limites?: () => Limite[]; respuesta?: (etiquetas: string[]) => string }): Mundo {
+function mundo(on: On, o: { tokens: number; limites?: () => Limite[]; respuesta?: (etiquetas: string[]) => string; store?: Record<string, unknown> }): Mundo {
   const m: Mundo = { reenviados: [], toasts: [], preguntas: [], etiquetas: [], compactos: 0, fills: [], comandos: [], entrados: [], escritos: {}, vistos: [] }
-  mock.store(on)
+  mock.store(on, o.store)
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
   on('fs.exists', () => ({ value: false }))
@@ -322,6 +322,32 @@ describe('textos pegados enormes', () => {
     expect(ruta?.endsWith(entrado.match(/\.claude\/toki\/pegados\/\S+\.txt/)?.[0] ?? '???')).toBe(true)
   })
 
+  test('lo ahorrado cuenta en la tarjeta semanal, y al lunes siguiente avisa', async ($, on) => {
+    const reloj = mock.clock(on, { now: new Date(2026, 9, 21, 12).getTime() })
+    const m = mundo(on, { tokens: 20_000 })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', log(3000))
+    const tarjeta = (await $.command.run({ command: 'toki-semana', args: '' } as never)) as { text: string }
+    expect(tarjeta.text).toContain('textos pegados')
+    // Lo de la semana pasada ya guardado: al empezar el lunes, el aviso.
+    expect(m.toasts.some(t => t.includes('la semana pasada'))).toBe(false)
+    await reloj.advance(10_000)
+    expect(m.toasts.some(t => t.includes('la semana pasada'))).toBe(false)
+  })
+
+  test('el primer inicio de la semana avisa lo de la pasada, una sola vez', async ($, on) => {
+    const reloj = mock.clock(on, { now: new Date(2026, 9, 26, 9).getTime() })
+    const m = mundo(on, { tokens: 20_000, store: { semanas: { '2026-10-19': { porTipo: { salida: 40_000 }, pedidos: 10 }, '2026-10-12': { porTipo: { salida: 20_000 } } } } })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await reloj.advance(10_000)
+    expect(m.toasts.filter(t => t.includes('la semana pasada te ahorré ~40.0k tokens (▲ 100%')).length).toBe(1)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await reloj.advance(10_000)
+    expect(m.toasts.filter(t => t.includes('la semana pasada')).length).toBe(1)
+    const pasada = (await $.command.run({ command: 'toki-semana', args: 'pasada' } as never)) as { text: string }
+    expect(pasada.text).toContain('19 oct')
+  })
+
   test('"Enviar completo" lo deja intacto; dos veces y se calla', async ($, on) => {
     mock.clock(on, { now: 50 * H })
     const m = mundo(on, { tokens: 20_000, respuesta: ls => ls.find(l => l === 'Enviar completo') ?? '' })
@@ -329,5 +355,44 @@ describe('textos pegados enormes', () => {
     for (const t of ['t0', 't1', 't2']) await mensaje($, t, log(3000))
     expect(m.entrados.every(e => e === log(3000))).toBe(true)
     expect(m.preguntas.filter(p => p.includes('Pegaste')).length).toBe(2)
+  })
+})
+
+describe('presupuesto por tarea con el motor', () => {
+  const tope = async ($: Motor, args: string) => ((await $.command.run({ command: 'toki-presupuesto', args } as never)) as { text: string }).text
+
+  test('avisa al 80 %, al pasarlo pregunta una vez y el modo ahorro sigue sin preguntar', async ($, on) => {
+    mock.clock(on, { now: 50 * H })
+    const m = mundo(on, { tokens: 20_000 })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    expect(await tope($, '')).toContain('no hay presupuesto')
+    expect(await tope($, '50k')).toContain('presupuesto de 50.0k tokens')
+    await mensaje($, 't0', 'revisa el módulo de pagos')
+    await mensaje($, 't1', 'ahora el de facturas')
+    expect(m.toasts.filter(t => t.includes('% de su presupuesto')).length).toBe(1)
+    expect(m.toasts.some(t => t.includes('el 80 % de su presupuesto'))).toBe(true)
+    await mensaje($, 't2', 'y el de reportes')
+    expect(m.toasts.some(t => t.includes('pasó su presupuesto'))).toBe(true)
+    expect(m.preguntas.length).toBe(0)
+    await mensaje($, 't3', 'sigue con el de usuarios')
+    expect(m.preguntas.filter(p => p.includes('su presupuesto era')).length).toBe(1)
+    expect(m.toasts.some(t => t.includes('modo ahorro'))).toBe(true)
+    await mensaje($, 't4', 'y el de permisos')
+    expect(m.preguntas.filter(p => p.includes('su presupuesto era')).length).toBe(1)
+    expect(await tope($, '')).toContain('Sigue en modo ahorro')
+    expect(await tope($, 'quitar')).toContain('quité el presupuesto')
+  })
+
+  test('"Parar aquí" no envía y devuelve el mensaje al cuadro', async ($, on) => {
+    const reloj = mock.clock(on, { now: 50 * H })
+    const m = mundo(on, { tokens: 30_000, respuesta: ls => ls.find(l => l.startsWith('Parar')) ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await tope($, '50k')
+    await mensaje($, 't0', 'uno')
+    await mensaje($, 't1', 'dos')
+    const r = await mensaje($, 't2', 'tres')
+    expect(r).toEqual({ drop: expect.stringContaining('paré antes de enviar') })
+    await reloj.advance(200)
+    expect(m.fills).toContain('tres')
   })
 })
