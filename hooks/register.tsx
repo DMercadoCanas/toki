@@ -62,16 +62,36 @@ import {
   vacio,
 } from './memoria'
 import type { Decision, Motivo, PuntoDeControl } from './memoria'
+import {
+  alCompactar,
+  contarPedido,
+  contarTemprana,
+  decidirVentana,
+  esRepetida,
+  GASTO_VACIO,
+  huella,
+  iniciarTemprana,
+  leerVentana,
+  MIN_REPETIDA,
+  porcentajeRelectura,
+  RELECTURAS_VACIAS,
+  retirar,
+  sumarPedido,
+  tamanoDelPedido,
+  totalGasto,
+} from './gasto'
+import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.6.0'
+export const VERSION = '0.7.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
 
-const SESION_VACIA: Sesion = { tokensAhorrados: 0, compactaciones: 0, bucles: 0, ultimaActividad: 0, llamadas: 0 }
+const SESION_VACIA: Sesion = { tokensAhorrados: 0, compactaciones: 0, bucles: 0, ultimaActividad: 0, llamadas: 0, relecturasEvitadas: 0 }
 const sesion = atom({ plugin: 'toki', key: 'sesion' } as const, SESION_VACIA)
+const gasto = atom({ plugin: 'toki', key: 'gasto' } as const, GASTO_VACIO)
 const oculto = atom({ plugin: 'toki', key: 'oculto' } as const, false)
 const compacto = atom({ plugin: 'toki', key: 'compacto' } as const, false)
 const detalles = atom({ plugin: 'toki', key: 'detalles' } as const, false)
@@ -86,12 +106,19 @@ const CLAVE_HISTORIAL = 'historialDiario'
 const CLAVE_LOGROS = 'logros'
 const CLAVE_IDIOMA = 'idiomaDetectado'
 const CLAVE_MIGRADO = 'migradoDesdeAhorroTokens'
+const CLAVE_RELECTURAS = 'relecturasEvitadasTotal'
+/** El valor que Toki puso en la variable, para no confundirlo con uno tuyo. */
+const CLAVE_VENTANA = 'ventanaPuestaPorToki'
+/** La ventana que Claude Code usaría sin Toki, por modelo. */
+const CLAVE_VENTANA_NATIVA = 'ventanaNativa'
 const RANURAS = 40
 /** Lo que Claude Code entrega de una salida exitosa sin ayuda: 30 KB. */
 const LIMITE_CLAUDE_CODE = 30_000
 const HORAS_MAPA_VIGENTE = 24
 /** Por debajo de esto, una compactación o un cambio de modelo cuestan poco: Toki no avisa. */
 const CONTEXTO_RELEVANTE = 20_000
+/** Desde aquí cada mensaje relee mucho: Toki le pide a Claude respuestas más concisas. */
+const UMBRAL_CONCISO = 150_000
 
 /** Las opciones de /plugin, leídas al registrar. */
 const config = {
@@ -102,6 +129,9 @@ const config = {
   conciso: true,
   mantenerCache: false,
   idioma: 'auto',
+  /** Tokens a los que Claude Code compacta; 0 = no tocar la de Claude Code. */
+  ventana: 300_000,
+  repetidas: true,
 }
 
 // Estado vivo del acompañante (se pierde al recargar el plugin; es efímero a propósito).
@@ -122,7 +152,7 @@ const vivo: {
   tokensVistos?: number
   ultimoAhorro?: { tokens: number; comando: string }
   bucleReciente: boolean
-  usoCache?: { pct?: number; tokens?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean }
+  usoCache?: { pct?: number; ventana: number; tokens?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean }
   usoLeido: number
   silencioPesadoHasta: number
   lecciones: Leccion[]
@@ -157,6 +187,20 @@ const vivo: {
   panelDibujado: boolean
   racha: number
   total: number
+  /** Lo que Toki sacó del contexto y Claude habría releído en cada pedido. */
+  relecturas: Relecturas
+  /** Una compactación que Toki adelantó: lo que se ahorra en los pedidos siguientes. */
+  temprana?: Temprana
+  /** La ventana a la que Claude Code compacta ahora, y de quién es. */
+  ventana?: number
+  ventanaNativa?: number
+  ventanaFuente?: 'toki' | 'tuya' | 'nativa'
+  /** El pedido más grande desde la última compactación (el tamaño "antes"). */
+  contextoMax: number
+  /** Tamaño del último pedido del hilo principal. */
+  contextoPedido?: number
+  /** La última salida de cada comando, para notar una idéntica. */
+  repetidas: Record<string, Repetida>
 } = {
   idioma: 'es',
   idiomaFijo: false,
@@ -195,6 +239,9 @@ const vivo: {
   panelDibujado: false,
   racha: 0,
   total: 0,
+  relecturas: RELECTURAS_VACIAS,
+  contextoMax: 0,
+  repetidas: {},
 }
 
 function tx(): Textos {
@@ -497,10 +544,12 @@ async function revisarLogros($: $, extra: { memoria?: boolean; rescate?: boolean
   }
 }
 
-async function sumarAhorro($: $, caracteres: number, comando: string): Promise<void> {
+async function sumarAhorro($: $, caracteres: number, comando: string, principal = true): Promise<void> {
   const tokens = tokensAprox(caracteres)
   await update($, sesion, s => ({ ...s, tokensAhorrados: s.tokensAhorrados + tokens, compactaciones: s.compactaciones + 1 }))
   if (tokens <= 0) return
+  // Lo que salió del contexto principal ya no se relee en los pedidos siguientes.
+  if (principal) vivo.relecturas = retirar(vivo.relecturas, tokens)
   const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
   await $.store.set(CLAVE_TOTAL, total + tokens)
   const ahora = await $.clock.now()
@@ -511,6 +560,134 @@ async function sumarAhorro($: $, caracteres: number, comando: string): Promise<v
   if ((await revisarLogros($)).length === 0) sonar($, 'ahorro')
 }
 
+/** Relecturas evitadas: en la sesión y en el histórico. Puede ser negativo (lo que cuesta compactar). */
+async function sumarRelecturas($: $, tokens: number): Promise<void> {
+  if (tokens === 0) return
+  await update($, sesion, s => ({ ...s, relecturasEvitadas: (s.relecturasEvitadas ?? 0) + tokens }))
+  const total = Number((await $.store.get(CLAVE_RELECTURAS)) ?? 0)
+  await $.store.set(CLAVE_RELECTURAS, total + tokens)
+}
+
+/** Cada pedido al modelo: lo que costó de verdad y lo que Toki evitó que se releyera. */
+async function alPedido($: $, subagente: boolean, u: UsoPedido): Promise<void> {
+  await update($, gasto, g => sumarPedido(g, u, subagente))
+  if (subagente) return
+  const contexto = tamanoDelPedido(u)
+  if (contexto <= 0) return
+  const anterior = vivo.contextoPedido
+  vivo.contextoPedido = contexto
+  // El pedido cayó a menos de la mitad del anterior: se compactó.
+  if (anterior !== undefined && anterior >= CONTEXTO_RELEVANTE && contexto < anterior * 0.5) await registrarCompactacion($, 'caida')
+  vivo.contextoMax = Math.max(vivo.contextoMax, contexto)
+  const c = contarPedido(vivo.relecturas)
+  vivo.relecturas = c.r
+  const tt = contarTemprana(vivo.temprana, contexto)
+  vivo.temprana = tt.t
+  await sumarRelecturas($, c.evitadas + tt.evitadas)
+}
+
+/**
+ * Con Opus o Sonnet de 1M, Claude Code no compacta hasta ~500k-967k, y cada
+ * mensaje relee todo eso. Toki baja la ventana (CLAUDE_CODE_AUTO_COMPACT_WINDOW)
+ * a la elegida, salvo que tú ya hayas elegido otra. Probado con sesiones reales:
+ * Claude Code la respeta si se pone en session.start, antes del primer turno;
+ * puesta a mitad de un turno, /context la muestra pero ese turno no compacta.
+ */
+async function ajustarVentana($: $, avisar: boolean): Promise<void> {
+  try {
+    const modelo = vivo.modelo ?? 'modelo'
+    const claveNativa = `${CLAVE_VENTANA_NATIVA}:${modelo}`
+    const leer = async () => (await $.session.usage({ breakdown: 'summary' })).context
+    const ctx = await leer()
+    const b = ctx.breakdown
+    const envActual = await $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')
+    const puesta = (await $.store.get(CLAVE_VENTANA)) as string | undefined
+    const esDeToki = envActual !== undefined && envActual !== '' && envActual === puesta
+    // Si la variable es de Toki, lo que se ve es la ventana de Toki: la nativa es la guardada.
+    const guardada = Number((await $.store.get(claveNativa)) ?? 0)
+    const nativa = esDeToki ? (guardada > 0 ? guardada : undefined) : b?.rawMaxTokens
+    const decision = decidirVentana({ elegida: config.ventana, nativa, fuente: b?.autocompactSource, envActual, puestaPorToki: puesta })
+    if (decision.poner === undefined) {
+      if (decision.motivo === 'apagado' && esDeToki) {
+        await $.env.set('CLAUDE_CODE_AUTO_COMPACT_WINDOW', undefined)
+        const otra = await leer()
+        vivo.ventana = otra.breakdown?.rawMaxTokens ?? otra.window
+        vivo.ventanaNativa = vivo.ventana
+        vivo.ventanaFuente = 'nativa'
+      } else if (decision.motivo === 'sin-datos') {
+        // Aún sin desglose: se reintenta al empezar el próximo turno.
+        vivo.ventana = ctx.window
+        vivo.ventanaFuente = undefined
+      } else {
+        vivo.ventana = b?.rawMaxTokens ?? ctx.window
+        vivo.ventanaNativa = nativa ?? vivo.ventana
+        vivo.ventanaFuente = decision.motivo === 'tuya' ? 'tuya' : esDeToki ? 'toki' : 'nativa'
+      }
+      void anotarDiagnostico($, `ventana: ${decision.motivo}, compacta a ${vivo.ventana} (nativa ${vivo.ventanaNativa})`)
+      return
+    }
+    const r = await $.env.set('CLAUDE_CODE_AUTO_COMPACT_WINDOW', String(decision.poner))
+    if (r.deny !== undefined) {
+      vivo.ventana = b?.rawMaxTokens ?? ctx.window
+      vivo.ventanaNativa = vivo.ventana
+      vivo.ventanaFuente = 'nativa'
+      void anotarDiagnostico($, `ventana: no se pudo poner (${r.deny})`)
+      return
+    }
+    await $.store.set(CLAVE_VENTANA, String(decision.poner))
+    if (!esDeToki && nativa !== undefined) await $.store.set(claveNativa, nativa)
+    // Claude Code la limita a la ventana del modelo: se lee la que quedó de verdad.
+    const efectiva = (await leer()).breakdown?.rawMaxTokens ?? decision.poner
+    vivo.ventana = efectiva
+    vivo.ventanaNativa = nativa ?? efectiva
+    vivo.ventanaFuente = efectiva === decision.poner && (nativa ?? 0) > efectiva ? 'toki' : 'nativa'
+    void anotarDiagnostico($, `ventana: compacta a ${efectiva} (Claude Code: ${nativa ?? '?'})`)
+    if (avisar && !esDeToki && vivo.ventanaFuente === 'toki') {
+      $.ui.toast(tx().toastVentana(formatearTokens(efectiva), formatearTokens(vivo.ventanaNativa)), { timeoutMs: 9000 })
+    }
+  } catch (err) {
+    void anotarDiagnostico($, `ventana: sin cambios (${String(err)})`)
+  }
+}
+
+/**
+ * La misma salida otra vez (git status, un build o un test sin cambios): en
+ * vez de repetirla, una línea que dice que no cambió y dónde está la copia.
+ * La salida anterior sigue en el contexto (no hubo compactación desde entonces).
+ */
+async function revisarRepetida(
+  $: $,
+  herramienta: string,
+  comando: string,
+  agente: string | undefined,
+  r: SalidaShell | undefined,
+  captura: Captura | undefined,
+): Promise<{ stdout: string; stderr: string } | undefined> {
+  if (!config.repetidas || r === undefined) return undefined
+  if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) return undefined
+  const texto = r.stderr ? `${r.stdout}\n${r.stderr}` : r.stdout
+  if (texto.length < MIN_REPETIDA) return undefined
+  const clave = `${agente ?? 'main'}|${herramienta}|${comando.trim()}`
+  const actual: Repetida = { huella: huella(texto), cuando: await $.clock.now(), epoca: vivo.compactaciones }
+  const previa = vivo.repetidas[clave]
+  if (!esRepetida(previa, actual, texto.length)) {
+    const claves = Object.keys(vivo.repetidas)
+    const recientes = claves.length >= 60 ? Object.fromEntries(claves.slice(-40).map(k => [k, vivo.repetidas[k] as Repetida])) : vivo.repetidas
+    vivo.repetidas = { ...recientes, [clave]: actual }
+    return undefined
+  }
+  const copia = await leerCaptura($, captura)
+  const ruta = copia.existe && captura !== undefined ? captura.ruta : await archivar($, texto)
+  if (ruta === undefined) return undefined
+  const x = tx()
+  const linea = x.salidaRepetida(Math.round((actual.cuando - (previa?.cuando ?? actual.cuando)) / 60_000), kb(texto.length), ruta)
+  // Contrafactual honesto: sin Toki, Claude habría leído lo que entrega Claude Code (máx. 30 KB).
+  const ahorrado = Math.max(0, Math.min(texto.length, LIMITE_CLAUDE_CODE) - linea.length)
+  await sumarAhorro($, ahorrado, comando, agente === undefined)
+  anotar(comando, 'compactado', x.detalleRepetida, tokensAprox(ahorrado))
+  return { stdout: linea, stderr: '' }
+}
+
 /** Lee las cifras de la sesión como máximo cada 5 s (es la misma llamada barata de la status line). */
 async function refrescarUso($: $, forzar = false): Promise<void> {
   const ahora = await $.clock.now()
@@ -519,8 +696,11 @@ async function refrescarUso($: $, forzar = false): Promise<void> {
   try {
     const uso = await $.session.usage()
     const limite = (kind: string) => uso.rateLimits.find(r => r.kind === kind)?.percentUsed
+    // El % que importa es contra la ventana a la que se compacta, no contra el millón del modelo.
+    const ventana = vivo.ventana ?? uso.context.window
     vivo.usoCache = {
-      pct: uso.context.percent,
+      pct: uso.context.tokens !== undefined && ventana > 0 ? Math.round((uso.context.tokens / ventana) * 100) : uso.context.percent,
+      ventana,
       tokens: uso.context.tokens,
       cincoHoras: limite('five_hour'),
       semana: limite('seven_day'),
@@ -616,6 +796,18 @@ async function registrarCompactacion($: $, origen: 'marca' | 'turno' | 'resumen'
   vivo.ultimaCompactacion = ahora
   vivo.compactaciones += 1
   vivo.tokensVistos = undefined
+  // Lo de antes ya no está en el contexto: no hay relecturas que evitar ni salidas que repetir.
+  const antes = vivo.contextoMax
+  vivo.contextoMax = 0
+  vivo.relecturas = alCompactar()
+  vivo.repetidas = {}
+  vivo.temprana = undefined
+  // ¿La adelantó la ventana de Toki? Claude Code no habría compactado hasta la nativa.
+  if (vivo.ventanaFuente === 'toki' && vivo.ventana !== undefined && vivo.ventanaNativa !== undefined && antes >= vivo.ventana * 0.7 && antes < vivo.ventanaNativa * 0.9) {
+    const inicio = iniciarTemprana(antes, vivo.ventanaNativa)
+    vivo.temprana = inicio.t
+    await sumarRelecturas($, inicio.evitadas)
+  }
   const x = tx()
   const conMemoria = config.memoria && !estaVacia(vivo.memoria)
   if (conMemoria) {
@@ -670,6 +862,8 @@ async function revisarModelo($: $): Promise<void> {
   const anterior = vivo.modelo
   vivo.modelo = modelo
   if (anterior === undefined || anterior === modelo) return
+  // Otro modelo, otra ventana: se vuelve a calcular a cuánto compacta.
+  await ajustarVentana($, false)
   await avisarCambioModelo($, anterior, modelo, vivo.tokensUltimoTurno, undefined)
 }
 
@@ -797,7 +991,7 @@ async function despuesDeEjecutar($: $, comando: string, fallo: boolean, texto: s
 }
 
 /** Un comando que falló: Claude Code solo entrega ~10 KB, y el error suele estar al final. */
-async function compactarFallo($: $, comando: string, texto: string, captura: Captura | undefined): Promise<string | undefined> {
+async function compactarFallo($: $, comando: string, texto: string, captura: Captura | undefined, principal = true): Promise<string | undefined> {
   const idioma = vivo.idioma
   const copia = await leerCaptura($, captura)
   const salida = texto.match(/^(Exit code \d+)\n?/)
@@ -814,7 +1008,7 @@ async function compactarFallo($: $, comando: string, texto: string, captura: Cap
   }
   // Contrafactual honesto: sin Toki, Claude habría leído lo que entregó Claude Code.
   const ahorrado = Math.max(0, texto.length - c.caracteresDespues - 200)
-  await sumarAhorro($, ahorrado, comando)
+  await sumarAhorro($, ahorrado, comando, principal)
   anotar(comando, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), copia.existe), tokensAprox(ahorrado))
   registrarSalidaGrande($, cuerpo.length)
   return [salida?.[1], encabezado(c, ruta, copia.existe, tokensAprox(ahorrado), idioma), c.texto].filter(Boolean).join('\n')
@@ -826,6 +1020,7 @@ async function compactarExito(
   comando: string,
   r: SalidaShell,
   captura: Captura | undefined,
+  esPrincipal = true,
 ): Promise<{ stdout: string; stderr: string } | undefined> {
   const idioma = vivo.idioma
   if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) {
@@ -852,7 +1047,7 @@ async function compactarExito(
   const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
   const leidoConToki = (cOut?.caracteresDespues ?? 0) + (cErr?.caracteresDespues ?? 0) + 300
   const ahorrado = Math.max(0, leidoSinToki - leidoConToki)
-  await sumarAhorro($, ahorrado, comando)
+  await sumarAhorro($, ahorrado, comando, esPrincipal)
   anotar(comando, 'compactado', tx().detalleCompactado(kb(principal.caracteresAntes), kb(principal.caracteresDespues), copia.existe), tokensAprox(ahorrado))
   registrarSalidaGrande($, fuente.length)
   const cabecera = encabezado(principal, ruta, copia.existe, tokensAprox(ahorrado), idioma)
@@ -955,6 +1150,36 @@ type Reporte = {
   sugerencias: string[]
   lecciones: Leccion[]
   hayMapa: boolean
+  gasto: Gasto
+  relecturasTotal: number
+  ventanaTexto?: string
+  porQueCero?: string
+}
+
+/** A cuánto compacta Claude Code ahora, y quién lo decidió. */
+function textoVentana(x: Textos): string | undefined {
+  if (vivo.ventana === undefined || vivo.ventanaFuente === undefined) return undefined
+  const v = formatearTokens(vivo.ventana)
+  if (vivo.ventanaFuente === 'toki') return x.ventanaToki(v, formatearTokens(vivo.ventanaNativa ?? vivo.ventana))
+  if (vivo.ventanaFuente === 'tuya') return x.ventanaTuya(v)
+  return x.ventanaNativa(v)
+}
+
+/** Lo que costó la sesión, con las cifras que la API reportó pedido por pedido. */
+function lineasGasto(x: Textos, g: Gasto): string[] {
+  if (g.pedidos === 0) return []
+  const lineas = [
+    x.gastoLinea(formatearTokens(g.cacheLeido), porcentajeRelectura(g), formatearTokens(g.cacheEscrito), formatearTokens(g.entrada), formatearTokens(g.salida)),
+    x.gastoPedidos(g.pedidos, formatearTokens(Math.round((g.entrada + g.cacheLeido + g.cacheEscrito) / g.pedidos))),
+  ]
+  if (g.subPedidos > 0) lineas.push(x.gastoSub(g.subPedidos, formatearTokens(g.subTokens)))
+  return lineas
+}
+
+/** Si Toki no recortó nada pero la sesión gastó bastante, explica dónde se fue. */
+function explicarCero(x: Textos, s: Sesion, g: Gasto): string | undefined {
+  if (s.tokensAhorrados > 0 || totalGasto(g) < 100_000) return undefined
+  return x.porQueCero(formatearTokens(g.cacheLeido), porcentajeRelectura(g))
 }
 
 async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
@@ -976,11 +1201,17 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
     sugerencias: [],
     lecciones: vivo.lecciones,
     hayMapa: await $.fs.exists(RUTA_MAPA).catch(() => false),
+    gasto: await read($, gasto),
+    relecturasTotal: Math.max(0, Number((await $.store.get(CLAVE_RELECTURAS)) ?? 0)),
+    ventanaTexto: textoVentana(x),
   }
+  r.porQueCero = explicarCero(x, s, r.gasto)
   try {
     const uso = await $.session.usage({ breakdown: 'summary' })
-    const pct = uso.context.percent
-    r.contexto = { pct, ventana: uso.context.window, costo: uso.cost?.usd, esSuscripcion: uso.rateLimits.length > 0 }
+    // El % contra la ventana a la que de verdad se compacta.
+    const ventana = vivo.ventana ?? uso.context.breakdown?.rawMaxTokens ?? uso.context.window
+    const pct = uso.context.tokens !== undefined && ventana > 0 ? Math.round((uso.context.tokens / ventana) * 100) : uso.context.percent
+    r.contexto = { pct, ventana, costo: uso.cost?.usd, esSuscripcion: uso.rateLimits.length > 0 }
     const desglose = uso.context.breakdown
     if (desglose !== undefined) {
       r.ocupan = desglose.categories
@@ -1004,16 +1235,24 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
   return r
 }
 
-function textoDecisiones(): string {
+async function textoDecisiones($: $): Promise<string> {
   const x = tx()
-  if (vivo.decisiones.length === 0) return x.sinComandos
+  const s = await read($, sesion)
+  const g = await read($, gasto)
+  const cuentas = [...lineasGasto(x, g)]
+  if ((s.relecturasEvitadas ?? 0) > 0) cuentas.push(x.relecturasLinea(formatearTokens(s.relecturasEvitadas)))
+  const ventana = textoVentana(x)
+  if (ventana !== undefined) cuentas.push(ventana)
+  const cero = explicarCero(x, s, g)
+  const pie = [...(cero !== undefined ? ['', cero] : []), ...(cuentas.length > 0 ? ['', `${x.gastoTitulo}:`, ...cuentas.map(l => `  ${l}`)] : [])]
+  if (vivo.decisiones.length === 0) return [x.sinComandos, ...pie].join('\n')
   const lineas = [x.decisionesTitulo]
   for (const d of [...vivo.decisiones].reverse()) {
     const extra = d.ahorro !== undefined ? ` (${x.tokensAhorradosCorto(formatearTokens(d.ahorro))})` : ''
     const estado = d.resultado === 'compactado' ? x.compactado : d.resultado === 'rescatado' ? x.rescatado : x.sinCambio
     lineas.push(`  ${marcaDecision(d)} ${d.comando}`, `      ${estado}: ${d.motivo}${extra}`)
   }
-  lineas.push('', x.decisionesPie)
+  lineas.push('', x.decisionesPie, ...pie)
   return lineas.join('\n')
 }
 
@@ -1037,6 +1276,14 @@ function reporteEnTexto(r: Reporte): string {
     lineas.push(x.contextoLinea(r.contexto.pct === undefined ? x.sinDatos : `${r.contexto.pct}% ${x.usado}`, formatearTokens(r.contexto.ventana)))
   }
   if (vivo.pingsTotales > 0) lineas.push(x.cacheMantenido(vivo.pingsTotales, formatearTokens(vivo.tokensLeidosPing)))
+  const cuentas = lineasGasto(x, r.gasto)
+  if ((r.sesion.relecturasEvitadas ?? 0) > 0) cuentas.push(x.relecturasLinea(formatearTokens(r.sesion.relecturasEvitadas)))
+  if (r.ventanaTexto !== undefined) cuentas.push(r.ventanaTexto)
+  if (r.porQueCero !== undefined) cuentas.push(r.porQueCero)
+  if (cuentas.length > 0) {
+    lineas.push('', `${x.gastoTitulo}:`)
+    for (const l of cuentas) lineas.push(`  ${l}`)
+  }
   if (r.ocupan.length > 0) {
     lineas.push('', `${x.queOcupa}:`)
     for (const c of r.ocupan) lineas.push(`  ${c.nombre}: ~${formatearTokens(c.tokens)}`)
@@ -1078,6 +1325,11 @@ function reiniciarSeguimiento(): void {
   vivo.pingsEnPausa = 0
   vivo.apagadoEnPausa = false
   vivo.modeloUltimoTurno = undefined
+  vivo.contextoPedido = undefined
+  vivo.contextoMax = 0
+  vivo.relecturas = RELECTURAS_VACIAS
+  vivo.temprana = undefined
+  vivo.repetidas = {}
 }
 
 // ---------- Registro ----------
@@ -1090,6 +1342,8 @@ export const register: Register = (on, options) => {
   config.conciso = options['concisoAutomatico'] !== false
   config.mantenerCache = options['mantenerCache'] === true
   config.idioma = typeof options['idioma'] === 'string' ? options['idioma'] : 'auto'
+  config.ventana = leerVentana(options['ventanaCompactacion'])
+  config.repetidas = options['salidasRepetidas'] !== false
   vivo.sonidos = options['sonidos'] !== false
   if (config.idioma === 'es' || config.idioma === 'en') {
     vivo.idioma = config.idioma
@@ -1127,6 +1381,8 @@ export const register: Register = (on, options) => {
     } catch {
       // Sin modelo aún.
     }
+    // Claude Code lee la ventana de compactación al empezar: puesta a mitad de un turno no cuenta.
+    await ajustarVentana($, e.isInteractive === true)
     // Sesión reanudada: recupera el último punto de control si es reciente.
     if (config.memoria) {
       try {
@@ -1151,6 +1407,7 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear') {
       reiniciarConversacion()
       await update($, sesion, () => SESION_VACIA)
+      await update($, gasto, () => GASTO_VACIO)
       await update($, fallos, () => ({}))
       await update($, avisoMapaDado, () => false)
     }
@@ -1183,8 +1440,22 @@ export const register: Register = (on, options) => {
         vivo.memoria.tareaActual = recortar(texto, LIMITES_MEMORIA.tarea)
       }
       void revisarModelo($)
+      if (vivo.ventanaFuente === undefined) void ajustarVentana($, false)
     }
     return next(e)
+  })
+
+  // Cada pedido al modelo: lo que costó (cifras de la API) y lo que Toki evitó releer.
+  on('turn.step', async function* ($, e, next) {
+    const respuesta = yield* next(e)
+    if (respuesta.usage !== null) {
+      try {
+        await alPedido($, e.agentId !== undefined, respuesta.usage)
+      } catch {
+        // Sin cifras de este pedido: no cambia nada para Claude.
+      }
+    }
+    return respuesta
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -1218,7 +1489,9 @@ export const register: Register = (on, options) => {
       if (uso !== undefined && ahora - uso.inicio > 3 * 3_600_000) {
         vivo.lecciones = agregarLeccion(vivo.lecciones, { clave: 'sesion-larga', texto: x.leccionSesionLarga })
       }
-      if (config.conciso && !vivo.nudgeConciso && (uso?.pct ?? 0) >= 50) {
+      // Por tamaño, no por % de la ventana: con 1M de ventana el 50% llegaba tarde o nunca.
+      const umbralConciso = Math.min(UMBRAL_CONCISO, Math.round((vivo.ventana ?? uso?.ventana ?? 200_000) * 0.5))
+      if (config.conciso && !vivo.nudgeConciso && (uso?.tokens ?? 0) >= umbralConciso) {
         vivo.nudgeConciso = true
         await notaParaClaude($, x.notaConciso)
         $.ui.toast(x.toastConciso, { timeoutMs: 6000 })
@@ -1327,13 +1600,18 @@ export const register: Register = (on, options) => {
       if (compactable) await restaurarLimite($)
     }
     if (ran.deny !== undefined) return ran
+    const principal = e.agentId === undefined
     const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text)
+    if (ran.isError !== true) {
+      const repetida = await revisarRepetida($, 'Bash', comando, e.agentId, ran.result, envuelto)
+      if (repetida !== undefined) return { result: { ...ran.result, ...repetida, persistedOutputPath: undefined, persistedOutputSize: undefined } }
+    }
     if (compactable) {
       if (ran.isError === true) {
-        const texto = await compactarFallo($, comando, ran.text ?? '', captura)
+        const texto = await compactarFallo($, comando, ran.text ?? '', captura, principal)
         if (texto !== undefined) return { deny: aviso !== undefined ? `${texto}\n${aviso}` : texto }
       } else {
-        const nuevo = await compactarExito($, comando, ran.result, captura)
+        const nuevo = await compactarExito($, comando, ran.result, captura, principal)
         if (nuevo !== undefined) return { result: { ...ran.result, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
       }
     }
@@ -1370,13 +1648,18 @@ export const register: Register = (on, options) => {
         if ('persistedOutputSize' in base) resultado['persistedOutputSize'] = undefined
         return { result: resultado }
       }
+      const principal = e.agentId === undefined
+      if (r !== undefined) {
+        const repetida = await revisarRepetida($, 'PowerShell', comando, e.agentId, r, envuelto)
+        if (repetida !== undefined) return conSalida(repetida)
+      }
       if (compactable) {
         if (ran.isError === true) {
-          const texto = await compactarFallo($, comando, ran.text ?? '', captura)
+          const texto = await compactarFallo($, comando, ran.text ?? '', captura, principal)
           if (texto !== undefined) return { deny: aviso !== undefined ? `${texto}\n${aviso}` : texto }
         } else if (r === undefined) anotarMotivo(comando, 'formato')
         else {
-          const nuevo = await compactarExito($, comando, r, captura)
+          const nuevo = await compactarExito($, comando, r, captura, principal)
           if (nuevo !== undefined) return conSalida(nuevo)
         }
       }
@@ -1396,8 +1679,9 @@ export const register: Register = (on, options) => {
     return conAvisoMapa($, 'PowerShell', comando, ran)
   })
 
-  on('tool.call', { tool: 'Grep' }, async ($, e, next) => conAvisoMapa($, 'Grep', undefined, await next(e)))
-  on('tool.call', { tool: 'Glob' }, async ($, e, next) => conAvisoMapa($, 'Glob', undefined, await next(e)))
+  // Grep y Glob no existen en los builds nativos (macOS, Linux): se buscan por nombre.
+  on('tool.call', { tool: /^Grep$/ }, async ($, e, next) => conAvisoMapa($, 'Grep', undefined, await next(e)))
+  on('tool.call', { tool: /^Glob$/ }, async ($, e, next) => conAvisoMapa($, 'Glob', undefined, await next(e)))
 
   // Comandos: /toki, /toki-mapa y /toki-por-que. No dejan instrucciones fijas en el contexto.
   on('command.run', { command: 'toki' }, async $ => {
@@ -1407,7 +1691,7 @@ export const register: Register = (on, options) => {
     return { text: reporteEnTexto(await reporte($)) }
   })
 
-  on('command.run', { command: 'toki-por-que' }, async () => ({ text: textoDecisiones() }))
+  on('command.run', { command: 'toki-por-que' }, async $ => ({ text: await textoDecisiones($) }))
 
   on('command.run', { command: 'toki-mapa' }, async $ => {
     const { archivos, truncado } = await generarMapa($)
@@ -1508,6 +1792,35 @@ export const register: Register = (on, options) => {
             {r.contexto?.costo !== undefined && !r.contexto.esSuscripcion ? ` · $${r.contexto.costo.toFixed(2)}` : ''}
           </Text>
         </Box>
+        {(r.gasto.pedidos > 0 || r.ventanaTexto !== undefined) && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>{x.gastoTitulo}</Text>
+            {lineasGasto(x, r.gasto).map(l => (
+              <Text wrap="wrap">
+                {'  '}
+                {l}
+              </Text>
+            ))}
+            {(r.sesion.relecturasEvitadas ?? 0) > 0 && (
+              <Text color="success" wrap="wrap">
+                {'  '}
+                {x.relecturasLinea(formatearTokens(r.sesion.relecturasEvitadas))}
+              </Text>
+            )}
+            {r.ventanaTexto !== undefined && (
+              <Text dimColor wrap="wrap">
+                {'  '}
+                {r.ventanaTexto}
+              </Text>
+            )}
+            {r.porQueCero !== undefined && (
+              <Text dimColor wrap="wrap">
+                {'  '}
+                {r.porQueCero}
+              </Text>
+            )}
+          </Box>
+        )}
         <Box flexDirection="column" marginTop={1}>
           <Text bold color={r.racha > 0 ? 'warning' : 'text'}>
             {r.racha > 0 ? x.rachaDias(r.racha) : x.rachaNinguna}
@@ -1729,6 +2042,7 @@ export const register: Register = (on, options) => {
           <Text dimColor>{x.contexto}</Text>
           <Text color={colorDePorcentaje(pct)} mono>
             {barra(pct, anchoBarra)} {pctTexto}
+            {!angosto && uso !== undefined ? ` ${x.deVentana(formatearTokens(uso.ventana))}` : ''}
           </Text>
           <Text dimColor>·</Text>
           <Text dimColor>{x.cache}</Text>
@@ -1741,6 +2055,13 @@ export const register: Register = (on, options) => {
           <Text color="success" bold>
             ~{formatearTokens(s.tokensAhorrados)}
           </Text>
+          {(s.relecturasEvitadas ?? 0) > 0 && !angosto && (
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor>·</Text>
+              <Text dimColor>{x.relecturas}</Text>
+              <Text color="success">~{formatearTokens(s.relecturasEvitadas)}</Text>
+            </Box>
+          )}
           {conRacha && !angosto && (
             <Box flexDirection="row" gap={1}>
               <Text dimColor>·</Text>

@@ -195,6 +195,20 @@ export type Textos = {
   mapaModulos: string
   mapaArchivos: string
   logroNombres: Record<string, string>
+  gastoTitulo: string
+  gastoLinea: (leido: string, pct: number, escrito: string, nueva: string, salida: string) => string
+  gastoPedidos: (pedidos: number, promedio: string) => string
+  gastoSub: (pedidos: number, tokens: string) => string
+  relecturasLinea: (tokens: string) => string
+  relecturas: string
+  ventanaToki: (ventana: string, nativa: string) => string
+  ventanaTuya: (ventana: string) => string
+  ventanaNativa: (ventana: string) => string
+  toastVentana: (ventana: string, nativa: string) => string
+  deVentana: (ventana: string) => string
+  salidaRepetida: (minutos: number, tamano: string, ruta: string) => string
+  detalleRepetida: string
+  porQueCero: (leido: string, pct: number) => string
 }
 
 const es: Textos = {
@@ -249,7 +263,7 @@ const es: Textos = {
   toastBucle: 'Toki: el mismo comando falló 3 veces seguidas. Le pedí a Claude cambiar de enfoque.',
   toastModelo: (m, t) => `Toki: cambiaste a ${m} con el caché caliente. Tu próximo mensaje reprocesará ~${t} tokens. Para una tarea chica, mejor un subagente con model: haiku.`,
   toastCompacto: r => `Toki: se compactó el contexto y le recordé a Claude ${r}. Sigue donde quedó.`,
-  toastConciso: 'Toki: contexto al 50%. Le pedí a Claude respuestas más concisas (sin recortar lo técnico).',
+  toastConciso: 'Toki: la conversación ya es larga. Le pedí a Claude respuestas más concisas (sin recortar lo técnico).',
   toastSalidasGrandes: 'Toki: varias salidas enormes seguidas. Para esto, un subagente con Haiku sale más barato.',
   toastLogro: n => `🏅 Logro desbloqueado: ${n}`,
   leccionModelo: (de, a, t, costo) => `Cambiaste de ${de} a ${a} con el caché caliente: el siguiente mensaje reprocesó ~${t} tokens${costo} sin caché. Elige el modelo al inicio de la sesión; para una tarea chica, delega a un subagente con model: haiku.`,
@@ -262,7 +276,7 @@ const es: Textos = {
   avisoBucle: n => `[Toki] Este mismo comando ya falló ${n} veces seguidas. Antes de reintentar, revisa la causa o cambia de enfoque: cada intento repetido vuelve a enviar todo el contexto.`,
   avisoMapa: r => `[Toki] Hay un mapa del proyecto en ${r} con los archivos, sus símbolos y los módulos más usados. Consúltalo para ubicar código antes de buscar o leer archivos completos.`,
   nudgeLectura: (nombre, n) => `[Toki] Ya leíste «${nombre}» completo ${n} veces. Si solo necesitas una parte, usa offset y limit; si no cambió, no hace falta releerlo.`,
-  notaConciso: '[Toki] El contexto pasa del 50%. De aquí en adelante responde de forma concisa: sin preámbulos, sin resúmenes finales ni narración de cada paso. Nunca recortes código, comandos, rutas, errores ni advertencias.',
+  notaConciso: '[Toki] La conversación ya es larga. De aquí en adelante responde de forma concisa: sin preámbulos, sin resúmenes finales ni narración de cada paso. Nunca recortes código, comandos, rutas, errores ni advertencias.',
   pingPrompt: 'Responde solo: ok',
   encabezado: (a, d, la, ld, t, conservado, copia) =>
     `[Toki] Salida compactada: ${a} → ${d}, ${la} → ${ld} líneas${t !== undefined ? ` (~${t} tokens menos de lo que habrías leído)` : ''}. ${conservado} ${copia}`,
@@ -360,6 +374,20 @@ const es: Textos = {
   mapaUso: 'Úsalo para ubicar archivos y símbolos antes de buscar con grep o leer archivos completos. Puede estar desactualizado: confirma leyendo el archivo antes de editar.',
   mapaModulos: 'Módulos más usados (importados por más archivos)',
   mapaArchivos: 'Archivos y símbolos',
+  gastoTitulo: 'Lo que costó esta sesión (cifras de la API)',
+  gastoLinea: (l, p, w, n, o) => `Releer la conversación (caché): ~${l} (${p}%) · escribir al caché: ~${w} · entrada nueva: ~${n} · respuestas y razonamiento: ~${o}`,
+  gastoPedidos: (n, prom) => `${n} ${n === 1 ? 'pedido' : 'pedidos'} al modelo; cada uno mandó en promedio ~${prom} de contexto.`,
+  gastoSub: (n, t) => `Subagentes y tareas internas (compactar, memoria): ${n} ${n === 1 ? 'pedido' : 'pedidos'}, ~${t}.`,
+  relecturasLinea: t => `Relecturas evitadas: ~${t} tokens que Claude no volvió a leer porque Toki los sacó del contexto o compactó antes. Es la parte más barata de cada pedido, pero la más grande.`,
+  relecturas: 'relecturas evitadas',
+  ventanaToki: (v, n) => `Compactación: a los ${v} (Claude Code lo haría a los ${n}). La ajusta Toki; cámbiala en /plugin → Toki.`,
+  ventanaTuya: v => `Compactación: a los ${v} (la elegiste tú; Toki no la toca).`,
+  ventanaNativa: v => `Compactación: a los ${v} (la de Claude Code).`,
+  toastVentana: (v, n) => `Toki: compactaré a los ${v} en vez de ${n}. Cada mensaje releerá menos y mi memoria guarda la tarea.`,
+  deVentana: v => `de ${v}`,
+  salidaRepetida: (m, tam, r) => `[Toki] Salida idéntica a la de este mismo comando hace ${m < 1 ? 'menos de 1 min' : `${m} min`} (${tam}): no cambió nada. Sigue arriba en la conversación; copia completa en ${r}`,
+  detalleRepetida: 'salida idéntica a la anterior: quedó una línea con la ruta de la copia',
+  porQueCero: (l, p) => `Por qué el ahorro va en ~0: los comandos de esta sesión ya venían filtrados o eran lecturas exactas, y eso Toki no lo recorta para no perder información. Lo que más pesó fue releer la conversación en cada pedido: ~${l} (${p}% de todo).`,
   logroNombres: {
     primero: 'Primer ahorro',
     diez: '10k tokens',
@@ -424,7 +452,7 @@ const en: Textos = {
   toastBucle: 'Toki: the same command failed 3 times in a row. I asked Claude to change approach.',
   toastModelo: (m, t) => `Toki: you switched to ${m} with a warm cache. Your next message will reprocess ~${t} tokens. For a small task, a subagent with model: haiku is cheaper.`,
   toastCompacto: r => `Toki: the context was compacted and I reminded Claude of ${r}. It continues where it left off.`,
-  toastConciso: 'Toki: context at 50%. I asked Claude for more concise replies (without trimming technical detail).',
+  toastConciso: 'Toki: the conversation is getting long. I asked Claude for more concise replies (without trimming technical detail).',
   toastSalidasGrandes: 'Toki: several huge outputs in a row. A Haiku subagent is cheaper for this.',
   toastLogro: n => `🏅 Achievement unlocked: ${n}`,
   leccionModelo: (de, a, t, costo) => `You switched from ${de} to ${a} with a warm cache: the next message reprocessed ~${t} tokens${costo} without cache. Pick the model at the start of a session; for a small task, delegate to a subagent with model: haiku.`,
@@ -437,7 +465,7 @@ const en: Textos = {
   avisoBucle: n => `[Toki] This same command has now failed ${n} times in a row. Before retrying, check the cause or change approach: every repeated attempt re-sends the whole context.`,
   avisoMapa: r => `[Toki] There is a project map at ${r} with files, their symbols and the most-used modules. Check it to locate code before searching or reading whole files.`,
   nudgeLectura: (nombre, n) => `[Toki] You already read "${nombre}" in full ${n} times. If you only need a part, use offset and limit; if it did not change, no need to re-read it.`,
-  notaConciso: '[Toki] Context is past 50%. From here on, answer concisely: no preambles, no closing summaries, no narration of each step. Never trim code, commands, paths, errors or warnings.',
+  notaConciso: '[Toki] The conversation is getting long. From here on, answer concisely: no preambles, no closing summaries, no narration of each step. Never trim code, commands, paths, errors or warnings.',
   pingPrompt: 'Reply only: ok',
   encabezado: (a, d, la, ld, t, conservado, copia) =>
     `[Toki] Output compacted: ${a} → ${d}, ${la} → ${ld} lines${t !== undefined ? ` (~${t} fewer tokens than you would have read)` : ''}. ${conservado} ${copia}`,
@@ -535,6 +563,20 @@ const en: Textos = {
   mapaUso: 'Use it to locate files and symbols before grepping or reading whole files. It may be stale: confirm by reading the file before editing.',
   mapaModulos: 'Most-used modules (imported by the most files)',
   mapaArchivos: 'Files and symbols',
+  gastoTitulo: 'What this session cost (API figures)',
+  gastoLinea: (l, p, w, n, o) => `Re-reading the conversation (cache): ~${l} (${p}%) · writing to cache: ~${w} · new input: ~${n} · replies and reasoning: ~${o}`,
+  gastoPedidos: (n, avg) => `${n} ${n === 1 ? 'request' : 'requests'} to the model; each sent ~${avg} of context on average.`,
+  gastoSub: (n, t) => `Subagents and internal tasks (compaction, memory): ${n} ${n === 1 ? 'request' : 'requests'}, ~${t}.`,
+  relecturasLinea: t => `Re-reads avoided: ~${t} tokens Claude did not read again because Toki took them out of context or compacted earlier. It is the cheapest part of each request, but the largest.`,
+  relecturas: 're-reads avoided',
+  ventanaToki: (v, n) => `Compaction: at ${v} (Claude Code would wait until ${n}). Set by Toki; change it in /plugin → Toki.`,
+  ventanaTuya: v => `Compaction: at ${v} (your choice; Toki leaves it alone).`,
+  ventanaNativa: v => `Compaction: at ${v} (Claude Code's own).`,
+  toastVentana: (v, n) => `Toki: I will compact at ${v} instead of ${n}. Each message re-reads less, and my memory keeps the task.`,
+  deVentana: v => `of ${v}`,
+  salidaRepetida: (m, size, r) => `[Toki] Output identical to this same command's ${m < 1 ? 'less than 1 min' : `${m} min`} ago (${size}): nothing changed. It is still above in the conversation; full copy at ${r}`,
+  detalleRepetida: 'identical to the previous output: one line with the path to the copy',
+  porQueCero: (l, p) => `Why savings are ~0: this session's commands were already filtered or were exact reads, and Toki does not trim those so no information is lost. What weighed most was re-reading the conversation on every request: ~${l} (${p}% of everything).`,
   logroNombres: {
     primero: 'First savings',
     diez: '10k tokens',

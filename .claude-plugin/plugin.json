@@ -1,7 +1,7 @@
 {
   "name": "toki",
-  "version": "0.6.0",
-  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Compacta salidas ruidosas, rescata errores escondidos, recuerda lo importante al compactar, mapea tu proyecto y te avisa cuándo actuar. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
+  "version": "0.7.0",
+  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Compacta antes en modelos de 1M, recorta salidas ruidosas, evita repetir salidas idénticas, rescata errores escondidos, recuerda lo importante al compactar y te muestra a dónde se va cada token. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
     "name": "DMercadoCanas"
   },
@@ -24,6 +24,25 @@
       "type": "boolean",
       "title": "Compactar salidas ruidosas",
       "description": "Compacta la salida de tests, builds, instalaciones y logs. El original siempre queda guardado.",
+      "default": true
+    },
+    "ventanaCompactacion": {
+      "type": "string",
+      "title": "Compactar a los… (modelos de 1M)",
+      "description": "Con Opus o Sonnet de 1M, Claude Code espera a ~500k-967k para compactar y cada mensaje relee todo eso. Toki baja ese umbral: 300k equilibra ahorro y memoria; 200k ahorra más. \"no\" deja el de Claude Code. Si ya elegiste uno (/autocompact o CLAUDE_CODE_AUTO_COMPACT_WINDOW), Toki no lo toca.",
+      "default": "300k",
+      "options": [
+        "200k",
+        "300k",
+        "400k",
+        "500k",
+        "no"
+      ]
+    },
+    "salidasRepetidas": {
+      "type": "boolean",
+      "title": "Salidas repetidas en una línea",
+      "description": "Si un comando devuelve exactamente lo mismo que hace un rato (git status, un build sin cambios), Claude recibe una línea con la ruta de la copia en vez de la salida repetida.",
       "default": true
     },
     "mapaAutomatico": {
@@ -53,7 +72,7 @@
     "concisoAutomatico": {
       "type": "boolean",
       "title": "Modo conciso automático",
-      "description": "Cuando el contexto pasa del 50%, le pide a Claude respuestas más cortas sin recortar código ni errores.",
+      "description": "Cuando la conversación ya es larga (unos 150k tokens, o la mitad de la ventana de compactación), le pide a Claude respuestas más cortas sin recortar código ni errores.",
       "default": true
     },
     "idioma": {
