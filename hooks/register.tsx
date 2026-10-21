@@ -103,11 +103,12 @@ import {
 import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
 import { textosGenerados, tipoGenerado } from './generados'
+import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, opcionesFrio, preguntaFrio, proyectar, textosGuardia, VENTANAS } from './guardia'
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.10.0'
+export const VERSION = '0.11.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -158,6 +159,7 @@ const config = {
   avisoCacheFrio: true,
   guardiaLimites: true,
   guardiaGenerados: true,
+  guardiaPegados: true,
 }
 
 // Estado vivo del acompañante (se pierde al recargar el plugin; es efímero a propósito).
@@ -1623,12 +1625,13 @@ const guardia: {
   /** El periodo frío por el que ya se preguntó (el `ultimoUsoCache` de entonces). */
   frioVisto: number
   frioRechazos: number
+  pegadoRechazos: number
   /** Hasta cuándo va el modo ahorro por límite (0 = apagado). */
   ahorroHasta: number
   ahorroVentana?: VentanaLimite
   /** Tu mensaje (con lo importante de antes), para devolverlo al cuadro después de /clear. */
   devolver?: string
-} = { muestras: {}, proyeccion: {}, hechos: [], hechosLeidos: false, frioVisto: 0, frioRechazos: 0, ahorroHasta: 0 }
+} = { muestras: {}, proyeccion: {}, hechos: [], hechosLeidos: false, frioVisto: 0, frioRechazos: 0, pegadoRechazos: 0, ahorroHasta: 0 }
 
 const CLAVE_GUARDIA = 'guardia-hechos'
 
@@ -1701,6 +1704,43 @@ async function revisarLimites($: $, ahora: number): Promise<void> {
 }
 
 type ResultadoGuardia = { drop?: string; silenciar: boolean }
+
+/** Pegaste algo enorme: ¿lo guardo en un archivo y mando solo principio, final y errores? Devuelve el texto a enviar. */
+async function guardiaPegado($: $, texto: string): Promise<{ texto: string; silenciar: boolean }> {
+  if (!config.guardiaPegados || !ruta.interactivo || texto.length < PEGADO.umbral || texto.startsWith('/')) return { texto, silenciar: false }
+  if (guardia.pegadoRechazos >= PEGADO.maxRechazos) return { texto, silenciar: false }
+  const ahora = await $.clock.now()
+  const archivo = `${CARPETA}/pegados/pegado-${new Date(ahora).toISOString().replace(/[:.]/g, '-')}.txt`
+  const recorte = recortarPegado(texto, archivo, vivo.idioma)
+  if (recorte === undefined) return { texto, silenciar: false }
+  const x = textosPegado[vivo.idioma]
+  const guardar = x.guardar(formatearTokens(recorte.tokensAntes), formatearTokens(recorte.tokensDespues))
+  sonar($, 'aviso')
+  let respuesta: string
+  try {
+    respuesta = await $.ui.ask(x.pregunta(recorte.lineas, formatearTokens(recorte.tokensAntes)), { header: 'Toki', options: [guardar, x.enviar] })
+  } catch {
+    return { texto, silenciar: false }
+  }
+  const aceptar = respuesta === guardar || (respuesta !== x.enviar && /guard|archiv|save|file|esencial|essential/i.test(respuesta))
+  void anotarDiagnostico($, `pegado de ${recorte.lineas} líneas (~${formatearTokens(recorte.tokensAntes)}): ${aceptar ? 'archivo' : 'completo'}`)
+  if (!aceptar) {
+    guardia.pegadoRechazos += 1
+    if (guardia.pegadoRechazos >= PEGADO.maxRechazos) $.ui.toast(x.callado, { timeoutMs: 8_000 })
+    return { texto, silenciar: true }
+  }
+  guardia.pegadoRechazos = 0
+  try {
+    await asegurarCarpeta($)
+    await $.fs.write(archivo, texto)
+  } catch (err) {
+    // Sin copia guardada, se manda completo: nunca se pierde lo que pegaste.
+    $.ui.log(`Toki, pegado: ${String(err)}`, { to: 'debug' })
+    return { texto, silenciar: true }
+  }
+  await sumarAhorro($, texto.length - recorte.texto.length, vivo.idioma === 'en' ? 'pasted text' : 'texto pegado')
+  return { texto: recorte.texto, silenciar: true }
+}
 
 /** Antes de mandar tu mensaje: ¿estás por agotar el límite?, ¿se venció el caché con mucho contexto? */
 async function guardiasAntesDeEnviar($: $, textoCrudo: string): Promise<ResultadoGuardia> {
@@ -1842,6 +1882,7 @@ function devolverMensaje($: $): void {
   if (texto === undefined) return
   guardia.devolver = undefined
   guardia.frioVisto = 0
+  guardia.pegadoRechazos = 0
   $.clock.after(300, () => {
     void $.prompt
       .fill({ text: texto, mode: 'replace' })
@@ -1865,6 +1906,7 @@ export const register: Register = (on, options) => {
   config.avisoCacheFrio = options['avisoCacheFrio'] !== false
   config.guardiaLimites = options['guardiaLimites'] !== false
   config.guardiaGenerados = options['guardiaGenerados'] !== false
+  config.guardiaPegados = options['guardiaPegados'] !== false
   vivo.sonidos = options['sonidos'] !== false
   ruta.modoConfig = leerModo(options['recomendarModelo'])
   ruta.modo = ruta.modoConfig
@@ -1953,19 +1995,27 @@ export const register: Register = (on, options) => {
     const deLaPersona = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
     if (e.command !== undefined || e.isMeta === true || e.turnId !== undefined || !deLaPersona) return next(e)
     let silenciar = false
+    let texto = e.text
     try {
-      const g = await guardiasAntesDeEnviar($, e.text)
+      const p = await guardiaPegado($, texto)
+      texto = p.texto
+      silenciar = p.silenciar
+    } catch (err) {
+      $.ui.log(`Toki, pegado: ${String(err)}`, { to: 'debug' })
+    }
+    try {
+      const g = await guardiasAntesDeEnviar($, texto)
       if (g.drop !== undefined) return { drop: g.drop }
-      silenciar = g.silenciar
+      silenciar = silenciar || g.silenciar
     } catch (err) {
       $.ui.log(`Toki, guardias: ${String(err)}`, { to: 'debug' })
     }
     try {
-      await planearTurno($, e.text, silenciar)
+      await planearTurno($, texto, silenciar)
     } catch (err) {
       $.ui.log(`Toki, modelo y esfuerzo: ${String(err)}`, { to: 'debug' })
     }
-    return next(e)
+    return next(texto === e.text ? e : { ...e, text: texto })
   })
 
   // Subagentes con encargos simples: Sonnet. Empiezan sin contexto, no se pierde caché.

@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { recortarPegado } from '../hooks/pegados'
 import { agregarMuestra, evaluarCacheFrio, opcionesFrio, preguntaFrio, proyectar, textosGuardia } from '../hooks/guardia'
 
 // Las dos guardias antes de enviar: caché vencido y límites. Primero lo puro, después con el motor.
@@ -87,15 +88,18 @@ describe('límites (puro)', () => {
 // ---------- Con el motor ----------
 
 type Limite = { kind: string; percentUsed: number; resetsAt?: string }
-type Mundo = { reenviados: string[]; toasts: string[]; preguntas: string[]; etiquetas: string[][]; compactos: number; fills: string[]; comandos: string[]; vistos: { turnId: string; model: string; effort?: string }[] }
+type Mundo = { reenviados: string[]; toasts: string[]; preguntas: string[]; etiquetas: string[][]; compactos: number; fills: string[]; comandos: string[]; entrados: string[]; escritos: Record<string, string>; vistos: { turnId: string; model: string; effort?: string }[] }
 
 function mundo(on: On, o: { tokens: number; limites?: () => Limite[]; respuesta?: (etiquetas: string[]) => string }): Mundo {
-  const m: Mundo = { reenviados: [], toasts: [], preguntas: [], etiquetas: [], compactos: 0, fills: [], comandos: [], vistos: [] }
+  const m: Mundo = { reenviados: [], toasts: [], preguntas: [], etiquetas: [], compactos: 0, fills: [], comandos: [], entrados: [], escritos: {}, vistos: [] }
   mock.store(on)
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
   on('fs.exists', () => ({ value: false }))
-  on('fs.write', () => ({ value: undefined }))
+  on('fs.write', ($, e) => {
+    m.escritos[e.path] = e.text
+    return { value: undefined }
+  })
   on('fs.read', () => ({ deny: 'no existe' }))
   on('fs.stat', () => ({ deny: 'no existe' }))
   on('fs.list', () => ({ value: [] }))
@@ -120,6 +124,7 @@ function mundo(on: On, o: { tokens: number; limites?: () => Limite[]; respuesta?
   })
   on('prompt.submit', ($, e) => {
     if (e.origin.kind === 'plugin') m.reenviados.push(e.text)
+    m.entrados.push(e.text)
     return { text: e.text }
   })
   on('prompt.fill', ($, e) => {
@@ -283,5 +288,46 @@ describe('guardias con el motor', () => {
     expect(r).toEqual({ drop: expect.stringContaining('quedó en el cuadro') })
     await reloj.advance(200)
     expect(m.fills).toContain('agrega un botón de exportar a CSV en la tabla de pacientes')
+  })
+})
+
+describe('textos pegados enormes', () => {
+  const log = (n: number) =>
+    ['por qué falla el build?', ...Array.from({ length: n }, (_, i) => (i === 1500 ? 'ERROR: Cannot find module ./config' : `[info] compilando módulo ${i} de ${n} sin novedad en el paso actual`))].join('\n')
+
+  test('puro: deja principio, final, errores del medio y la ruta', () => {
+    const r = recortarPegado(log(3000), '.claude/toki/pegados/a.txt')
+    expect(r).toBeDefined()
+    expect(r?.texto.startsWith('por qué falla el build?')).toBe(true)
+    expect(r?.texto).toContain('.claude/toki/pegados/a.txt')
+    expect(r?.texto).toContain('1502: ERROR: Cannot find module')
+    expect(r?.texto).toContain('módulo 2999 de 3000')
+    expect((r?.tokensDespues ?? 0) * 5 < (r?.tokensAntes ?? 0)).toBe(true)
+    expect(recortarPegado('corto', 'x')).toBeUndefined()
+    // Una sola línea gigante (JSON minificado) también se recorta.
+    expect(recortarPegado(`{"a":"${'x'.repeat(80_000)}"}`, 'x')?.texto.length ?? 1e9).toBeLessThan(10_000)
+  })
+
+  test('con el motor: guarda el original y entra el recorte', async ($, on) => {
+    mock.clock(on, { now: 50 * H })
+    const m = mundo(on, { tokens: 20_000 })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    const texto = log(3000)
+    await mensaje($, 't0', texto)
+    expect(m.preguntas[0]).toContain('Pegaste 3001 líneas')
+    const entrado = m.entrados.at(-1) ?? ''
+    expect(entrado.length < texto.length / 5).toBe(true)
+    const [ruta, copia] = Object.entries(m.escritos).find(([r]) => r.includes('pegados/')) ?? []
+    expect(copia).toBe(texto)
+    expect(ruta?.endsWith(entrado.match(/\.claude\/toki\/pegados\/\S+\.txt/)?.[0] ?? '???')).toBe(true)
+  })
+
+  test('"Enviar completo" lo deja intacto; dos veces y se calla', async ($, on) => {
+    mock.clock(on, { now: 50 * H })
+    const m = mundo(on, { tokens: 20_000, respuesta: ls => ls.find(l => l === 'Enviar completo') ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    for (const t of ['t0', 't1', 't2']) await mensaje($, t, log(3000))
+    expect(m.entrados.every(e => e === log(3000))).toBe(true)
+    expect(m.preguntas.filter(p => p.includes('Pegaste')).length).toBe(2)
   })
 })

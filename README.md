@@ -20,6 +20,15 @@ En una sesión de Claude Code:
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
 
+## Lo nuevo en 0.11
+
+**Textos pegados enormes.** Todo lo que pegas en el chat (un log, un JSON, un archivo entero) se queda en la conversación y Claude lo relee en cada mensaje que sigue: un log de ~15k tokens en una conversación de 30 mensajes son ~450k tokens releídos. Si pegas más de ~10k tokens, Toki pregunta antes de enviar:
+
+- **Guardar en archivo y enviar lo esencial ★**: guarda el texto completo en `.claude/toki/pegados/` y a Claude le llega el principio (donde suele ir tu pregunta), el final (donde suele estar el error), las líneas con error del medio y la ruta de la copia. Claude lee el resto con Grep o por tramos si lo necesita.
+- **Enviar completo**: tal cual. Si lo eliges dos veces, Toki no vuelve a preguntar en la sesión.
+
+Se apaga con la opción "Textos pegados enormes". En `claude -p` no pregunta ni toca nada.
+
 ## Lo nuevo en 0.10
 
 **Frena la lectura de archivos generados.** Si Claude intenta leer entero un lockfile (`package-lock.json`, `yarn.lock`, `Cargo.lock`…), código minificado, un `.map`, código generado (`.g.dart`, `.pb.go`…) o algo dentro de `node_modules`/`dist`, Toki lo detiene la primera vez y le sugiere buscar con Grep o leer un tramo con `offset` y `limit`. Si Claude insiste con la misma lectura, se la entrega: nunca te quedas sin el archivo. Se apaga con la opción "Frenar lecturas de archivos generados".
