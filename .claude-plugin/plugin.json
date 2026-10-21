@@ -1,7 +1,7 @@
 {
   "name": "toki",
-  "version": "0.7.0",
-  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Compacta antes en modelos de 1M, recorta salidas ruidosas, evita repetir salidas idénticas, rescata errores escondidos, recuerda lo importante al compactar y te muestra a dónde se va cada token. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
+  "version": "0.8.0",
+  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), compacta antes en modelos de 1M, recorta salidas ruidosas, evita repetir salidas idénticas, rescata errores escondidos, recuerda lo importante al compactar y te muestra a dónde se va cada token. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
     "name": "DMercadoCanas"
   },
@@ -38,6 +38,24 @@
         "500k",
         "no"
       ]
+    },
+    "recomendarModelo": {
+      "type": "string",
+      "title": "Modelo y esfuerzo por mensaje",
+      "description": "Toki lee cada mensaje antes de mandarlo y elige el esfuerzo (y entre Opus y Sonnet, si el contexto es chico). preguntar: te muestra las opciones con su costo cuando la recomendada cuesta más o reescribe el caché; si ahorra, la aplica y avisa (con Deshacer). siempre: pregunta antes de cualquier cambio. automatico: cambia solo y avisa. no: apagado. También con /toki-modelo.",
+      "default": "preguntar",
+      "options": [
+        "preguntar",
+        "siempre",
+        "automatico",
+        "no"
+      ]
+    },
+    "subagentesSonnet": {
+      "type": "boolean",
+      "title": "Subagentes simples en Sonnet",
+      "description": "Si trabajas con Opus, los subagentes generales con encargos simples van en Sonnet: cuesta la mitad y, como empiezan sin contexto, no se pierde caché. Explore y los demás conservan su modelo.",
+      "default": true
     },
     "salidasRepetidas": {
       "type": "boolean",

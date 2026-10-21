@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 // Compactar antes en modelos de 1M, contar lo que de verdad costó cada pedido,
 // y no repetir salidas idénticas. Con lo que hay debajo de los plugins simulado.
@@ -74,7 +75,7 @@ function motor(on: On, usoDelPedido: () => { cache_read_input_tokens: number; ca
   })
 }
 
-async function pedido($: Parameters<Parameters<typeof test>[1]>[0], turnId: string, index: number): Promise<void> {
+async function pedido($: Parameters<TestBody>[0], turnId: string, index: number): Promise<void> {
   const stream = $.turn.step({ turnId, index, model: 'claude-opus-5-5', messageCount: 10 + index })
   for await (const _ of stream) {
     // Sin trozos: solo importa el resultado.

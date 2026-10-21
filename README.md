@@ -20,6 +20,34 @@ En una sesión de Claude Code:
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
 
+## Lo nuevo en 0.8
+
+- **Modelo y esfuerzo para cada mensaje.** Antes de enviar tu mensaje, Toki lo lee y lo clasifica: trivial, normal, complejo o profundo. Usa reglas rápidas y, si duda, una consulta corta a Haiku que dura como máximo 2 segundos. Luego elige el modelo y el esfuerzo de ese mensaje:
+  - Un "renombra foo a bar" va con Sonnet y esfuerzo bajo.
+  - Un "ultrathink: analiza a fondo…" va con Opus y esfuerzo máximo.
+  - Si te trabas ("sigue fallando", "no funciona"), sube un nivel.
+- **Te muestra las opciones con sus consecuencias.** Hasta tres opciones, Calidad, Equilibrio y Ahorro, más **Dejar como está**. Cada una muestra su modelo y esfuerzo, cuánto cuesta frente a lo que tienes (`+40%`, `−65%`) y, si cambia el modelo, cuánto caché se reescribe. La recomendada lleva ★.
+- **Cuándo pregunta y cuándo cambia solo.** Por defecto pregunta solo si la opción cuesta más o si cambiar el modelo reescribiría más de 30k tokens de caché. Si la opción ahorra, la aplica sola.
+- **Te avisa cuando cambia algo.** Si Toki cambia algo, la barra parpadea, suena una campanita y aparece "⚡ Este mensaje va con Sonnet · esfuerzo bajo". El botón **Deshacer** vuelve a lo de antes.
+- **Respeta tus decisiones.** Si eliges "Dejar como está", Toki recuerda tu elección para ese tipo de mensaje. Si la eliges 3 veces, deja de preguntar en esa sesión.
+- **Cambia entre Opus y Sonnet solo cuando conviene.** Cambiar de modelo obliga a reescribir el caché una vez. Toki solo cambia cuando la conversación es chica o el caché ya está frío (sesión nueva, después de `/clear` o de compactar, o caché vencido). Cambiar el esfuerzo no toca el caché, así que eso lo ajusta siempre.
+- **Subagentes con Sonnet.** Si trabajas con Opus, los subagentes de propósito general con encargos sencillos van con Sonnet. Los que tienen su propio modelo (Explore suele usar Haiku) no se tocan.
+- **`/toki-modelo`** muestra lo que decidió en la sesión y cambia el modo:
+  - `preguntar`: el de siempre.
+  - `siempre`: pregunta cada vez.
+  - `automatico`: nunca pregunta.
+  - `no`: apagado.
+
+  También se cambia en la configuración, en **Modelo y esfuerzo por mensaje**.
+- **Seguro si algo no calza.** Si tu cuenta no tiene acceso al modelo que Toki eligió y la API responde con otro, Toki lo nota, deja de cambiar el modelo y te avisa. En `claude -p` no puede preguntar: solo aplica los cambios que ahorran.
+
+Medido con `claude -p` y Opus 5.5 de modelo:
+
+| Mensaje | Qué decidió Toki | Resultado |
+|---|---|---|
+| "renombra la constante foo a bar en utils.js" | trivial → Sonnet, esfuerzo bajo | respondió Sonnet, $0.20 el mensaje |
+| "ultrathink: analiza a fondo todos los escenarios…" | profundo → Opus, esfuerzo máximo | respondió Opus con ~16k tokens de razonamiento |
+
 ## Lo nuevo en 0.7
 
 - **Compacta antes en modelos de 1M.** Con Opus o Sonnet de 1M, Claude Code espera hasta ~500k (o ~967k, según la cuenta) para compactar, y cada mensaje relee la conversación entera. En una sesión de 128 llamadas que crece hasta ~346k, eso son unos 25M tokens leídos del caché. Toki baja ese umbral a **300k** (puedes elegir 200k, 400k, 500k o dejar el de Claude Code), y su memoria le recuerda la tarea a Claude después de compactar. Si ya elegiste un umbral (`/autocompact` o `CLAUDE_CODE_AUTO_COMPACT_WINDOW`), no lo toca. Probado con sesiones reales: Claude Code lo respeta porque Toki lo pone al arrancar la sesión.
@@ -55,12 +83,13 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 | **Compactación temprana** | En modelos de 1M, compacta a los 300k en vez de esperar a ~500k-967k: cada mensaje relee menos. La memoria de Toki guarda la tarea. | Idea propia |
 | **Cuenta real del gasto** | Lo que costó cada pedido según la API (relectura, caché, entrada, salida, subagentes) y las relecturas que Toki evitó. | Token Optimizer |
 | **Salidas repetidas** | La misma salida otra vez llega como una línea con la ruta de la copia. | Token Optimizer |
+| **Modelo y esfuerzo por mensaje** | Lee tu mensaje antes de enviarlo y elige el modelo y el esfuerzo que pide la tarea. Si cuesta más, te muestra opciones con su costo; si ahorra, lo aplica y te avisa, con un botón Deshacer. | Model Matchmaker, claude-model-advisor, claude-router |
 | **Estilo conciso** | Respuestas cortas sin relleno; el código, los errores y las rutas no se tocan. Se activa solo cuando la conversación pasa de ~150k tokens, o con `/output-style`. | Caveman (nivel lite) |
 
 ### Reglas que nunca rompe
 
 1. **Cero tokens fijos en el contexto.** No agrega skills ni texto que se cargue en cada mensaje.
-2. **No rompe el caché.** Todo lo que agrega va al final; nunca modifica lo que ya se envió.
+2. **No rompe el caché.** Todo lo que agrega va al final; nunca modifica lo que ya se envió. Cambiar de modelo sí lo reescribe. Toki lo hace sin preguntar solo si el caché está frío o la conversación es chica; si no, te muestra cuánto cuesta y decides tú.
 3. **Todo es reversible.** La salida original queda en `.claude/toki/salidas/` y Claude la puede leer cuando la necesite.
 4. **Nunca provoca reintentos.** Si no está seguro, no toca nada. No compacta lecturas de archivos, diffs ni salidas que Claude ya filtró con `| grep`.
 5. **Nunca pide un permiso nuevo.** Solo cambia cómo corre un comando si Claude Code toma la misma decisión de permisos que con el original.
@@ -95,6 +124,7 @@ Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), lo que costó
 
 - **`/toki`**: el panel con todo lo anterior.
 - **`/toki-por-que`**: los últimos comandos y, para cada uno, si se compactó (y cuánto ahorró), si se rescató algo o por qué no se tocó. Si crees que Toki no está ahorrando, empieza por aquí.
+- **`/toki-modelo`**: qué modelo y esfuerzo eligió para cada mensaje, y el modo (`preguntar`, `siempre`, `automatico`, `no`).
 - **`/toki-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
 - **`/output-style`** → `toki:conciso`: respuestas cortas desde ya.
 
@@ -147,6 +177,7 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - Toki speaks the language you write to Claude in. You can pin it to `en` or `es` in its settings.
 - `/toki` opens the panel: savings for this session, today, 7 and 30 days, your 🔥 streak, achievements, a 14-day chart, what fills your context, and suggestions.
 - `/toki-por-que` explains, command by command, what Toki did and why, and where the session's tokens went when savings are ~0.
+- **Model and effort per message (0.8).** Before each message is sent, Toki reads it and picks a model and effort: Sonnet on low effort for a rename, Opus on max for "ultrathink". When the pick saves, Toki applies it and shows a notice with **Undo**. When it costs more, or switching models would rewrite more than 30k tokens of cache, Toki asks first and shows each option's cost (`+40%`, `−65%`). Toki only switches between Opus and Sonnet while the context is small or the cache is already cold; effort changes keep the cache. Simple general-purpose subagents run on Sonnet. `/toki-modelo preguntar|siempre|automatico|no` sets how it behaves.
 - Settings: **Compact at…** (200k, 300k, 400k, 500k, or "no" to keep Claude Code's); if you already chose a window, Toki leaves it alone.
 - Measured with Haiku: when Claude cuts test output with `| tail` and the failure sits in the middle, the same task used **half the tokens** with Toki (93.1k vs 184.6k–192.6k) and needed one command instead of three. With a 1.6 MB output, 88.1k vs 134.2k–179.9k.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
@@ -169,6 +200,7 @@ Toki se inspira en las ideas de otros, reimplementadas desde cero:
 - [RTK](https://github.com/rtk-ai/rtk), de rtk-ai: filtros de salida por familia de comandos.
 - [Graphify](https://github.com/safishamsi/graphify), de Safi Shamsi: el mapa del proyecto sin usar el modelo.
 - [Token Optimizer](https://github.com/alexgreensh/token-optimizer), de Alex Greenshpun: archivar originales, detectar bucles y el acompañante en la interfaz.
+- [Model Matchmaker](https://github.com/jacobcxdev/model-matchmaker), de jacobcxdev, [claude-model-advisor](https://github.com/mmediavilla/claude-model-advisor), de mmediavilla, [claude-router](https://github.com/alexei-led/claude-router), de alexei-led, y [claude-model-router](https://github.com/TFoxik/claude-model-router), de TFoxik: clasificar el mensaje sin gastar tokens, mostrar cuánto cuesta reescribir el caché y cambiar de modelo solo cuando compensa.
 
 ## Licencia
 
