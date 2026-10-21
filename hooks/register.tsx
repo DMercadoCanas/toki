@@ -102,11 +102,12 @@ import {
 } from './gasto'
 import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
+import { textosGenerados, tipoGenerado } from './generados'
 import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, opcionesFrio, preguntaFrio, proyectar, textosGuardia, VENTANAS } from './guardia'
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.9.0'
+export const VERSION = '0.10.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -156,6 +157,7 @@ const config = {
   repetidas: true,
   avisoCacheFrio: true,
   guardiaLimites: true,
+  guardiaGenerados: true,
 }
 
 // Estado vivo del acompañante (se pierde al recargar el plugin; es efímero a propósito).
@@ -192,6 +194,7 @@ const vivo: {
   marcaVista: number
   nudgeConciso: boolean
   nudgeLecturas: boolean
+  generadosFrenados: Set<string>
   salidasGrandesEnTurno: number
   modelo?: string
   modeloUltimoTurno?: string
@@ -250,6 +253,7 @@ const vivo: {
   marcaVista: 0,
   nudgeConciso: false,
   nudgeLecturas: false,
+  generadosFrenados: new Set<string>(),
   salidasGrandesEnTurno: 0,
   avisoModeloEn: 0,
   ultimoUsoCache: 0,
@@ -1344,6 +1348,7 @@ function reiniciarConversacion(): void {
   vivo.compactaciones = 0
   vivo.nudgeConciso = false
   vivo.nudgeLecturas = false
+  vivo.generadosFrenados = new Set<string>()
   vivo.ultimoAhorro = undefined
   vivo.mensaje = undefined
   vivo.aprovechado = undefined
@@ -1859,6 +1864,7 @@ export const register: Register = (on, options) => {
   config.repetidas = options['salidasRepetidas'] !== false
   config.avisoCacheFrio = options['avisoCacheFrio'] !== false
   config.guardiaLimites = options['guardiaLimites'] !== false
+  config.guardiaGenerados = options['guardiaGenerados'] !== false
   vivo.sonidos = options['sonidos'] !== false
   ruta.modoConfig = leerModo(options['recomendarModelo'])
   ruta.modo = ruta.modoConfig
@@ -2107,6 +2113,17 @@ export const register: Register = (on, options) => {
     const entrada = e as { file_path?: unknown; offset?: unknown; limit?: unknown }
     if ((herramienta === 'Edit' || herramienta === 'Write' || herramienta === 'MultiEdit') && typeof entrada.file_path === 'string') {
       vivo.memoria.archivosEditados = recordar(vivo.memoria.archivosEditados, entrada.file_path, LIMITES_MEMORIA.archivos)
+    }
+    // Archivos generados (lockfiles, minificados, build): la primera lectura completa se frena; repetirla la deja pasar.
+    if (config.guardiaGenerados && herramienta === 'Read' && typeof entrada.file_path === 'string' && entrada.offset === undefined && entrada.limit === undefined) {
+      const tipo = tipoGenerado(entrada.file_path)
+      if (tipo !== undefined && !vivo.generadosFrenados.has(entrada.file_path)) {
+        vivo.generadosFrenados.add(entrada.file_path)
+        const nombre = entrada.file_path.split(/[\\/]/).pop() ?? entrada.file_path
+        const tg = textosGenerados[vivo.idioma === 'en' ? 'en' : 'es']
+        $.ui.toast(tg.toast(nombre), { timeoutMs: 6000 })
+        return { deny: tg.frenado(nombre, tipo) }
+      }
     }
     let nudgeLectura: string | undefined
     if (herramienta === 'Read' && typeof entrada.file_path === 'string' && entrada.offset === undefined && entrada.limit === undefined) {

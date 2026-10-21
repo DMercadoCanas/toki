@@ -20,6 +20,10 @@ En una sesión de Claude Code:
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
 
+## Lo nuevo en 0.10
+
+**Frena la lectura de archivos generados.** Si Claude intenta leer entero un lockfile (`package-lock.json`, `yarn.lock`, `Cargo.lock`…), código minificado, un `.map`, código generado (`.g.dart`, `.pb.go`…) o algo dentro de `node_modules`/`dist`, Toki lo detiene la primera vez y le sugiere buscar con Grep o leer un tramo con `offset` y `limit`. Si Claude insiste con la misma lectura, se la entrega: nunca te quedas sin el archivo. Se apaga con la opción "Frenar lecturas de archivos generados".
+
 ## Lo nuevo en 0.9
 
 - **Aviso de caché vencido antes de enviar.** El caché dura 1 hora con una suscripción y 5 minutos en la API. Si vuelves después y la conversación pesa más de 60k tokens, tu próximo mensaje reescribe todo el contexto a precio de escritura, entre 25 y 40 veces lo que cuesta releerlo. Por eso Toki te pregunta antes de enviar y te muestra el costo: con 220k en Opus y una suscripción, «cuenta como ~5 mensajes normales de tu límite»; en la API, «≈$1.06 más que con el caché vivo». Las opciones:
