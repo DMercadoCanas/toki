@@ -1,6 +1,6 @@
 {
   "name": "toki",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, compacta antes en modelos de 1M, recorta salidas ruidosas, evita repetir salidas idénticas, rescata errores escondidos, recuerda lo importante al compactar y te muestra a dónde se va cada token. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
     "name": "DMercadoCanas"

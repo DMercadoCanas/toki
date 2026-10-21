@@ -102,7 +102,7 @@ import {
 } from './gasto'
 import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
-import { textosGenerados, tipoGenerado } from './generados'
+import { TRAMO_GENERADO, textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
 import type { TipoBusqueda } from './busquedas'
@@ -110,7 +110,7 @@ import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, o
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.12.0'
+export const VERSION = '0.12.1'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -199,7 +199,8 @@ const vivo: {
   marcaVista: number
   nudgeConciso: boolean
   nudgeLecturas: boolean
-  generadosFrenados: Set<string>
+  /** Lecturas enteras pedidas por archivo generado: 1 = frenada, 2 = tramo, 3+ = entera. */
+  generadosFrenados: Map<string, number>
   salidasGrandesEnTurno: number
   modelo?: string
   modeloUltimoTurno?: string
@@ -258,7 +259,7 @@ const vivo: {
   marcaVista: 0,
   nudgeConciso: false,
   nudgeLecturas: false,
-  generadosFrenados: new Set<string>(),
+  generadosFrenados: new Map<string, number>(),
   salidasGrandesEnTurno: 0,
   avisoModeloEn: 0,
   ultimoUsoCache: 0,
@@ -1379,7 +1380,7 @@ function reiniciarConversacion(): void {
   vivo.compactaciones = 0
   vivo.nudgeConciso = false
   vivo.nudgeLecturas = false
-  vivo.generadosFrenados = new Set<string>()
+  vivo.generadosFrenados = new Map<string, number>()
   vivo.ultimoAhorro = undefined
   vivo.mensaje = undefined
   vivo.aprovechado = undefined
@@ -2197,13 +2198,16 @@ export const register: Register = (on, options) => {
     // Archivos generados (lockfiles, minificados, build): la primera lectura completa se frena; repetirla la deja pasar.
     if (config.guardiaGenerados && herramienta === 'Read' && typeof entrada.file_path === 'string' && entrada.offset === undefined && entrada.limit === undefined) {
       const tipo = tipoGenerado(entrada.file_path)
-      if (tipo !== undefined && !vivo.generadosFrenados.has(entrada.file_path)) {
-        vivo.generadosFrenados.add(entrada.file_path)
+      const veces = tipo === undefined ? 0 : (vivo.generadosFrenados.get(entrada.file_path) ?? 0) + 1
+      if (tipo !== undefined) vivo.generadosFrenados.set(entrada.file_path, veces)
+      if (tipo !== undefined && veces === 1) {
         const nombre = entrada.file_path.split(/[\\/]/).pop() ?? entrada.file_path
         const tg = textosGenerados[vivo.idioma === 'en' ? 'en' : 'es']
         $.ui.toast(tg.toast(nombre), { timeoutMs: 6000 })
         return { deny: tg.frenado(nombre, tipo) }
       }
+      // En vivo, Claude repetía la lectura entera de inmediato: la segunda trae solo un tramo; la tercera, todo.
+      if (tipo !== undefined && veces === 2) return next({ ...e, limit: TRAMO_GENERADO } as typeof e)
     }
     let nudgeLectura: string | undefined
     if (herramienta === 'Read' && typeof entrada.file_path === 'string' && entrada.offset === undefined && entrada.limit === undefined) {

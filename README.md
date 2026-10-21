@@ -22,6 +22,8 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 
 ## Lo nuevo en 0.12
 
+**0.12.1: archivos generados, por tramos.** En una prueba en vivo, cuando Toki frenaba la lectura de un `package-lock.json`, Claude la repetía enseguida y se llevaba el archivo entero. Ahora la segunda lectura trae solo las primeras 300 líneas y la tercera, el archivo completo. Con el cambio, Claude pasó a leer por tramos: 2–16 KB en vez de 35 KB.
+
 **Búsquedas enormes.** Si Claude corre por la terminal un `grep -r`, `rg`, `git grep`, `find` o `fd` sin filtrar y la salida pasa de 30 KB, Claude Code la corta a ciegas. Toki entrega en su lugar un resumen: coincidencias por archivo (o rutas por carpeta), las primeras coincidencias de los archivos con más, y la ruta de la salida completa para que Claude busque ahí. Probado con `claude -p`: un `grep -rn` de 254 KB (1.800 líneas en 60 archivos) llegó como un resumen de ~3k tokens y Claude respondió bien. Se apaga con la opción "Resumir búsquedas enormes".
 
 ## Lo nuevo en 0.11
