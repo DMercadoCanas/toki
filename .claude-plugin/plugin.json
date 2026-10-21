@@ -1,7 +1,7 @@
 {
   "name": "toki",
-  "version": "0.8.0",
-  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), compacta antes en modelos de 1M, recorta salidas ruidosas, evita repetir salidas idénticas, rescata errores escondidos, recuerda lo importante al compactar y te muestra a dónde se va cada token. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
+  "version": "0.9.0",
+  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, compacta antes en modelos de 1M, recorta salidas ruidosas, evita repetir salidas idénticas, rescata errores escondidos, recuerda lo importante al compactar y te muestra a dónde se va cada token. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
     "name": "DMercadoCanas"
   },
@@ -55,6 +55,18 @@
       "type": "boolean",
       "title": "Subagentes simples en Sonnet",
       "description": "Si trabajas con Opus, los subagentes generales con encargos simples van en Sonnet: cuesta la mitad y, como empiezan sin contexto, no se pierde caché. Explore y los demás conservan su modelo.",
+      "default": true
+    },
+    "avisoCacheFrio": {
+      "type": "boolean",
+      "title": "Avisar si el caché venció",
+      "description": "Si vuelves después de que venció el caché (1 h con suscripción, 5 min en la API) y la conversación es grande, Toki te pregunta antes de enviar: compactar, empezar en limpio o enviar así, con lo que cuesta cada una.",
+      "default": true
+    },
+    "guardiaLimites": {
+      "type": "boolean",
+      "title": "Vigilar tus límites",
+      "description": "Con una suscripción: proyecta a tu ritmo cuándo se acaba el límite de 5 h y el semanal. Si se acaba antes de renovarse, avisa una vez; al 90 % pregunta si seguir en modo ahorro.",
       "default": true
     },
     "salidasRepetidas": {

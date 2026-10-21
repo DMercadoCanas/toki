@@ -102,9 +102,11 @@ import {
 } from './gasto'
 import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
+import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, opcionesFrio, preguntaFrio, proyectar, textosGuardia, VENTANAS } from './guardia'
+import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.8.0'
+export const VERSION = '0.9.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -152,6 +154,8 @@ const config = {
   /** Tokens a los que Claude Code compacta; 0 = no tocar la de Claude Code. */
   ventana: 300_000,
   repetidas: true,
+  avisoCacheFrio: true,
+  guardiaLimites: true,
 }
 
 // Estado vivo del acompañante (se pierde al recargar el plugin; es efímero a propósito).
@@ -172,7 +176,7 @@ const vivo: {
   tokensVistos?: number
   ultimoAhorro?: { tokens: number; comando: string }
   bucleReciente: boolean
-  usoCache?: { pct?: number; ventana: number; tokens?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean }
+  usoCache?: { pct?: number; ventana: number; tokens?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean; reinicios: Partial<Record<VentanaLimite, number>> }
   usoLeido: number
   silencioPesadoHasta: number
   lecciones: Leccion[]
@@ -730,7 +734,9 @@ async function refrescarUso($: $, forzar = false): Promise<void> {
       costo: uso.cost?.usd,
       inicio: uso.startedAt,
       esSuscripcion: uso.rateLimits.length > 0,
+      reinicios: reiniciosDe(uso.rateLimits),
     }
+    await revisarLimites($, ahora)
     // ¿Se compactó a mitad de un turno? El contexto cae de golpe.
     const tokens = uso.context.tokens
     const antes = vivo.tokensVistos
@@ -1401,6 +1407,8 @@ const ruta: {
   historial: DecisionRuta[]
   /** Aún no hay caché que perder (sesión nueva, /clear, recién compactado): cambiar de modelo sale gratis. */
   cacheFrio: boolean
+  /** Lo que Toki leyó en el último mensaje, aunque no haya cambiado nada: para que puedas comprobarlo. */
+  ultima?: { nivel: Nivel; motivo: MotivoRuta; actual: Opcion; recomendada: Opcion; decision: 'ya-va-asi' | 'callado' | 'auto' | 'preguntar' }
 } = {
   modo: 'preguntar',
   modoConfig: 'preguntar',
@@ -1455,7 +1463,7 @@ async function leerNivel($: $, texto: string): Promise<{ nivel: Nivel; motivo: M
 }
 
 /** Lee el mensaje antes de mandarlo y decide (o te pregunta) con qué modelo y esfuerzo va. */
-async function planearTurno($: $, textoCrudo: string): Promise<void> {
+async function planearTurno($: $, textoCrudo: string, silenciar = false): Promise<void> {
   const texto = quitarEtiquetasDeSistema(textoCrudo)
   if (ruta.modo === 'no' || texto === '' || texto.startsWith('/')) return
   if (vivo.modelo === undefined) {
@@ -1479,10 +1487,16 @@ async function planearTurno($: $, textoCrudo: string): Promise<void> {
     permitirModelo: !ruta.modeloRoto,
     cacheFrio: ruta.cacheFrio || (vivo.ultimoUsoCache > 0 && (await $.clock.now()) - vivo.ultimoUsoCache > ttlMinutos() * 60_000),
   })
-  let modo = decidirInterfaz(ruta.modo, p, ruta.silenciado)
+  let modo = decidirInterfaz(ruta.modo, p, ruta.silenciado || silenciar)
+  // Modo ahorro por límite (lo elegiste al 90 %): la opción barata, sin preguntar, hasta que se renueve.
+  const enAhorro = guardia.ahorroHasta > (await $.clock.now())
+  const ahorro = enAhorro ? p.opciones.find(o => o.tipo === 'ahorro') : undefined
+  if (enAhorro) modo = ahorro !== undefined && !igual(ahorro, p.actual) && ahorro.usd <= p.actual.usd ? 'auto' : 'nada'
+  ruta.ultima = { nivel, motivo, actual: p.actual, recomendada: p.recomendada, decision: modo === 'nada' ? (igual(p.recomendada, p.actual) ? 'ya-va-asi' : 'callado') : modo }
+  void anotarDiagnostico($, `ruta: ${nivel} (${motivo}) ${actual.modelo}/${actual.esfuerzo} → ${p.recomendada.modelo}/${p.recomendada.esfuerzo} ${textoDiferencia(diferencia(p.recomendada, p.actual), xr())} [${ruta.ultima.decision}]`)
   // Lo que elegiste antes para este nivel se repite solo, si no reescribe el caché.
   const recordada = ruta.preferencias[nivel]
-  let elegida: Opcion | undefined = p.recomendada
+  let elegida: Opcion | undefined = ahorro ?? p.recomendada
   let como: DecisionRuta['como'] = 'auto'
   if (modo === 'preguntar' && recordada !== undefined && ruta.modo !== 'siempre') {
     const o = recordada === 'actual' ? p.actual : p.opciones.find(op => op.tipo === recordada)
@@ -1549,7 +1563,7 @@ async function aplicarEleccion($: $, d: Omit<DecisionRuta, 'cuando'>): Promise<v
   ruta.modeloPrincipal = d.despues.modelo === vivo.modelo ? undefined : d.despues.modelo
   ruta.pendiente = { nivel: d.nivel, esfuerzo: d.despues.esfuerzo !== d.antes.esfuerzo ? d.despues.esfuerzo : undefined }
   ruta.historial = [...ruta.historial, { ...d, cuando: ahora }].slice(-12)
-  void anotarDiagnostico($, `ruta: ${d.nivel} (${d.motivo}) ${d.antes.modelo}/${d.antes.esfuerzo} → ${d.despues.modelo}/${d.despues.esfuerzo} [${d.como}]`)
+  void anotarDiagnostico($, `ruta aplicada: ${d.antes.modelo}/${d.antes.esfuerzo} → ${d.despues.modelo}/${d.despues.esfuerzo} [${d.como}]`)
   const x = xr()
   const texto = x.cambio(nombreCorto(d.despues.modelo), x.esfuerzo[d.despues.esfuerzo], `${textoDiferencia(d.dif, x)}${d.como === 'recordado' ? `, ${x.comoAntes}` : ''}`)
   ruta.aviso = { texto, hasta: ahora + 12_000, deshacer: d.antes }
@@ -1576,13 +1590,259 @@ async function deshacerEleccion($: $): Promise<void> {
 function textoRuta(x: TextosRuta): string[] {
   const lineas = [`${x.titulo}: ${x.modo[ruta.modo]}${ruta.silenciado ? ` (${x.silenciado})` : ''}`]
   if (ruta.modeloPrincipal !== undefined) lineas.push(`  ${nombreCorto(ruta.modeloPrincipal)} ${x.porToki}`)
+  if (guardia.ahorroHasta > 0) lineas.push(`  ${xg().limite.enAhorro(hora(guardia.ahorroHasta, guardia.ahorroVentana ?? 'five_hour', vivo.idioma))}`)
   if (ruta.subagentesEnSonnet > 0) lineas.push(`  ${x.subagentes.replace(/^Toki: /, '')} (${ruta.subagentesEnSonnet})`)
+  const u = ruta.ultima
+  if (u !== undefined) {
+    const rec = `${nombreCorto(u.recomendada.modelo)} · ${x.esfuerzo[u.recomendada.esfuerzo]} (${textoDiferencia(diferencia(u.recomendada, u.actual), x)})`
+    lineas.push(`  ${x.ultimoMensaje}: ${x.nivel[u.nivel]} (${x.motivo[u.motivo]}) · ${nombreCorto(u.actual.modelo)} · ${x.esfuerzo[u.actual.esfuerzo]} → ${rec} · ${x.decision[u.decision]}`)
+  } else {
+    lineas.push(`  ${x.sinLectura}`)
+  }
   if (ruta.historial.length === 0) return [...lineas, `  ${x.sinDecisiones}`]
   for (const d of [...ruta.historial].reverse().slice(0, 6)) {
     const elegido = `${nombreCorto(d.despues.modelo)} · ${x.esfuerzo[d.despues.esfuerzo]} (${textoDiferencia(d.dif, x)}${d.como === 'deshecho' ? `, ${x.deshecho}` : ''})`
     lineas.push(`  • ${x.linea(x.nivel[d.nivel], elegido, x.motivo[d.motivo])}`)
   }
   return lineas
+}
+
+// ---------- Guardias: caché vencido y límites ----------
+
+const guardia: {
+  muestras: Partial<Record<VentanaLimite, Muestra[]>>
+  proyeccion: Partial<Record<VentanaLimite, Proyeccion>>
+  /** Avisos y preguntas ya hechos (uno por ventana), guardados entre sesiones. */
+  hechos: string[]
+  hechosLeidos: boolean
+  /** El periodo frío por el que ya se preguntó (el `ultimoUsoCache` de entonces). */
+  frioVisto: number
+  frioRechazos: number
+  /** Hasta cuándo va el modo ahorro por límite (0 = apagado). */
+  ahorroHasta: number
+  ahorroVentana?: VentanaLimite
+  /** Tu mensaje (con lo importante de antes), para devolverlo al cuadro después de /clear. */
+  devolver?: string
+} = { muestras: {}, proyeccion: {}, hechos: [], hechosLeidos: false, frioVisto: 0, frioRechazos: 0, ahorroHasta: 0 }
+
+const CLAVE_GUARDIA = 'guardia-hechos'
+
+function xg(): TextosGuardia {
+  return textosGuardia[vivo.idioma]
+}
+
+function reiniciosDe(limites: readonly { kind: string; resetsAt?: string }[]): Partial<Record<VentanaLimite, number>> {
+  const r: Partial<Record<VentanaLimite, number>> = {}
+  for (const v of VENTANAS) {
+    const iso = limites.find(l => l.kind === v)?.resetsAt
+    const ms = iso === undefined ? Number.NaN : Date.parse(iso)
+    if (Number.isFinite(ms)) r[v] = ms
+  }
+  return r
+}
+
+async function yaHecho($: $, clave: string): Promise<boolean> {
+  if (!guardia.hechosLeidos) {
+    guardia.hechosLeidos = true
+    try {
+      const g = await $.store.get(CLAVE_GUARDIA)
+      if (Array.isArray(g)) guardia.hechos = g.filter((c): c is string => typeof c === 'string')
+    } catch {
+      // Sin nada guardado.
+    }
+  }
+  return guardia.hechos.includes(clave)
+}
+
+async function marcarHecho($: $, clave: string): Promise<void> {
+  guardia.hechos = [...guardia.hechos.filter(c => c !== clave), clave].slice(-20)
+  await $.store.set(CLAVE_GUARDIA, guardia.hechos).catch(() => undefined)
+}
+
+function porcentajeDe(v: VentanaLimite): number | undefined {
+  return v === 'five_hour' ? vivo.usoCache?.cincoHoras : vivo.usoCache?.semana
+}
+
+/** Con tu ritmo de gasto: ¿se acaba la ventana antes de renovarse? Avisa una vez por ventana. */
+async function revisarLimites($: $, ahora: number): Promise<void> {
+  if (guardia.ahorroHasta > 0 && ahora >= guardia.ahorroHasta) guardia.ahorroHasta = 0
+  if (!config.guardiaLimites) return
+  for (const v of VENTANAS) {
+    const pct = porcentajeDe(v)
+    const reinicia = vivo.usoCache?.reinicios[v]
+    if (pct === undefined || reinicia === undefined) {
+      delete guardia.proyeccion[v]
+      continue
+    }
+    const muestras = agregarMuestra(guardia.muestras[v] ?? [], { t: ahora, pct }, reinicia - DURACION[v])
+    guardia.muestras[v] = muestras
+    const p = proyectar({ ventana: v, pct, reinicia, ahora, muestras })
+    if (p === undefined) {
+      delete guardia.proyeccion[v]
+      continue
+    }
+    guardia.proyeccion[v] = p
+    if (!p.avisar || p.agotaEn === undefined) continue
+    const clave = `aviso:${claveVentana(v, reinicia)}`
+    if (await yaHecho($, clave)) continue
+    await marcarHecho($, clave)
+    const x = xg().limite
+    const texto = x.aviso(x.nombre[v], hora(p.agotaEn, v, vivo.idioma), hora(reinicia, v, vivo.idioma))
+    void anotarDiagnostico($, `límite ${v}: ${pct}% a ${p.ritmoHora}/h, se acaba ${new Date(p.agotaEn).toISOString()}, se renueva ${new Date(reinicia).toISOString()}`)
+    decir(ahora, texto.replace(/^Toki: /, ''), 'aviso', 30_000)
+    $.ui.toast(texto, { timeoutMs: 10_000 })
+    sonar($, 'aviso')
+  }
+}
+
+type ResultadoGuardia = { drop?: string; silenciar: boolean }
+
+/** Antes de mandar tu mensaje: ¿estás por agotar el límite?, ¿se venció el caché con mucho contexto? */
+async function guardiasAntesDeEnviar($: $, textoCrudo: string): Promise<ResultadoGuardia> {
+  const texto = quitarEtiquetasDeSistema(textoCrudo)
+  if (!ruta.interactivo || texto === '' || texto.startsWith('/')) return { silenciar: false }
+  if (!config.guardiaLimites && !config.avisoCacheFrio) return { silenciar: false }
+  await refrescarUso($, true)
+  return (await guardiaLimite($, texto)) ?? (await guardiaFrio($, texto)) ?? { silenciar: false }
+}
+
+/** Al 90 % de una ventana, una vez: ¿modo ahorro, seguir igual o esperar? */
+async function guardiaLimite($: $, texto: string): Promise<ResultadoGuardia | undefined> {
+  if (!config.guardiaLimites) return undefined
+  const ahora = await $.clock.now()
+  if (guardia.ahorroHasta > ahora) return undefined
+  const p = VENTANAS.map(v => guardia.proyeccion[v])
+    .filter((q): q is Proyeccion => q !== undefined && q.critico)
+    .sort((a, b) => b.pct - a.pct)[0]
+  if (p === undefined) return undefined
+  const clave = `critico:${claveVentana(p.ventana, p.reinicia)}`
+  if (await yaHecho($, clave)) return undefined
+  await marcarHecho($, clave)
+  const x = xg().limite
+  const renueva = hora(p.reinicia, p.ventana, vivo.idioma)
+  const opciones: { tipo: OpcionLimite; etiqueta: string }[] = [
+    { tipo: 'ahorro', etiqueta: `${x.opcion.ahorro} ★` },
+    { tipo: 'seguir', etiqueta: x.opcion.seguir },
+    { tipo: 'esperar', etiqueta: x.opcion.esperar },
+  ]
+  sonar($, 'aviso')
+  let respuesta: string
+  try {
+    respuesta = await $.ui.ask(x.pregunta(Math.round(p.pct), x.nombre[p.ventana], renueva), { header: 'Toki', options: opciones.map(o => o.etiqueta) })
+  } catch {
+    return undefined
+  }
+  const tipo: OpcionLimite =
+    opciones.find(o => o.etiqueta === respuesta)?.tipo ?? (/esper|wait/i.test(respuesta) ? 'esperar' : /ahorro|saving|sonnet|bajo|low/i.test(respuesta) ? 'ahorro' : 'seguir')
+  void anotarDiagnostico($, `límite ${p.ventana} ${p.pct}%: ${tipo}`)
+  if (tipo === 'esperar') {
+    $.clock.after(100, () => void $.prompt.fill({ text: texto, mode: 'replace' }).catch(() => undefined))
+    $.ui.toast(x.esperando, { timeoutMs: 8_000 })
+    return { drop: x.esperando, silenciar: true }
+  }
+  if (tipo === 'ahorro') {
+    guardia.ahorroHasta = p.reinicia
+    guardia.ahorroVentana = p.ventana
+    $.ui.toast(x.modoAhorro(renueva), { timeoutMs: 9_000 })
+  }
+  return { silenciar: true }
+}
+
+/** El caché venció y hay mucho contexto: este mensaje lo reescribe entero. Mejor compactar o empezar en limpio. */
+async function guardiaFrio($: $, texto: string): Promise<ResultadoGuardia | undefined> {
+  if (!config.avisoCacheFrio || guardia.frioRechazos >= FRIO.maxRechazos) return undefined
+  if (vivo.ultimoUsoCache <= 0 || vivo.ultimoUsoCache === guardia.frioVisto) return undefined
+  const familia = familiaDe(ruta.modeloPrincipal ?? vivo.modelo)
+  if (familia === undefined) return undefined
+  const ahora = await $.clock.now()
+  const esSuscripcion = vivo.usoCache?.esSuscripcion ?? true
+  const f = evaluarCacheFrio({
+    ahora,
+    ultimoUsoCache: vivo.ultimoUsoCache,
+    ttlMin: ttlMinutos(),
+    contexto: vivo.usoCache?.tokens ?? vivo.tokensUltimoTurno,
+    familia,
+    ttl1h: esSuscripcion,
+  })
+  if (f === undefined) return undefined
+  guardia.frioVisto = vivo.ultimoUsoCache
+  const x = xg().frio
+  const opciones = opcionesFrio(f, xg())
+  let respuesta: string
+  try {
+    respuesta = await $.ui.ask(preguntaFrio(f, esSuscripcion, xg()), { header: 'Toki', options: opciones.map(o => o.etiqueta) })
+  } catch {
+    return undefined
+  }
+  const tipo = opciones.find(o => o.etiqueta === respuesta)?.tipo ?? (/compact/i.test(respuesta) ? 'compactar' : /clear|limpi|fresh/i.test(respuesta) ? 'limpio' : 'enviar')
+  void anotarDiagnostico($, `caché vencido (${f.minutos} min, ${formatearTokens(f.contexto)}): ${tipo}`)
+  const conMemoria = config.memoria && !estaVacia(vivo.memoria)
+  if (tipo === 'enviar') {
+    guardia.frioRechazos += 1
+    if (guardia.frioRechazos >= FRIO.maxRechazos) $.ui.toast(x.callado, { timeoutMs: 8_000 })
+    return { silenciar: true }
+  }
+  guardia.frioRechazos = 0
+  if (tipo === 'compactar') {
+    // No se puede compactar con tu mensaje en la mano (el turno ya espera): se frena, se compacta y se reenvía.
+    $.clock.after(50, () => void compactarYReenviar($, texto, conMemoria))
+    return { drop: x.compactando, silenciar: true }
+  }
+  // Empezar en limpio: /clear y tu mensaje de vuelta al cuadro, con lo importante de antes.
+  const nota = conMemoria ? notaPostCompactacion(vivo.memoria, vivo.idioma).replace(/^[^\n]*/, x.notaTitulo) : ''
+  guardia.devolver = nota === '' ? texto : `${texto}\n\n${nota}`
+  $.clock.after(100, () => {
+    void $.command.run({ command: 'clear' }).catch(async () => {
+      await $.prompt.fill({ text: '/clear', mode: 'replace' }).catch(() => undefined)
+      $.ui.toast(x.pulsaEnter, { timeoutMs: 10_000 })
+    })
+  })
+  $.ui.toast(x.limpiando, { timeoutMs: 6_000 })
+  return { drop: x.limpiando, silenciar: true }
+}
+
+async function compactarYReenviar($: $, texto: string, conMemoria: boolean): Promise<void> {
+  const x = xg().frio
+  const devolver = async (): Promise<void> => {
+    $.ui.toast(x.noCompacto, { timeoutMs: 8_000 })
+    await $.prompt.fill({ text: texto, mode: 'replace' }).catch(() => undefined)
+  }
+  try {
+    const r = await $.session.compact(conMemoria ? { instructions: instruccionesDeCompactacion(vivo.memoria, vivo.idioma) } : {})
+    if ('skip' in r) {
+      await devolver()
+      return
+    }
+    await registrarCompactacion($, 'resumen')
+    await refrescarUso($, true)
+  } catch (err) {
+    $.ui.log(`Toki, compactar antes de enviar: ${String(err)}`, { to: 'debug' })
+    await devolver()
+    return
+  }
+  // Tu mensaje, como tuyo: Claude lo lee igual que si lo hubieras escrito. Toki decide antes el esfuerzo.
+  try {
+    await planearTurno($, texto, true)
+  } catch {
+    // Sin plan: va como está.
+  }
+  await $.prompt.submit({ text: texto, asUser: true }).catch(async () => {
+    await $.prompt.fill({ text: texto, mode: 'replace' }).catch(() => undefined)
+  })
+}
+
+/** Después de /clear: tu mensaje vuelve al cuadro. */
+function devolverMensaje($: $): void {
+  const texto = guardia.devolver
+  if (texto === undefined) return
+  guardia.devolver = undefined
+  guardia.frioVisto = 0
+  $.clock.after(300, () => {
+    void $.prompt
+      .fill({ text: texto, mode: 'replace' })
+      .then(() => $.ui.toast(xg().frio.devuelto, { timeoutMs: 8_000 }))
+      .catch(() => undefined)
+  })
 }
 
 // ---------- Registro ----------
@@ -1597,6 +1857,8 @@ export const register: Register = (on, options) => {
   config.idioma = typeof options['idioma'] === 'string' ? options['idioma'] : 'auto'
   config.ventana = leerVentana(options['ventanaCompactacion'])
   config.repetidas = options['salidasRepetidas'] !== false
+  config.avisoCacheFrio = options['avisoCacheFrio'] !== false
+  config.guardiaLimites = options['guardiaLimites'] !== false
   vivo.sonidos = options['sonidos'] !== false
   ruta.modoConfig = leerModo(options['recomendarModelo'])
   ruta.modo = ruta.modoConfig
@@ -1675,6 +1937,7 @@ export const register: Register = (on, options) => {
       await update($, gasto, () => GASTO_VACIO)
       await update($, fallos, () => ({}))
       await update($, avisoMapaDado, () => false)
+      devolverMensaje($)
     }
     return next(e)
   })
@@ -1683,8 +1946,16 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     const deLaPersona = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
     if (e.command !== undefined || e.isMeta === true || e.turnId !== undefined || !deLaPersona) return next(e)
+    let silenciar = false
     try {
-      await planearTurno($, e.text)
+      const g = await guardiasAntesDeEnviar($, e.text)
+      if (g.drop !== undefined) return { drop: g.drop }
+      silenciar = g.silenciar
+    } catch (err) {
+      $.ui.log(`Toki, guardias: ${String(err)}`, { to: 'debug' })
+    }
+    try {
+      await planearTurno($, e.text, silenciar)
     } catch (err) {
       $.ui.log(`Toki, modelo y esfuerzo: ${String(err)}`, { to: 'debug' })
     }
@@ -1757,7 +2028,11 @@ export const register: Register = (on, options) => {
       }
     }
     const respuesta = yield* next(pedido)
-    if (e.agentId === undefined && respuesta.usage !== null) ruta.cacheFrio = false
+    if (e.agentId === undefined && respuesta.usage !== null) {
+      ruta.cacheFrio = false
+      // Cada pedido lee o escribe el caché: desde aquí corre su vida (1 h o 5 min).
+      vivo.ultimoUsoCache = await $.clock.now()
+    }
     // ¿Respondió el modelo que Toki pidió? Si no, se deja de cambiar el modelo (el esfuerzo sigue).
     if (pedido.model !== e.model && respuesta.usage !== null && familiaDe(respuesta.usage.model) !== familiaDe(pedido.model)) {
       ruta.modeloRoto = true
@@ -2018,6 +2293,7 @@ export const register: Register = (on, options) => {
       ruta.silenciado = false
       ruta.rechazos = 0
       ruta.preferencias = {}
+      guardia.ahorroHasta = 0
       // Apagado: de vuelta a tu modelo y tu esfuerzo desde el próximo pedido.
       if (ruta.modo === 'no') reiniciarRuta()
       await $.store.set(CLAVE_MODO_RUTA, ruta.modo).catch(() => undefined)
@@ -2330,7 +2606,10 @@ export const register: Register = (on, options) => {
     const avisoRuta = ruta.aviso !== undefined && ahora < ruta.aviso.hasta ? ruta.aviso : undefined
     const destello = avisoRuta !== undefined && ahora < avisoRuta.hasta - 8_000 && vivo.tick % 2 === 0
     const botonDeshacer = avisoRuta?.deshacer !== undefined ? <Button key="deshacer" label={xr().deshacer} onPress={() => void deshacerEleccion($)} /> : null
-    const chipModelo = ruta.modeloPrincipal !== undefined && avisoRuta === undefined ? `${nombreCorto(ruta.modeloPrincipal)} · ${xr().porToki}` : undefined
+    // Mientras el modelo o el esfuerzo de este turno no son los tuyos, se ve en la barra.
+    const esfuerzoToki = ruta.esfuerzo !== undefined && ruta.turno !== undefined ? ruta.esfuerzo : ruta.pendiente?.esfuerzo
+    const partesChip = [ruta.modeloPrincipal !== undefined ? nombreCorto(ruta.modeloPrincipal) : undefined, esfuerzoToki !== undefined ? xr().esfuerzo[esfuerzoToki] : undefined].filter((p): p is string => p !== undefined)
+    const chipModelo = partesChip.length > 0 && avisoRuta === undefined ? `${partesChip.join(' · ')} · ${xr().porToki}` : undefined
 
     if (esCompacto) {
       return (
@@ -2443,6 +2722,9 @@ export const register: Register = (on, options) => {
               <Text dimColor>·</Text>
               <Text dimColor>{x.cincoHoras}</Text>
               <Text color={colorDePorcentaje(uso.cincoHoras)}>{Math.round(uso.cincoHoras)}%</Text>
+              {guardia.proyeccion.five_hour?.agotaEn !== undefined && (
+                <Text color="warning">{xg().limite.seAcaba(hora(guardia.proyeccion.five_hour.agotaEn, 'five_hour', vivo.idioma))}</Text>
+              )}
             </Box>
           )}
           {uso?.semana !== undefined && !angosto && (
@@ -2450,6 +2732,9 @@ export const register: Register = (on, options) => {
               <Text dimColor>·</Text>
               <Text dimColor>{x.semana}</Text>
               <Text color={colorDePorcentaje(uso.semana)}>{Math.round(uso.semana)}%</Text>
+              {guardia.proyeccion.seven_day?.agotaEn !== undefined && (
+                <Text color="warning">{xg().limite.seAcaba(hora(guardia.proyeccion.seven_day.agotaEn, 'seven_day', vivo.idioma))}</Text>
+              )}
             </Box>
           )}
           <Box flexGrow={1} />

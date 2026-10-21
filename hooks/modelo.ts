@@ -48,7 +48,7 @@ export function limpiarPrompt(texto: string): string {
 const PROFUNDO =
   /\b(ultrathink|piensa (muy |lo )?(bien|a fondo|profundamente|con calma|detenidamente|en todo)|pi[eé]nsalo (bien|a fondo)|think (very )?(hard|harder|deeply|carefully)|a fondo|en profundidad|todos los escenarios|ingenier[ií]a inversa|reverse[- ]engineer\w*|an[aá]lisis (completo|exhaustivo|profundo)|exhaustiv\w*|thorough(ly)?|deep dive)\b|\bREA\b/i
 const COMPLEJO =
-  /\b(arquitectura|architect\w*|diseñ[ae]\w*|design\w*|refactori[zc]\w*|refactor\w*|migra(r|ción|cion|te|tion)\w*|causa ra[ií]z|root cause|por qu[eé] (falla|no funciona|se rompe|pasa)|why (does|is|doesn'?t|isn'?t)|investig\w*|debug\w*|depur\w*|seguridad|security|vulnerab\w*|trade-?offs?|compar[ae]\w*|optimi[zs]\w*|rendimiento|performance|concurren\w*|race condition|en todo el (proyecto|repo|c[oó]digo|sistema)|across the (codebase|repo|project)|end[- ]to[- ]end|estrategia|strategy|planifica\w*|integraci[oó]n|integrat\w*|escalab\w*)\b/i
+  /\b(arquitectura|architect\w*|diseñ[ae]\w*|design\w*|refactori[zc]\w*|refactor\w*|migra(r|ción|cion|te|tion)\w*|causa ra[ií]z|root cause|por qu[eé] (falla|no funciona|se rompe|pasa)|why (does|is|doesn'?t|isn'?t)|investig\w*|debug\w*|depur\w*|seguridad|security|vulnerab\w*|trade-?offs?|compar[ae]\w*|optimi[zs]\w*|rendimiento|performance|concurren\w*|race condition|en todo el (proyecto|repo|c[oó]digo|sistema)|across the (codebase|repo|project)|end[- ]to[- ]end|estrategia|strategy|planifica\w*|integraci[oó]n|integrat\w*|escalab\w*|recom(ie|e)nd\w*|flujo|workflow|automati[zc]\w*|mejor (manera|forma|pr[aá]ctica|opci[oó]n)|best (way|practice|option|approach)|c[oó]mo (deber[ií]a|conviene|se debe)|how should)\b/i
 const TRIVIAL =
   /\b(renombra\w*|rename\w*|typo|errata|formatea\w*|reformat\w*|corre (los |las )?(tests?|pruebas)|run (the )?tests|git (status|add|commit|push|pull|log|diff|stash)|haz (el |un )?commit|commitea|haz push|lint\w*|instala\w*|install\w*|bump|cambia (el|la|este|esta) (texto|nombre|color|t[ií]tulo|label|etiqueta)|qu[eé] hora|lista (los )?archivos|list (the )?files|traduce|translate|corrige (la )?ortograf[ií]a|fix (the )?typo)\b/i
 const SEGUIMIENTO =
@@ -120,7 +120,7 @@ export function nombreCorto(modelo: string): string {
 }
 
 /** USD por millón de tokens (lista, octubre 2026). Haiku cobra más por encima de 100k de entrada. */
-type Precio = { entrada: number; escritura5m: number; escritura1h: number; lectura: number; salida: number }
+export type Precio = { entrada: number; escritura5m: number; escritura1h: number; lectura: number; salida: number }
 const PRECIOS: Record<Familia, Precio> = {
   haiku: { entrada: 0.1, escritura5m: 0.125, escritura1h: 0.2, lectura: 0.01, salida: 0.5 },
   sonnet: { entrada: 2, escritura5m: 2.5, escritura1h: 4, lectura: 0.1, salida: 10 },
@@ -129,7 +129,7 @@ const PRECIOS: Record<Familia, Precio> = {
 }
 const HAIKU_LARGO: Precio = { entrada: 0.5, escritura5m: 0.625, escritura1h: 1, lectura: 0.05, salida: 2.5 }
 
-function precio(f: Familia, contexto: number): Precio {
+export function precio(f: Familia, contexto: number): Precio {
   return f === 'haiku' && contexto > 100_000 ? HAIKU_LARGO : PRECIOS[f]
 }
 
@@ -296,6 +296,9 @@ export type TextosRuta = {
   modoCambiado: (m: string) => string
   linea: (nivel: string, elegido: string, motivo: string) => string
   sinDecisiones: string
+  ultimoMensaje: string
+  sinLectura: string
+  decision: Record<'ya-va-asi' | 'callado' | 'auto' | 'preguntar', string>
 }
 
 export const textosRuta: Record<Idioma, TextosRuta> = {
@@ -340,6 +343,9 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     modoCambiado: m => `Toki: modelo y esfuerzo — ${m}.`,
     linea: (n, el, m) => `${n} (${m}) → ${el}`,
     sinDecisiones: 'Aún no hubo cambios de modelo o esfuerzo.',
+    ultimoMensaje: 'Último mensaje',
+    sinLectura: 'Toki todavía no leyó ningún mensaje en esta sesión (el primero calibra el esfuerzo).',
+    decision: { 'ya-va-asi': 'ya iba así', callado: 'sin cambio (no lo aplico sin preguntar)', auto: 'aplicado', preguntar: 'te pregunté' },
   },
   en: {
     esfuerzo: { low: 'low', medium: 'medium', high: 'high', xhigh: 'extra high', max: 'max' },
@@ -382,6 +388,9 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     modoCambiado: m => `Toki: model and effort — ${m}.`,
     linea: (n, el, m) => `${n} (${m}) → ${el}`,
     sinDecisiones: 'No model or effort changes yet.',
+    ultimoMensaje: 'Last message',
+    sinLectura: 'Toki has not read a message in this session yet (the first one calibrates the effort).',
+    decision: { 'ya-va-asi': 'already on it', callado: 'no change (not applied without asking)', auto: 'applied', preguntar: 'asked you' },
   },
 }
 
