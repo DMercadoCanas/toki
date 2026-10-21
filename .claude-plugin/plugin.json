@@ -1,6 +1,6 @@
 {
   "name": "toki",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, compacta antes en modelos de 1M, recorta salidas ruidosas, evita repetir salidas idénticas, rescata errores escondidos, recuerda lo importante al compactar y te muestra a dónde se va cada token. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
     "name": "DMercadoCanas"
@@ -67,6 +67,12 @@
       "type": "boolean",
       "title": "Frenar lecturas de archivos generados",
       "description": "La primera vez que Claude intenta leer entero un lockfile, un archivo minificado o algo de node_modules/dist, Toki le sugiere buscar con Grep o leer un tramo. Si insiste, se lo entrega.",
+      "default": true
+    },
+    "resumirBusquedas": {
+      "type": "boolean",
+      "title": "Resumir búsquedas enormes",
+      "description": "Si un grep -r, rg, git grep o find devuelve más de 30 KB (donde Claude Code corta a ciegas), Toki entrega las coincidencias por archivo o carpeta con unas muestras, y deja la salida completa en una copia para que Claude busque ahí.",
       "default": true
     },
     "guardiaPegados": {

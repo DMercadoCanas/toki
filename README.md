@@ -20,6 +20,10 @@ En una sesión de Claude Code:
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
 
+## Lo nuevo en 0.12
+
+**Búsquedas enormes.** Si Claude corre por la terminal un `grep -r`, `rg`, `git grep`, `find` o `fd` sin filtrar y la salida pasa de 30 KB, Claude Code la corta a ciegas. Toki entrega en su lugar un resumen: coincidencias por archivo (o rutas por carpeta), las primeras coincidencias de los archivos con más, y la ruta de la salida completa para que Claude busque ahí. Probado con `claude -p`: un `grep -rn` de 254 KB (1.800 líneas en 60 archivos) llegó como un resumen de ~3k tokens y Claude respondió bien. Se apaga con la opción "Resumir búsquedas enormes".
+
 ## Lo nuevo en 0.11
 
 **Textos pegados enormes.** Todo lo que pegas en el chat (un log, un JSON, un archivo entero) se queda en la conversación y Claude lo relee en cada mensaje que sigue: un log de ~15k tokens en una conversación de 30 mensajes son ~450k tokens releídos. Si pegas más de ~10k tokens, Toki pregunta antes de enviar:

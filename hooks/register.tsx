@@ -104,11 +104,13 @@ import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
 import { textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
+import { resumirBusqueda, tipoBusqueda } from './busquedas'
+import type { TipoBusqueda } from './busquedas'
 import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, opcionesFrio, preguntaFrio, proyectar, textosGuardia, VENTANAS } from './guardia'
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.11.0'
+export const VERSION = '0.12.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -160,6 +162,7 @@ const config = {
   guardiaLimites: true,
   guardiaGenerados: true,
   guardiaPegados: true,
+  busquedas: true,
 }
 
 // Estado vivo del acompañante (se pierde al recargar el plugin; es efímero a propósito).
@@ -1097,6 +1100,32 @@ async function compactarExito(
   }
 }
 
+/** Una búsqueda que pasó de 30 KB: resumen por archivo o carpeta, con la salida completa en la copia. */
+async function resumirBusquedaShell(
+  $: $,
+  comando: string,
+  tipo: TipoBusqueda,
+  r: SalidaShell,
+  captura: Captura | undefined,
+  esPrincipal: boolean,
+): Promise<{ stdout: string; stderr: string } | undefined> {
+  if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) return undefined
+  const copia = await leerCaptura($, captura)
+  const fuente = copia.texto ?? r.stdout
+  if (fuente.length <= LIMITE_CLAUDE_CODE) return undefined
+  const ruta = copia.existe && captura !== undefined ? captura.ruta : await archivar($, fuente)
+  if (ruta === undefined) return undefined
+  const resumen = resumirBusqueda(fuente, tipo, ruta, vivo.idioma)
+  if (resumen === undefined) return undefined
+  // Contrafactual honesto, como con las salidas ruidosas: sin Toki, como mucho 30 KB (o la vista previa de 2 KB).
+  const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
+  const ahorrado = Math.max(0, leidoSinToki - resumen.caracteresDespues)
+  await sumarAhorro($, ahorrado, comando, esPrincipal)
+  anotar(comando, 'compactado', tx().detalleCompactado(kb(resumen.caracteresAntes), kb(resumen.caracteresDespues), true), tokensAprox(ahorrado))
+  registrarSalidaGrande($, fuente.length)
+  return { stdout: resumen.texto, stderr: copia.existe ? '' : r.stderr }
+}
+
 /** Agrega a lo que entregó el `| tail` los errores que quedaron fuera. Nada si no había. */
 async function rescatar($: $, comando: string, captura: Captura, entregado: string, programa = 'tail'): Promise<string | undefined> {
   const copia = await leerCaptura($, captura)
@@ -1907,6 +1936,7 @@ export const register: Register = (on, options) => {
   config.guardiaLimites = options['guardiaLimites'] !== false
   config.guardiaGenerados = options['guardiaGenerados'] !== false
   config.guardiaPegados = options['guardiaPegados'] !== false
+  config.busquedas = options['resumirBusquedas'] !== false
   vivo.sonidos = options['sonidos'] !== false
   ruta.modoConfig = leerModo(options['recomendarModelo'])
   ruta.modo = ruta.modoConfig
@@ -2247,19 +2277,25 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const comando = e.command
     const compactable = prepararComando(comando)
-    const captura = compactable ? await planearCaptura($, comando) : undefined
-    const rescate = !compactable && config.compresion ? await planearRescate($, comando) : undefined
-    if (compactable) await ampliarLimite($)
+    const busqueda = !compactable && config.compresion && config.busquedas ? tipoBusqueda(comando) : undefined
+    const captura = compactable || busqueda !== undefined ? await planearCaptura($, comando) : undefined
+    const rescate = !compactable && busqueda === undefined && config.compresion ? await planearRescate($, comando) : undefined
+    const ampliado = compactable || (busqueda !== undefined && captura !== undefined)
+    if (ampliado) await ampliarLimite($)
     // El modelo sigue viendo su comando original en el historial; solo cambia cómo se ejecuta.
     const envuelto = captura ?? rescate
     let ran
     try {
       ran = await next(envuelto ? { ...e, command: envuelto.comando } : e)
     } finally {
-      if (compactable) await restaurarLimite($)
+      if (ampliado) await restaurarLimite($)
     }
     if (ran.deny !== undefined) return ran
     const principal = e.agentId === undefined
+    if (busqueda !== undefined && ran.isError !== true) {
+      const nuevo = await resumirBusquedaShell($, comando, busqueda, ran.result, captura, principal)
+      if (nuevo !== undefined) return { result: { ...ran.result, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
+    }
     const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text)
     if (ran.isError !== true) {
       const repetida = await revisarRepetida($, 'Bash', comando, e.agentId, ran.result, envuelto)
