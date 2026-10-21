@@ -36,6 +36,11 @@ describe('leer el mensaje', () => {
     expect(l.seguro).toBe(true)
   })
 
+  test('una consulta de flujo o de "qué recomiendas" también es compleja', () => {
+    const l = nivelHeuristico('Cuál es el flujo que tú recomiendas en Odoo para crear un empleado? Supongo que primero el usuario y luego el empleado desde el contacto, no es así? O cuál es el flujo para automatizar los archivados de usuarios, empleados y contactos?')
+    expect(l.nivel).toBe('complejo')
+  })
+
   test('lo mecánico es simple', () => {
     expect(nivelHeuristico('renombra la variable foo a bar en utils').nivel).toBe('trivial')
     expect(nivelHeuristico('haz commit y push de esto').nivel).toBe('trivial')
@@ -243,6 +248,9 @@ describe('modelo y esfuerzo con el motor', () => {
       { turnId: 't2', model: 'claude-sonnet-5-5', effort: 'low' },
       { turnId: 't2', model: 'claude-sonnet-5-5', effort: 'low' },
     ])
+    const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
+    expect(estado.text).toContain('Último mensaje: simple (tarea mecánica) · Opus · medio → Sonnet · bajo')
+    expect(estado.text).toContain('· aplicado')
     const porQue = (await $.command.run({ command: 'toki-por-que', args: '' } as never)) as { text: string }
     expect(porQue.text).toContain('Modelo y esfuerzo: cambia solo y avisa')
     expect(porQue.text).toContain('Sonnet por Toki')
