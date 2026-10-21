@@ -642,7 +642,10 @@ async function ajustarVentana($: $, avisar: boolean): Promise<void> {
     vivo.ventanaNativa = nativa ?? efectiva
     vivo.ventanaFuente = efectiva === decision.poner && (nativa ?? 0) > efectiva ? 'toki' : 'nativa'
     void anotarDiagnostico($, `ventana: compacta a ${efectiva} (Claude Code: ${nativa ?? '?'})`)
-    if (avisar && !esDeToki && vivo.ventanaFuente === 'toki') {
+    // El aviso, una sola vez por valor: no en cada sesión.
+    const claveAviso = `ventanaAvisada:${efectiva}`
+    if (avisar && !esDeToki && vivo.ventanaFuente === 'toki' && (await $.store.get(claveAviso)) !== true) {
+      await $.store.set(claveAviso, true)
       $.ui.toast(tx().toastVentana(formatearTokens(efectiva), formatearTokens(vivo.ventanaNativa)), { timeoutMs: 9000 })
     }
   } catch (err) {
