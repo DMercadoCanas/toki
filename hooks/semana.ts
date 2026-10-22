@@ -46,6 +46,10 @@ export type ResumenSemana = {
   /** Lo que movió elegir modelo y esfuerzo por mensaje, en USD a precio de API: ahorrado y de más que aprobaste. */
   ruteo: number
   ruteoExtra: number
+  /** Lo que valen los recortes y las relecturas evitadas, en USD a precio de API (neto). */
+  ahorroUsd: number
+  /** Lo que de verdad costaron los pedidos (principal y subagentes), medido por Toki, en USD a precio de API. */
+  gastoUsd: number
   entrevistas: Entrevistas
   /** Consejos para pedir mejor que Toki mostró. */
   consejos: number
@@ -74,6 +78,8 @@ export const SEMANA_VACIA: ResumenSemana = {
   porModelo: {},
   ruteo: 0,
   ruteoExtra: 0,
+  ahorroUsd: 0,
+  gastoUsd: 0,
   entrevistas: { con: 0, conCorr: 0, sin: 0, sinCorr: 0 },
   consejos: 0,
   frios: 0,
@@ -133,6 +139,8 @@ function leerResumen(valor: unknown): ResumenSemana {
     porModelo: mapa(v['porModelo'], FAMILIAS),
     ruteo: Math.max(0, numero(v['ruteo'])),
     ruteoExtra: Math.max(0, numero(v['ruteoExtra'])),
+    ahorroUsd: numero(v['ahorroUsd']),
+    gastoUsd: Math.max(0, numero(v['gastoUsd'])),
     entrevistas: { con: e.con ?? 0, conCorr: e.conCorr ?? 0, sin: e.sin ?? 0, sinCorr: e.sinCorr ?? 0 },
     consejos: Math.max(0, numero(v['consejos'])),
     frios: Math.max(0, numero(v['frios'])),
@@ -166,6 +174,10 @@ export type Delta = {
   /** USD a precio de API; negativo al deshacer. */
   ruteo?: number
   ruteoExtra?: number
+  /** USD de recortes y relecturas evitadas (negativo al compactar). */
+  ahorroUsd?: number
+  /** USD que de verdad costó un pedido. */
+  gastoUsd?: number
   /** Uno más en ese grupo. */
   entrevista?: CampoEntrevista
   consejos?: number
@@ -196,6 +208,8 @@ export function sumarSemana(semanas: Semanas, ms: number, d: Delta): Semanas {
     porModelo,
     ruteo: Math.max(0, s.ruteo + numero(d.ruteo)),
     ruteoExtra: Math.max(0, s.ruteoExtra + numero(d.ruteoExtra)),
+    ahorroUsd: s.ahorroUsd + numero(d.ahorroUsd),
+    gastoUsd: s.gastoUsd + Math.max(0, numero(d.gastoUsd)),
     entrevistas,
     consejos: s.consejos + numero(d.consejos),
     frios: s.frios + numero(d.frios),

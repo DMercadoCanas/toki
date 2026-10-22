@@ -3,9 +3,11 @@
 // cero dependencias, y si algo falla, Claude sigue trabajando normal.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderElement, RenderNode, ResolveInput, ToolCallResult } from 'claude-code'
+import type { EngineInterface, Register, RenderElement, RenderNode, ResolveInput, ToolCallResult, TurnStepInput, TurnUsage } from 'claude-code'
 
 import type { Sesion } from '../types'
+import { COMIENZO_TIPICO, costoClasificador, costoSinTokiPedido, esPedidoPrevio, factorSalida, leidoSinToki as leidoCacheSinToki, valorEscritura, valorLectura } from './ahorro'
+import type { PedidoPrevio, UsoMedido } from './ahorro'
 import { avisoBucle, registrar, UMBRAL_FALLOS } from './bucles'
 import { debeMantenerCache, evaluarPing } from './cache'
 import {
@@ -42,10 +44,8 @@ import {
   ahorroSinCache,
   aprox,
   costoMedido,
-  costoSinToki,
   daIgual,
   decidirInterfaz,
-  deltaRuteo,
   diferencia,
   esEsfuerzo,
   etiquetas,
@@ -125,7 +125,12 @@ const CLAVE_LOGROS = 'logros'
 const CLAVE_IDIOMA = 'idiomaDetectado'
 const CLAVE_MIGRADO = 'migradoDesdeAhorroTokens'
 const CLAVE_RELECTURAS = 'relecturasEvitadasTotal'
-const CLAVE_RUTEO = 'ruteoAhorroUsdTotal'
+/** Lo que Toki ahorró desde siempre en dólares a precio de API: recortes, relecturas y modelo (neto). */
+const CLAVE_AHORRO_USD = 'ahorroUsdTotal'
+/** Lo mismo, día por día. */
+const CLAVE_HISTORIAL_USD = 'historialDiarioUsd'
+/** El último pedido del hilo principal y el comienzo medido: el caché que sigue vivo entre sesiones. */
+const CLAVE_ULTIMO_PEDIDO = 'ultimoPedido'
 const CLAVE_SEMANAS = 'semanas'
 const CLAVE_TARJETA = 'tarjetaSemanalMostrada'
 /** El valor que Toki puso en la variable, para no confundirlo con uno tuyo. */
@@ -243,6 +248,20 @@ const vivo: {
   contextoPedido?: number
   /** La última salida de cada comando, para notar una idéntica. */
   repetidas: Record<string, Repetida>
+  /** El último pedido del hilo principal: contra él se mide el caché que habría tenido tu modelo. */
+  pedidoPrevio?: PedidoPrevio
+  /** Lo que el caché sirve al empezar de cero (herramientas e instrucciones), medido. */
+  prefijoSistema?: number
+  /** Recién /clear o compactado: con el pedido anterior solo queda en común el comienzo. */
+  trasLimpiar: boolean
+  /** Toki mantuvo el caché con pings desde el último pedido. */
+  conPings: boolean
+  /** El modelo que habría usado sin Toki cada subagente que Toki mandó a otro. */
+  familiaSinDeAgente: Map<string, Familia>
+  /** Lo medido y aún sin acreditar: lo que costó de verdad (con lo que gasta Toki) y lo que habría costado sin Toki. */
+  cuentaRuteo: { real: number; sin: number }
+  /** Dólares ahorrados que aún no se sumaron al total y al día (se guardan al terminar cada mensaje). */
+  dolaresPendientes: number
 } = {
   idioma: 'es',
   idiomaFijo: false,
@@ -287,6 +306,11 @@ const vivo: {
   relecturas: RELECTURAS_VACIAS,
   contextoMax: 0,
   repetidas: {},
+  trasLimpiar: false,
+  conPings: false,
+  familiaSinDeAgente: new Map<string, Familia>(),
+  cuentaRuteo: { real: 0, sin: 0 },
+  dolaresPendientes: 0,
 }
 
 /** Toki en pixel art, animado dentro del SVG (fuera de la terminal). */
@@ -308,6 +332,15 @@ function kb(n: number): string {
 /** Suscripción: 1 h de caché. API: 5 min. */
 function ttlMinutos(): number {
   return vivo.usoCache?.esSuscripcion ? 60 : 5
+}
+
+/** Para medir: suscripción (o aún sin cifras), 1 h; API, 5 min. */
+function ttl1hSesion(): boolean {
+  return vivo.usoCache?.esSuscripcion ?? true
+}
+
+function ttlMs(): number {
+  return (ttl1hSesion() ? 60 : 5) * 60_000
 }
 
 function decir(ahora: number, texto: string, tono: Tono, ms: number): void {
@@ -529,6 +562,11 @@ async function leerHistorial($: $): Promise<Historial> {
   return guardado !== null && typeof guardado === 'object' ? (guardado as Historial) : {}
 }
 
+async function leerHistorialUsd($: $): Promise<Historial> {
+  const guardado = await $.store.get(CLAVE_HISTORIAL_USD)
+  return guardado !== null && typeof guardado === 'object' ? (guardado as Historial) : {}
+}
+
 async function leerLogros($: $): Promise<string[]> {
   const guardado = await $.store.get(CLAVE_LOGROS)
   return Array.isArray(guardado) ? guardado.filter((l): l is string => typeof l === 'string') : []
@@ -723,11 +761,20 @@ async function alaSemana($: $, d: Delta): Promise<void> {
   }
 }
 
-async function sumarAhorro($: $, caracteres: number, comando: string, principal = true, tipo: TipoAhorro = 'salida'): Promise<void> {
+/**
+ * Lo que Toki recortó de una salida o un pegado (`agente`: el subagente que la
+ * recibió; ninguno en el hilo principal). En dólares vale lo que no se escribió
+ * en el caché del modelo que la habría leído sin Toki.
+ */
+async function sumarAhorro($: $, caracteres: number, comando: string, agente: string | undefined, tipo: TipoAhorro = 'salida'): Promise<void> {
   const tokens = tokensAprox(caracteres)
-  if (tokens > 0) await alaSemana($, { tipo, ahorro: tokens })
-  await update($, sesion, s => ({ ...s, tokensAhorrados: s.tokensAhorrados + tokens, compactaciones: s.compactaciones + 1 }))
+  const principal = agente === undefined
+  // Un subagente, a precio de 5 min: no se sabe cuánto dura su caché, y así no se infla.
+  const usd = tokens > 0 ? valorEscritura(tokens, familiaSin(agente), principal && ttl1hSesion(), principal ? (vivo.contextoPedido ?? 0) : 0) : 0
+  if (tokens > 0) await alaSemana($, { tipo, ahorro: tokens, ahorroUsd: usd })
+  await update($, sesion, s => ({ ...s, tokensAhorrados: s.tokensAhorrados + tokens, compactaciones: s.compactaciones + 1, recorteUsd: (s.recorteUsd ?? 0) + usd }))
   if (tokens <= 0) return
+  vivo.dolaresPendientes += usd
   // Lo que salió del contexto principal ya no se relee en los pedidos siguientes.
   if (principal) vivo.relecturas = retirar(vivo.relecturas, tokens)
   const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
@@ -740,36 +787,160 @@ async function sumarAhorro($: $, caracteres: number, comando: string, principal 
   if ((await revisarLogros($)).length === 0) sonar($, 'ahorro')
 }
 
-/** Relecturas evitadas: en la sesión y en el histórico. Puede ser negativo (lo que cuesta compactar). */
-async function sumarRelecturas($: $, tokens: number): Promise<void> {
+/**
+ * Relecturas evitadas: en la sesión y en el histórico, en tokens y en dólares (a
+ * precio de lectura del modelo que las habría releído sin Toki). Puede ser
+ * negativo (lo que cuesta compactar).
+ */
+async function sumarRelecturas($: $, tokens: number, familia: Familia): Promise<void> {
   if (tokens === 0) return
-  await update($, sesion, s => ({ ...s, relecturasEvitadas: (s.relecturasEvitadas ?? 0) + tokens }))
+  const usd = valorLectura(tokens, familia, vivo.contextoPedido ?? 0)
+  vivo.dolaresPendientes += usd
+  await update($, sesion, s => ({ ...s, relecturasEvitadas: (s.relecturasEvitadas ?? 0) + tokens, relecturasUsd: (s.relecturasUsd ?? 0) + usd }))
   const total = Number((await $.store.get(CLAVE_RELECTURAS)) ?? 0)
   await $.store.set(CLAVE_RELECTURAS, total + tokens)
-  await alaSemana($, { relecturas: tokens })
+  await alaSemana($, { relecturas: tokens, ahorroUsd: usd })
 }
 
 /**
- * Lo que movió un cambio de modelo o esfuerzo, a precio de API: lo que ahorra va
- * al ahorro (sesión e histórico), lo que cuesta de más va aparte. `signo` -1 lo
- * devuelve (Deshacer).
+ * Lo que movieron el modelo y el esfuerzo de un mensaje, medido: lo que ahorró va
+ * al ahorro (sesión, semana y total); lo que costó de más, aparte.
  */
-async function sumarRuteo($: $, usd: number, signo: 1 | -1 = 1): Promise<void> {
-  if (!Number.isFinite(usd) || Math.abs(usd) < 0.0005) return
-  const monto = Math.abs(usd) * signo
+async function sumarRuteo($: $, usd: number): Promise<void> {
+  if (!Number.isFinite(usd) || Math.abs(usd) < 1e-6) return
+  vivo.dolaresPendientes += usd
   if (usd > 0) {
-    await update($, sesion, s => ({ ...s, ruteoAhorroUsd: Math.max(0, (s.ruteoAhorroUsd ?? 0) + monto) }))
-    const total = Number((await $.store.get(CLAVE_RUTEO)) ?? 0)
-    await $.store.set(CLAVE_RUTEO, Math.max(0, total + monto))
-    await alaSemana($, { ruteo: monto })
+    await update($, sesion, s => ({ ...s, ruteoAhorroUsd: (s.ruteoAhorroUsd ?? 0) + usd }))
+    await alaSemana($, { ruteo: usd })
   } else {
-    await update($, sesion, s => ({ ...s, ruteoExtraUsd: Math.max(0, (s.ruteoExtraUsd ?? 0) + monto) }))
-    await alaSemana($, { ruteoExtra: monto })
+    await update($, sesion, s => ({ ...s, ruteoExtraUsd: (s.ruteoExtraUsd ?? 0) - usd }))
+    await alaSemana($, { ruteoExtra: -usd })
   }
 }
 
-/** Cada pedido al modelo: lo que costó de verdad y lo que Toki evitó que se releyera. */
-async function alPedido($: $, subagente: boolean, u: UsoPedido): Promise<void> {
+/** La familia que habría hecho este trabajo sin Toki: la de tu modelo o la que habría tenido el subagente. */
+function familiaSin(agente: string | undefined): Familia {
+  const delAgente = agente === undefined ? undefined : vivo.familiaSinDeAgente.get(agente)
+  return delAgente ?? familiaDe(vivo.modelo) ?? vivo.pedidoPrevio?.sin ?? 'opus'
+}
+
+/** El modelo que habría usado un subagente sin Toki (los más viejos se olvidan). */
+function recordarAgente(id: string, familia: Familia): void {
+  vivo.familiaSinDeAgente.set(id, familia)
+  if (vivo.familiaSinDeAgente.size <= 200) return
+  const primero = vivo.familiaSinDeAgente.keys().next().value
+  if (primero !== undefined) vivo.familiaSinDeAgente.delete(primero)
+}
+
+/** La familia que habría respondido este pedido sin Toki. */
+function familiaSinDelPedido(e: TurnStepInput, u: TurnUsage): Familia {
+  const real = familiaDe(u.model) ?? familiaDe(e.model) ?? 'opus'
+  if (e.agentId === undefined) return familiaDe(e.model) ?? real
+  const sin = vivo.familiaSinDeAgente.get(e.agentId)
+  if (sin !== undefined) return sin
+  // Un subagente que Toki no tocó (o una tarea interna de Claude Code): sin Toki, lo mismo.
+  recordarAgente(e.agentId, real)
+  return real
+}
+
+/** Suma a lo medido del mensaje en curso. */
+function sumarCuenta(real: number, sin: number): void {
+  if (!Number.isFinite(real) || !Number.isFinite(sin)) return
+  vivo.cuentaRuteo = { real: vivo.cuentaRuteo.real + real, sin: vivo.cuentaRuteo.sin + sin }
+}
+
+/** Las cifras de uso de un `$.model.*`, si las trae. */
+function usoDe(r: unknown): UsoMedido | undefined {
+  const u = (r as { usage?: Record<string, unknown> | null } | null)?.usage
+  if (u === undefined || u === null) return undefined
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0)
+  return { entrada: n(u['input_tokens']), leido: n(u['cache_read_input_tokens']), escrito: n(u['cache_creation_input_tokens']), salida: n(u['output_tokens']) }
+}
+
+/**
+ * Cada pedido contra el mismo pedido sin Toki: tu modelo, tu esfuerzo y el caché
+ * que tu modelo habría tenido. Va a la cuenta del mensaje, que se acredita al terminarlo.
+ */
+function medirPedido(e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, sin: Familia, ahora: number): { real: number; sin: number } {
+  const familia = familiaDe(u.model) ?? familiaDe(pedido.model) ?? 'opus'
+  const uso: UsoMedido = { entrada: u.input_tokens, leido: u.cache_read_input_tokens, escrito: u.cache_creation_input_tokens, salida: u.output_tokens }
+  if (e.agentId !== undefined) {
+    // Un subagente empieza de cero con o sin Toki: mismo caché, otro modelo. A precio de 5 min, para no inflar.
+    const c = { real: costoMedido(familia, uso, false), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h: false }) }
+    sumarCuenta(c.real, c.sin)
+    return c
+  }
+  const p = vivo.pedidoPrevio
+  const tamano = uso.entrada + uso.leido + uso.escrito
+  const ttl1h = ttl1hSesion()
+  // Tras /clear o compactar (o al empezar otra conversación) solo queda en común el comienzo.
+  const limpio = p !== undefined && ((vivo.trasLimpiar && tamano < p.tamano) || (p.tamano >= CONTEXTO_RELEVANTE && tamano < p.tamano * 0.5))
+  const leido = leidoCacheSinToki({
+    previo: p,
+    familia,
+    sin,
+    leido: uso.leido,
+    cacheable: uso.leido + uso.escrito,
+    ahora,
+    ttlMs: ttlMs(),
+    trasLimpiar: limpio,
+    comienzo: vivo.prefijoSistema ?? COMIENZO_TIPICO,
+    conPings: vivo.conPings,
+  })
+  const c = { real: costoMedido(familia, uso, ttl1h), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h, factorSalida: factorSalida(e.effort, pedido.effort), leido }) }
+  sumarCuenta(c.real, c.sin)
+  // El primer pedido tras limpiar, en el mismo modelo: lo que lee del caché es el comienzo.
+  if (limpio && p !== undefined && p.familia === familia && uso.leido > 0) vivo.prefijoSistema = uso.leido
+  vivo.pedidoPrevio = { familia, sin, tamano, cuando: ahora }
+  vivo.trasLimpiar = false
+  vivo.conPings = false
+  // Desde aquí la conversación está en el caché de este modelo.
+  ruta.soloComienzo = false
+  ruta.alIniciar = false
+  return c
+}
+
+/**
+ * Al terminar cada mensaje (y al cerrar la sesión): lo que costó de verdad contra
+ * lo que habría costado sin Toki va al ahorro por modelo (o a lo que costó de más),
+ * y el ahorro en dólares pendiente, al total y al día. Nunca falla: es estadística.
+ */
+async function acreditar($: $): Promise<void> {
+  const { real, sin } = vivo.cuentaRuteo
+  vivo.cuentaRuteo = { real: 0, sin: 0 }
+  try {
+    if (real > 0) {
+      await update($, sesion, s => ({ ...s, gastoMedidoUsd: (s.gastoMedidoUsd ?? 0) + real }))
+      await alaSemana($, { gastoUsd: real })
+    }
+    await sumarRuteo($, sin - real)
+  } catch {
+    // Sin cifras esta vez.
+  }
+  const pendientes = vivo.dolaresPendientes
+  vivo.dolaresPendientes = 0
+  if (pendientes === 0 || !Number.isFinite(pendientes)) return
+  try {
+    const total = Number((await $.store.get(CLAVE_AHORRO_USD)) ?? 0)
+    await $.store.set(CLAVE_AHORRO_USD, (Number.isFinite(total) ? total : 0) + pendientes)
+    await $.store.set(CLAVE_HISTORIAL_USD, sumarAlDia(await leerHistorialUsd($), await $.clock.now(), pendientes))
+  } catch {
+    // Sin store: la cifra de la sesión sigue en la barra.
+  }
+}
+
+/** El último pedido, para la próxima sesión: si su caché sigue vivo, cambiar de modelo al empezar cuesta. */
+async function guardarUltimoPedido($: $): Promise<void> {
+  if (vivo.pedidoPrevio === undefined) return
+  try {
+    await $.store.set(CLAVE_ULTIMO_PEDIDO, { ...vivo.pedidoPrevio, prefijo: vivo.prefijoSistema })
+  } catch {
+    // La próxima sesión mide desde su primer pedido.
+  }
+}
+
+/** Cada pedido al modelo: lo que costó de verdad y lo que Toki evitó que se releyera (`familia`: la que lo habría hecho sin Toki). */
+async function alPedido($: $, subagente: boolean, u: UsoPedido, familia: Familia): Promise<void> {
   await update($, gasto, g => sumarPedido(g, u, subagente))
   const leidos = tamanoDelPedido(u) + u.output_tokens
   vivo.tokensSesion += leidos
@@ -790,7 +961,7 @@ async function alPedido($: $, subagente: boolean, u: UsoPedido): Promise<void> {
   vivo.relecturas = c.r
   const tt = contarTemprana(vivo.temprana, contexto)
   vivo.temprana = tt.t
-  await sumarRelecturas($, c.evitadas + tt.evitadas)
+  await sumarRelecturas($, c.evitadas + tt.evitadas, familia)
 }
 
 /** La ventana se recalcula en varios momentos: al registro solo llega cuando cambia. */
@@ -901,7 +1072,7 @@ async function revisarRepetida(
   const linea = x.salidaRepetida(Math.round((actual.cuando - (previa?.cuando ?? actual.cuando)) / 60_000), kb(texto.length), ruta)
   // Contrafactual honesto: sin Toki, Claude habría leído lo que entrega Claude Code (máx. 30 KB).
   const ahorrado = Math.max(0, Math.min(texto.length, LIMITE_CLAUDE_CODE) - linea.length)
-  await sumarAhorro($, ahorrado, comando, agente === undefined, 'repetida')
+  await sumarAhorro($, ahorrado, comando, agente, 'repetida')
   anotar(comando, 'compactado', x.detalleRepetida, tokensAprox(ahorrado))
   return { stdout: linea, stderr: '' }
 }
@@ -1023,8 +1194,9 @@ async function registrarCompactacion($: $, origen: 'marca' | 'turno' | 'resumen'
   const desde = vivo.ultimoTurnoCompleto
   vivo.ultimaCompactacion = ahora
   vivo.compactaciones += 1
-  // Lo que sigue a una compactación se escribe de cero en el caché: cambiar de modelo ahí sale gratis.
-  ruta.cacheFrio = true
+  // Tras compactar, del caché solo sigue sirviendo el comienzo: cambiar de modelo ahí cuesta solo eso.
+  vivo.trasLimpiar = true
+  ruta.soloComienzo = true
   vivo.tokensVistos = undefined
   // Lo de antes ya no está en el contexto: no hay relecturas que evitar ni salidas que repetir.
   const antes = vivo.contextoMax
@@ -1036,7 +1208,7 @@ async function registrarCompactacion($: $, origen: 'marca' | 'turno' | 'resumen'
   if (vivo.ventanaFuente === 'toki' && vivo.ventana !== undefined && vivo.ventanaNativa !== undefined && antes >= vivo.ventana * 0.7 && antes < vivo.ventanaNativa * 0.9) {
     const inicio = iniciarTemprana(antes, vivo.ventanaNativa)
     vivo.temprana = inicio.t
-    await sumarRelecturas($, inicio.evitadas)
+    await sumarRelecturas($, inicio.evitadas, familiaSin(undefined))
   }
   const x = tx()
   const conMemoria = config.memoria && !estaVacia(vivo.memoria)
@@ -1131,6 +1303,9 @@ async function mantenerCaliente($: $): Promise<void> {
   vivo.pingEnCurso = true
   try {
     const r = await $.model.fork({ prompt: tx().pingPrompt })
+    // Lo que cuesta el ping lo paga el ahorro de Toki: va como gasto real.
+    const usoPing = usoDe(r)
+    if (usoPing !== undefined) sumarCuenta(costoMedido(vivo.pedidoPrevio?.familia ?? familiaDe(vivo.modelo) ?? 'opus', usoPing, ttl1hSesion()), 0)
     const { sirvio, leidos } = evaluarPing(r)
     if (!sirvio) {
       // El caché ya estaba frío o no había nada que reusar: se para hasta tu próximo mensaje.
@@ -1140,6 +1315,7 @@ async function mantenerCaliente($: $): Promise<void> {
     }
     vivo.pingsEnPausa += 1
     vivo.pingsTotales += 1
+    vivo.conPings = true
     vivo.tokensLeidosPing += leidos
     vivo.ultimoUsoCache = await $.clock.now()
     $.ui.invalidate('ui.render')
@@ -1243,7 +1419,7 @@ async function despuesDeEjecutar($: $, comando: string, fallo: boolean, texto: s
 }
 
 /** Un comando que falló: Claude Code solo entrega ~10 KB, y el error suele estar al final. */
-async function compactarFallo($: $, comando: string, texto: string, captura: Captura | undefined, principal = true): Promise<string | undefined> {
+async function compactarFallo($: $, comando: string, texto: string, captura: Captura | undefined, agente: string | undefined): Promise<string | undefined> {
   const idioma = vivo.idioma
   const copia = await leerCaptura($, captura)
   const salida = texto.match(/^(Exit code \d+)\n?/)
@@ -1260,14 +1436,14 @@ async function compactarFallo($: $, comando: string, texto: string, captura: Cap
   }
   // Contrafactual honesto: sin Toki, Claude habría leído lo que entregó Claude Code.
   const ahorrado = Math.max(0, texto.length - c.caracteresDespues - 200)
-  await sumarAhorro($, ahorrado, comando, principal)
+  await sumarAhorro($, ahorrado, comando, agente)
   anotar(comando, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), copia.existe), tokensAprox(ahorrado))
   registrarSalidaGrande($, cuerpo.length)
   return [salida?.[1], encabezado(c, ruta, copia.existe, tokensAprox(ahorrado), idioma), c.texto].filter(Boolean).join('\n')
 }
 
 /** Un comando que terminó bien. Devuelve el stdout y stderr nuevos, o nada si se deja igual. */
-async function compactarExito($: $, comando: string, r: SalidaShell, captura: Captura | undefined, esPrincipal = true): Promise<{ stdout: string; stderr: string } | undefined> {
+async function compactarExito($: $, comando: string, r: SalidaShell, captura: Captura | undefined, agente: string | undefined): Promise<{ stdout: string; stderr: string } | undefined> {
   const idioma = vivo.idioma
   if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) {
     anotarMotivo(comando, 'segundoPlano')
@@ -1293,7 +1469,7 @@ async function compactarExito($: $, comando: string, r: SalidaShell, captura: Ca
   const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
   const leidoConToki = (cOut?.caracteresDespues ?? 0) + (cErr?.caracteresDespues ?? 0) + 300
   const ahorrado = Math.max(0, leidoSinToki - leidoConToki)
-  await sumarAhorro($, ahorrado, comando, esPrincipal)
+  await sumarAhorro($, ahorrado, comando, agente)
   anotar(comando, 'compactado', tx().detalleCompactado(kb(principal.caracteresAntes), kb(principal.caracteresDespues), copia.existe), tokensAprox(ahorrado))
   registrarSalidaGrande($, fuente.length)
   const cabecera = encabezado(principal, ruta, copia.existe, tokensAprox(ahorrado), idioma)
@@ -1310,7 +1486,7 @@ async function resumirBusquedaShell(
   tipo: TipoBusqueda,
   r: SalidaShell,
   captura: Captura | undefined,
-  esPrincipal: boolean,
+  agente: string | undefined,
 ): Promise<{ stdout: string; stderr: string } | undefined> {
   if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) return undefined
   const copia = await leerCaptura($, captura)
@@ -1323,7 +1499,7 @@ async function resumirBusquedaShell(
   // Contrafactual honesto, como con las salidas ruidosas: sin Toki, como mucho 30 KB (o la vista previa de 2 KB).
   const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
   const ahorrado = Math.max(0, leidoSinToki - resumen.caracteresDespues)
-  await sumarAhorro($, ahorrado, comando, esPrincipal, 'busqueda')
+  await sumarAhorro($, ahorrado, comando, agente, 'busqueda')
   anotar(comando, 'compactado', tx().detalleCompactado(kb(resumen.caracteresAntes), kb(resumen.caracteresDespues), true), tokensAprox(ahorrado))
   registrarSalidaGrande($, fuente.length)
   return { stdout: resumen.texto, stderr: copia.existe ? '' : r.stderr }
@@ -1618,10 +1794,6 @@ type DecisionRuta = {
   despues: Eleccion
   como: 'auto' | 'elegido' | 'recordado' | 'deshecho'
   dif: number
-  /** Lo que ahorra (positivo) o cuesta de más (negativo) frente a no tener Toki, en dólares de API estimados. */
-  usd: number
-  /** Lo mismo si ese mensaje hubiera seguido como estaba: Deshacer cuenta esto en su lugar. */
-  usdAntes: number
 }
 
 const CLAVE_MODO_RUTA = 'modoModeloEsfuerzo'
@@ -1657,6 +1829,8 @@ type Medicion = {
   escrito: number
   salida: number
   usd: number
+  /** Lo mismo sin Toki: tu modelo, tu esfuerzo y el caché que habría tenido. */
+  sin: number
 }
 
 const ruta: {
@@ -1685,8 +1859,10 @@ const ruta: {
   avisoSubagentes: boolean
   subagentesEnSonnet: number
   historial: DecisionRuta[]
-  /** Aún no hay caché que perder (sesión nueva, /clear, recién compactado): cambiar de modelo sale gratis. */
-  cacheFrio: boolean
+  /** Del caché solo sirve el comienzo (sesión nueva, /clear, recién compactado): cambiar de modelo reescribe solo eso. */
+  soloComienzo: boolean
+  /** Aún no hubo pedidos en este proceso: una conversación reanudada sí tiene su caché. */
+  alIniciar: boolean
   /** Lo que Toki leyó en el último mensaje, aunque no haya cambiado nada: para que puedas comprobarlo. */
   ultima?: { nivel: Nivel; motivo: MotivoRuta; actual: Opcion; recomendada: Opcion; decision: DecisionMensaje }
   /** "Solo Sonnet hasta que haga falta" (/plugin o /toki-sonnet). */
@@ -1714,7 +1890,8 @@ const ruta: {
   avisoSubagentes: false,
   subagentesEnSonnet: 0,
   historial: [],
-  cacheFrio: true,
+  soloComienzo: true,
+  alIniciar: true,
   sonnetPrimero: false,
   sonnetPausado: false,
   atascadoPrevio: false,
@@ -1743,7 +1920,7 @@ function reiniciarRuta(): void {
   ruta.atascadoPrevio = false
   ruta.preguntoAntes = false
   ruta.aviso = undefined
-  ruta.cacheFrio = true
+  ruta.soloComienzo = true
   ruta.mensajesEn = {}
   ruta.medicion = undefined
 }
@@ -1762,6 +1939,7 @@ function lineaUso(m: Medicion, interrumpido: boolean): string {
     `caché escrito ${m.escrito}`,
     `leído ${m.leido}`,
     `$${m.usd.toFixed(4)}`,
+    `sin Toki $${m.sin.toFixed(4)}`,
     `Toki estimó $${m.estimado.toFixed(4)} (${estimacion})${interrumpido ? ' · interrumpido' : ''}`,
   ].join(' · ')
 }
@@ -1776,8 +1954,11 @@ async function leerNivel($: $, texto: string): Promise<{ nivel: Nivel; motivo: M
   if (l.seguro || limpiarPrompt(texto).length < 40) return l
   // Zona dudosa: una pregunta corta a Haiku, con tiempo límite. Si tarda, gana la heurística.
   try {
+    const enviado = recortar(limpiarPrompt(texto), 2_000)
+    // Lo que cuesta preguntarle a Haiku va del lado de Toki (la API no lo devuelve: se estima).
+    sumarCuenta(costoClasificador(tokensAprox(enviado.length)), 0)
     const etiqueta = await Promise.race([
-      $.model.classify(recortar(limpiarPrompt(texto), 2_000), Object.keys(ETIQUETAS_CLASIFICADOR)),
+      $.model.classify(enviado, Object.keys(ETIQUETAS_CLASIFICADOR)),
       new Promise<undefined>(resolver => $.clock.after(ESPERA_CLASIFICADOR, () => resolver(undefined))),
     ])
     const nivel = etiqueta === undefined ? undefined : ETIQUETAS_CLASIFICADOR[etiqueta]
@@ -1809,8 +1990,15 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   const tuFamilia = familiaDe(tuModelo)
   const base = sonnetActivo() && (tuFamilia === 'opus' || tuFamilia === 'sonnet') ? hermano(tuModelo, 'sonnet') : undefined
   const contexto = Math.max(CONTEXTO_BASE, vivo.contextoPedido ?? vivo.tokensUltimoTurno)
-  const ttl1h = vivo.usoCache?.esSuscripcion ?? true
-  const cacheFrio = ruta.cacheFrio || (vivo.ultimoUsoCache > 0 && (await $.clock.now()) - vivo.ultimoUsoCache > ttlMinutos() * 60_000)
+  const ttl1h = ttl1hSesion()
+  // ¿El modelo con que va la conversación tiene caché? Solo si el último pedido fue a él y no venció.
+  const p0 = vivo.pedidoPrevio
+  const cacheFrio = p0 === undefined || p0.familia !== familiaDe(actual.modelo) || (await $.clock.now()) - Math.max(vivo.ultimoUsoCache, p0.cuando) > ttlMs()
+  // Recién empezada, tras /clear o compactar, cambiar de modelo reescribe solo el comienzo (lo demás es nuevo igual).
+  // Una conversación reanudada ya tiene su caché entero.
+  const comienzo = vivo.prefijoSistema ?? COMIENZO_TIPICO
+  const reanudada = ruta.alIniciar && (vivo.usoCache?.tokens ?? 0) >= Math.max(CONTEXTO_RELEVANTE, 2 * comienzo)
+  const reescribe = ruta.soloComienzo && !reanudada ? Math.min(contexto, comienzo) : undefined
   const p = proponer({
     nivel,
     modelo: actual.modelo,
@@ -1820,11 +2008,10 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
     // Tras un cierre no se sabe qué viene: cambiar de modelo por un mensaje no se paga.
     permitirModelo: !ruta.modeloRoto && !cierre,
     cacheFrio,
+    reescribe,
     sonnetPrimero: base !== undefined,
     atascado,
   })
-  // Sin Toki: tu modelo con el esfuerzo de la sesión. Contra esto se cuenta cada mensaje, cambie o no.
-  const sinToki = costoSinToki({ nivel, modelo: tuModelo, esfuerzo: actual.esfuerzo, contexto, ttl1h })
   let modo = decidirInterfaz(ruta.modo, p, ruta.silenciado || silenciar, base)
   // Modo ahorro por límite (lo elegiste al 90 %): la opción barata, sin preguntar, hasta que se renueve.
   const enAhorro = guardia.ahorroHasta > (await $.clock.now()) || tarea.p?.ahorro === true
@@ -1895,24 +2082,14 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
     escrito: 0,
     salida: 0,
     usd: 0,
+    sin: 0,
   }
   // Cada mensaje cuenta: también los que siguen en el modelo que Toki eligió antes.
   const familia = familiaDe(usada.modelo)
   if (familia !== undefined) ruta.mensajesEn[familia] = (ruta.mensajesEn[familia] ?? 0) + 1
-  if (igual(usada, p.actual)) {
-    await sumarRuteo($, deltaRuteo(p.actual, sinToki))
-    return
-  }
-  await aplicarEleccion($, {
-    nivel,
-    motivo,
-    antes: actual,
-    despues: usada,
-    como,
-    dif: diferencia(usada, p.actual),
-    usd: deltaRuteo(usada, sinToki),
-    usdAntes: deltaRuteo(p.actual, sinToki),
-  })
+  // Lo que ahorró (o costó de más) se mide pedido por pedido y se acredita al terminar el mensaje.
+  if (igual(usada, p.actual)) return
+  await aplicarEleccion($, { nivel, motivo, antes: actual, despues: usada, como, dif: diferencia(usada, p.actual) })
 }
 
 /** El diálogo de modelo y esfuerzo: lo que elijas, o como estaba si lo cierras o lo dejas. */
@@ -1966,7 +2143,6 @@ async function aplicarEleccion($: $, d: Omit<DecisionRuta, 'cuando'>): Promise<v
   ruta.modeloPrincipal = d.despues.modelo === vivo.modelo ? undefined : d.despues.modelo
   ruta.pendiente = { nivel: d.nivel, esfuerzo: d.despues.esfuerzo !== d.antes.esfuerzo ? d.despues.esfuerzo : undefined }
   ruta.historial = [...ruta.historial, { ...d, cuando: ahora }].slice(-12)
-  await sumarRuteo($, d.usd)
   void anotarDiagnostico($, `ruta aplicada: ${d.antes.modelo}/${d.antes.esfuerzo} → ${d.despues.modelo}/${d.despues.esfuerzo} [${d.como}]`)
   const x = xr()
   const texto = x.cambio(nombreCorto(d.despues.modelo), x.esfuerzo[d.despues.esfuerzo], `${textoDiferencia(d.dif, x)}${d.como === 'recordado' ? `, ${x.comoAntes}` : ''}`)
@@ -1984,14 +2160,9 @@ async function deshacerEleccion($: $): Promise<Eleccion | undefined> {
   const ultima = ruta.historial[ruta.historial.length - 1]
   // Solo el último cambio, y si sigue vigente (con /model ya mandas tú).
   if (ultima === undefined || ultima.como === 'deshecho' || (ruta.modeloPrincipal ?? vivo.modelo) !== ultima.despues.modelo) return undefined
-  const enCurso = ruta.pendiente !== undefined || (vivo.enTurno && ruta.turno !== undefined)
   ruta.modeloPrincipal = ultima.antes.modelo === vivo.modelo ? undefined : ultima.antes.modelo
   ruta.esfuerzo = undefined
   ruta.pendiente = undefined
-  if (enCurso) {
-    await sumarRuteo($, ultima.usd, -1)
-    await sumarRuteo($, ultima.usdAntes)
-  }
   ruta.historial = [...ruta.historial.slice(0, -1), { ...ultima, como: 'deshecho' }]
   ruta.preferencias[ultima.nivel] = 'actual'
   ruta.deshechos[ultima.nivel] = ultima.despues
@@ -2151,7 +2322,7 @@ async function guardiaPegado($: $, texto: string): Promise<{ texto: string; sile
     $.ui.log(`Toki, pegado: ${String(err)}`, { to: 'debug' })
     return { texto, silenciar: true }
   }
-  await sumarAhorro($, texto.length - recorte.texto.length, vivo.idioma === 'en' ? 'pasted text' : 'texto pegado', true, 'pegado')
+  await sumarAhorro($, texto.length - recorte.texto.length, vivo.idioma === 'en' ? 'pasted text' : 'texto pegado', undefined, 'pegado')
   return { texto: recorte.texto, silenciar: true }
 }
 
@@ -2596,6 +2767,21 @@ export const register: Register = (on, options) => {
     } catch {
       // Sin modelo aún.
     }
+    // El caché que dejó la sesión anterior: si sigue vivo, cambiar de modelo al empezar reescribe el comienzo.
+    try {
+      const guardado: unknown = await $.store.get(CLAVE_ULTIMO_PEDIDO)
+      if (esPedidoPrevio(guardado)) {
+        vivo.pedidoPrevio = { familia: guardado.familia, sin: guardado.sin, tamano: guardado.tamano, cuando: guardado.cuando }
+        const prefijo = (guardado as { prefijo?: unknown }).prefijo
+        if (typeof prefijo === 'number' && Number.isFinite(prefijo) && prefijo > 0) vivo.prefijoSistema = prefijo
+      }
+    } catch {
+      // Sin dato: se mide desde el primer pedido.
+    }
+    vivo.trasLimpiar = false
+    vivo.conPings = false
+    ruta.soloComienzo = true
+    ruta.alIniciar = true
     // Claude Code lee la ventana de compactación al empezar: puesta a mitad de un turno no cuenta.
     ultimaVentana = ''
     await ajustarVentana($, e.isInteractive === true)
@@ -2622,8 +2808,15 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    // Lo medido de esta conversación se acredita antes de olvidarla.
+    await acreditar($)
+    await guardarUltimoPedido($)
     reiniciarSeguimiento()
     if (e.reason === 'clear') {
+      // El caché del pedido anterior sigue vivo, pero la conversación nueva solo comparte el comienzo.
+      vivo.trasLimpiar = true
+      vivo.conPings = false
+      vivo.familiaSinDeAgente.clear()
       tarea.p = undefined
       reiniciarConversacion()
       reiniciarRuta()
@@ -2693,6 +2886,9 @@ export const register: Register = (on, options) => {
     const modelo = modeloSubagente(e.subagentType, e.prompt, e.parentModel, sonnetActivo())
     if (modelo === undefined) return next(e)
     const r = await next({ ...e, model: modelo })
+    // Sin Toki habría ido en el modelo de la conversación: contra ese se mide.
+    const id = (r as { agentId?: string }).agentId
+    if (id !== undefined) recordarAgente(id, familiaDe(e.parentModel) ?? familiaDe(vivo.modelo) ?? 'opus')
     if (familiaDe((r as { model?: string }).model) === 'sonnet') {
       ruta.subagentesEnSonnet += 1
       if (!ruta.avisoSubagentes) {
@@ -2765,27 +2961,8 @@ export const register: Register = (on, options) => {
       const familia = familiaDe(respuesta.usage?.model ?? pedido.model)
       if (familia !== undefined) await alaSemana($, { modelo: familia })
     }
-    if (e.agentId === undefined && respuesta.usage !== null) {
-      ruta.cacheFrio = false
-      // Cada pedido lee o escribe el caché: desde aquí corre su vida (1 h o 5 min).
-      vivo.ultimoUsoCache = await $.clock.now()
-      const m = ruta.medicion
-      if (m !== undefined && m.turno === e.turnId) {
-        const u = respuesta.usage
-        const modeloReal = u.model ?? pedido.model
-        const uso = { entrada: u.input_tokens, leido: u.cache_read_input_tokens, escrito: u.cache_creation_input_tokens, salida: u.output_tokens }
-        m.pedidos += 1
-        m.entrada += uso.entrada
-        m.leido += uso.leido
-        m.escrito += uso.escrito
-        m.salida += uso.salida
-        m.usd += costoMedido(familiaDe(modeloReal) ?? familiaDe(m.modelo) ?? 'opus', uso, m.ttl1h)
-        if (m.modeloReal === undefined) {
-          m.modeloReal = modeloReal
-          m.esfuerzoReal = String(pedido.effort)
-        }
-      }
-    }
+    // Cada pedido lee o escribe el caché: desde aquí corre su vida (1 h o 5 min).
+    if (e.agentId === undefined && respuesta.usage !== null) vivo.ultimoUsoCache = await $.clock.now()
     // ¿Respondió el modelo que Toki pidió? Si no, se deja de cambiar el modelo (el esfuerzo sigue).
     if (pedido.model !== e.model && respuesta.usage !== null && familiaDe(respuesta.usage.model) !== familiaDe(pedido.model)) {
       ruta.modeloRoto = true
@@ -2794,10 +2971,32 @@ export const register: Register = (on, options) => {
       void anotarDiagnostico($, `modelo pedido ${pedido.model}, respondió ${respuesta.usage.model}`)
     }
     if (respuesta.usage !== null) {
+      const u = respuesta.usage
+      const sin = familiaSinDelPedido(e, u)
       try {
-        await alPedido($, e.agentId !== undefined, respuesta.usage)
+        await alPedido($, e.agentId !== undefined, u, sin)
       } catch {
         // Sin cifras de este pedido: no cambia nada para Claude.
+      }
+      try {
+        // Después de alPedido: si este pedido trae la compactación, ya quedó anotada.
+        const c = medirPedido(e, pedido, u, sin, await $.clock.now())
+        const m = ruta.medicion
+        if (e.agentId === undefined && m !== undefined && m.turno === e.turnId) {
+          m.pedidos += 1
+          m.entrada += u.input_tokens
+          m.leido += u.cache_read_input_tokens
+          m.escrito += u.cache_creation_input_tokens
+          m.salida += u.output_tokens
+          m.usd += c.real
+          m.sin += c.sin
+          if (m.modeloReal === undefined) {
+            m.modeloReal = u.model ?? pedido.model
+            m.esfuerzoReal = String(pedido.effort)
+          }
+        }
+      } catch {
+        // Solo estadística.
       }
     }
     return respuesta
@@ -2823,6 +3022,9 @@ export const register: Register = (on, options) => {
         ruta.medicion = undefined
         void anotarDiagnostico($, lineaUso(medicion, e.isAborted))
       }
+      // Lo que ahorró (o costó de más) este mensaje, medido, a la sesión, la semana y el total.
+      await acreditar($)
+      await guardarUltimoPedido($)
       if (config.memoria) await guardarMemoria($)
       await refrescarUso($, true)
       const uso = vivo.usoCache
@@ -2968,9 +3170,8 @@ export const register: Register = (on, options) => {
       if (ampliado) await restaurarLimite($)
     }
     if (ran.deny !== undefined) return ran
-    const principal = e.agentId === undefined
     if (busqueda !== undefined && ran.isError !== true) {
-      const nuevo = await resumirBusquedaShell($, comando, busqueda, ran.result, captura, principal)
+      const nuevo = await resumirBusquedaShell($, comando, busqueda, ran.result, captura, e.agentId)
       if (nuevo !== undefined) return { result: { ...ran.result, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
     }
     const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text)
@@ -2980,10 +3181,10 @@ export const register: Register = (on, options) => {
     }
     if (compactable) {
       if (ran.isError === true) {
-        const texto = await compactarFallo($, comando, ran.text ?? '', captura, principal)
+        const texto = await compactarFallo($, comando, ran.text ?? '', captura, e.agentId)
         if (texto !== undefined) return { deny: aviso !== undefined ? `${texto}\n${aviso}` : texto }
       } else {
-        const nuevo = await compactarExito($, comando, ran.result, captura, principal)
+        const nuevo = await compactarExito($, comando, ran.result, captura, e.agentId)
         if (nuevo !== undefined) return { result: { ...ran.result, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
       }
     }
@@ -3020,18 +3221,17 @@ export const register: Register = (on, options) => {
         if ('persistedOutputSize' in base) resultado['persistedOutputSize'] = undefined
         return { result: resultado }
       }
-      const principal = e.agentId === undefined
       if (r !== undefined) {
         const repetida = await revisarRepetida($, 'PowerShell', comando, e.agentId, r, envuelto)
         if (repetida !== undefined) return conSalida(repetida)
       }
       if (compactable) {
         if (ran.isError === true) {
-          const texto = await compactarFallo($, comando, ran.text ?? '', captura, principal)
+          const texto = await compactarFallo($, comando, ran.text ?? '', captura, e.agentId)
           if (texto !== undefined) return { deny: aviso !== undefined ? `${texto}\n${aviso}` : texto }
         } else if (r === undefined) anotarMotivo(comando, 'formato')
         else {
-          const nuevo = await compactarExito($, comando, r, captura, principal)
+          const nuevo = await compactarExito($, comando, r, captura, e.agentId)
           if (nuevo !== undefined) return conSalida(nuevo)
         }
       }

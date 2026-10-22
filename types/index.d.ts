@@ -31,10 +31,20 @@ export type Sesion = {
    * sacó del contexto o compactó antes. Neto: puede bajar un momento al compactar.
    */
   relecturasEvitadas: number
-  /** Dólares (a precio de API, estimados) que Toki ahorró mandando mensajes a un modelo o esfuerzo más barato. */
+  /**
+   * Dólares (a precio de API) que Toki ahorró con el modelo y el esfuerzo de cada mensaje,
+   * medidos: lo que costaron de verdad sus pedidos contra los mismos tokens en tu modelo
+   * y tu esfuerzo, con el caché que habrían tenido. Solo los mensajes que salieron más baratos.
+   */
   ruteoAhorroUsd?: number
-  /** Dólares de más que aprobaste al subir de modelo o esfuerzo. Aparte: no resta al ahorro. */
+  /** Dólares de más, medidos igual: mensajes que costaron más que sin Toki (más esfuerzo, o reescribir el caché al cambiar). */
   ruteoExtraUsd?: number
+  /** Lo que valen los tokens que Toki recortó: no se escribieron en el caché. */
+  recorteUsd?: number
+  /** Lo que valen las relecturas evitadas (puede bajar un momento al compactar). */
+  relecturasUsd?: number
+  /** Lo que de verdad costaron los pedidos de la conversación (principal y subagentes), a precio de API. */
+  gastoMedidoUsd?: number
   /**
    * Pedidos grandes al empezar algo nuevo: `con` entrevista previa y `sin` ella, y las
    * correcciones que siguieron a cada grupo; `consejos` son los tips para pedir mejor que se mostraron.

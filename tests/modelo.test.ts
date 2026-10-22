@@ -252,9 +252,20 @@ describe('modelos y costos', () => {
 
 type Visto = { turnId: string; model: string; effort?: string }
 
+type UsoFalso = Partial<{ input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }>
+
 function mundo(
   on: On,
-  opciones: { respondeCon?: string; preguntas?: string[]; respuesta?: (etiquetas: string[]) => string; archivos?: Map<string, string> } = {},
+  opciones: {
+    respondeCon?: string
+    preguntas?: string[]
+    respuesta?: (etiquetas: string[]) => string
+    archivos?: Map<string, string>
+    /** Las cifras de un pedido, si no son las de siempre (`model`: el que respondió). */
+    uso?: (e: { turnId: string; index: number; model: string; agentId?: string }) => UsoFalso
+    /** El store, para leerlo desde la prueba. */
+    guardado?: Map<string, unknown>
+  } = {},
 ): { vistos: Visto[]; toasts: string[] } {
   const vistos: Visto[] = []
   const toasts: string[] = []
@@ -262,7 +273,21 @@ function mundo(
   // Las rutas llegan absolutas: `.claude/toki/…` se guarda con esa clave corta.
   const archivos = opciones.archivos
   const clave = (ruta: string) => (ruta.includes('/.claude/toki/') ? ruta.slice(ruta.indexOf('/.claude/toki/') + 1) : ruta)
-  mock.store(on)
+  const guardado = opciones.guardado
+  if (guardado === undefined) mock.store(on)
+  else {
+    // Como el de verdad: los valores pasan por JSON.
+    on('store.get', ($, e) => ({ value: guardado.get(e.key) }))
+    on('store.set', ($, e) => {
+      guardado.set(e.key, e.value === undefined ? undefined : JSON.parse(JSON.stringify(e.value)))
+      return { value: undefined }
+    })
+    on('store.delete', ($, e) => {
+      guardado.delete(e.key)
+      return { value: undefined }
+    })
+    on('store.keys', () => ({ value: [...guardado.keys()] }))
+  }
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
   on('fs.exists', ($, e) => ({ value: archivos?.has(clave(e.path)) ?? false }))
@@ -290,19 +315,22 @@ function mundo(
   on('session.surfaces', () => ({ value: [] }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 30_000, window: 200_000, percent: 15 }, rateLimits: [] } }) as never)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('model.classify', () => ({ value: undefined }) as never)
   on('turn.step', async function* ($, e) {
     vistos.push({ turnId: e.turnId, model: e.model, effort: typeof e.effort === 'string' ? e.effort : undefined })
+    const model = opciones.respondeCon ?? e.model
+    const otro = opciones.uso?.({ turnId: e.turnId, index: e.index, model, agentId: e.agentId }) ?? {}
     return {
       turnId: e.turnId,
       index: e.index,
       answer: '',
       toolUses: [],
       stopReason: 'end_turn' as const,
-      usage: { input_tokens: 2, output_tokens: 200, cache_read_input_tokens: 29_000, cache_creation_input_tokens: 998, model: opciones.respondeCon ?? e.model },
+      usage: { input_tokens: 2, output_tokens: 200, cache_read_input_tokens: 29_000, cache_creation_input_tokens: 998, ...otro, model },
     }
   })
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
@@ -361,9 +389,8 @@ describe('modelo y esfuerzo con el motor', () => {
     const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
     expect(estado.text).toContain('Último mensaje: simple (tarea mecánica) · Opus · medio → Sonnet · bajo')
     expect(estado.text).toContain('· aplicado')
-      // t1 subió a máximo (gasto extra, aparte) y t2 bajó a Sonnet (ahorro por modelo).
-      expect(estado.text).toContain('Ahorro por mandar mensajes a algo más barato: ')
-      expect(estado.text).toContain('gasto extra que aprobaste: ~$0.')
+    // Medido pedido por pedido: t2 en Sonnet ahorró; t1 a máximo costó de más (responde más largo).
+    expect(estado.text).toContain('Ahorro por el modelo y el esfuerzo de cada mensaje: ~$0.01 medido a precio de API · costó de más: <$0.01 (más esfuerzo o reescribir el caché)')
     const porQue = (await $.command.run({ command: 'toki-por-que', args: '' } as never)) as { text: string }
     expect(porQue.text).toContain('Modelo y esfuerzo: cambia solo y avisa')
     expect(porQue.text).toContain('Sonnet por Toki')
@@ -469,7 +496,7 @@ describe('modelo y esfuerzo con el motor', () => {
     expect(toasts.some(t => t.includes('Opus · bajo'))).toBe(false)
     const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
     expect(estado.text).toContain('· sin cambio (casi no cambia el costo)')
-    expect(estado.text.includes('Ahorro por mandar')).toBe(false)
+    expect(estado.text.includes('Ahorro por el modelo')).toBe(false)
     const en = textosRuta.en.decision['da-igual']
     expect(en).toBe('no change (it barely changes the cost)')
   })
@@ -588,22 +615,27 @@ describe('solo Sonnet hasta que haga falta', () => {
   })
 
   test('preguntar: va en Sonnet, cuenta cada mensaje, pregunta antes de subir a Opus y vuelve solo', { options: { sonnetPrimero: true } }, async ($, on) => {
-    mock.clock(on, { now: 1_000_000 })
+    const reloj = mock.clock(on, { now: 1_000_000 })
     const preguntas: string[] = []
-    const { vistos } = mundo(on, { preguntas })
+    const archivos = new Map<string, string>()
+    const { vistos } = mundo(on, { preguntas, archivos })
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
-    const ahorro = async (): Promise<number> => {
-      const t = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
-      return Number(/barato: ~\$(\d+\.\d+)/.exec(t)?.[1] ?? 0)
+    // Lo medido de cada mensaje: lo que costó y lo que habría costado sin Toki.
+    const medidos = async (): Promise<{ real: number; sin: number }[]> => {
+      await reloj.settle()
+      const diag = archivos.get('.claude/toki/diagnostico.txt') ?? ''
+      return [...diag.matchAll(/ uso: .* \$(\d+\.\d+) · sin Toki \$(\d+\.\d+)/g)].map(m => ({ real: Number(m[1]), sin: Number(m[2]) }))
     }
     await mensaje($, 't0', BOTON, 1)
     expect(vistos.find(v => v.turnId === 't0')).toEqual({ turnId: 't0', model: SONNET, effort: 'medium' })
-    const primero = await ahorro()
-    expect(primero).toBeGreaterThan(0)
+    // Los mismos tokens en Sonnet cuestan la mitad que en Opus.
+    expect(await medidos()).toEqual([{ real: 0.0074, sin: 0.0148 }])
     await mensaje($, 't1', COLUMNA, 1)
     expect(vistos.find(v => v.turnId === 't1')?.model).toBe(SONNET)
     // El que sigue en Sonnet también cuenta, aunque Toki no haya cambiado nada en él.
-    expect(Math.abs((await ahorro()) - 2 * primero) <= 0.011).toBe(true)
+    expect((await medidos())[1]).toEqual({ real: 0.0074, sin: 0.0148 })
+    const balance = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(balance).toContain('Ahorro por el modelo y el esfuerzo de cada mensaje: ~$0.01 medido a precio de API\n')
     expect(preguntas.length).toBe(0)
 
     await mensaje($, 't2', PROFUNDO, 1)
@@ -682,9 +714,12 @@ describe('solo Sonnet hasta que haga falta', () => {
     expect(diag).toMatch(/ruta: .+ · corrige el anterior\n/)
     // Lo que de verdad usó cada mensaje, junto a lo que Toki estimó: solo cifras.
     // En la API (sin límites de suscripción) el caché dura 5 min; el primer mensaje lo encuentra frío.
-    expect(diag).toContain(' uso: normal claude-sonnet-5-5/medium · 1 pedido · entrada 2 · salida 200 · caché escrito 998 · leído 29000 · $0.0074 · Toki estimó $0.0680 (4 pedidos, contexto 35k, caché 5 min, frío)\n')
-    // Lo complejo va en Opus. Lo estimado (9 pedidos) contra lo real (1) es lo que sirve para calibrar.
-    expect(diag).toContain(' uso: complejo claude-opus-5-5/xhigh · 1 pedido · entrada 2 · salida 200 · caché escrito 998 · leído 29000 · $0.0148 · Toki estimó $0.5580 (9 pedidos, contexto 35k, caché 5 min)\n')
+    // Sin Toki: los mismos tokens en Opus, la mitad de barato en Sonnet.
+    expect(diag).toContain(' uso: normal claude-sonnet-5-5/medium · 1 pedido · entrada 2 · salida 200 · caché escrito 998 · leído 29000 · $0.0074 · sin Toki $0.0148 · Toki estimó $0.0680 (4 pedidos, contexto 35k, caché 5 min, frío)\n')
+    // Lo complejo va en Opus, que aún no tenía esta conversación en caché (el primero fue a Sonnet).
+    // Sin Toki: Opus en medio (responde más corto) y con su caché al día. Lo estimado (9 pedidos)
+    // contra lo real (1) es lo que sirve para calibrar.
+    expect(diag).toContain(' uso: complejo claude-opus-5-5/xhigh · 1 pedido · entrada 2 · salida 200 · caché escrito 998 · leído 29000 · $0.0148 · sin Toki $0.0089 · Toki estimó $0.5580 (9 pedidos, contexto 35k, caché 5 min, frío)\n')
     expect((diag.match(/ uso: /g) ?? []).length).toBe(2)
     // La ventana se recalcula en cada mensaje mientras no hay datos: al registro llega una vez.
     expect((diag.match(/ ventana: /g) ?? []).length <= 1).toBe(true)
@@ -701,7 +736,7 @@ describe('solo Sonnet hasta que haga falta', () => {
     await correr($, 't0', BOTON, 1)
     expect(vistos[0]).toEqual({ turnId: 't0', model: OPUS, effort: 'medium' })
     const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
-    expect(estado.text.includes('Ahorro por mandar')).toBe(false)
+    expect(estado.text.includes('Ahorro por el modelo')).toBe(false)
   })
 
   test('/toki-sonnet: se prende, se apaga y vuelves a tu modelo; avisa si el modelo por mensaje está apagado', async ($, on) => {
@@ -751,5 +786,68 @@ describe('solo Sonnet hasta que haga falta', () => {
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
     const r = (await $.agent.spawn({ prompt: 'Diseña la arquitectura del módulo de pagos y compara tres opciones de seguridad', subagentType: 'general-purpose', parentModel: OPUS } as never)) as { model: string }
     expect(r.model).toBe(SONNET)
+  })
+})
+
+describe('ahorro medido con el motor', () => {
+  test('cambiar a Sonnet con el caché de Opus caliente: el primer pedido reescribe todo y se cuenta como costo de más', { options: { recomendarModelo: 'automatico' } }, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    let primero = true
+    mundo(on, {
+      archivos,
+      // El primer pedido en Sonnet no tiene nada en su caché: escribe la conversación entera.
+      uso: e => {
+        if (e.model !== SONNET || !primero) return {}
+        primero = false
+        return { cache_read_input_tokens: 0, cache_creation_input_tokens: 30_000 }
+      },
+    })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1)
+    await mensaje($, 't1', 'renombra la variable foo a bar en utils')
+    await reloj.settle()
+    const diag = archivos.get('.claude/toki/diagnostico.txt') ?? ''
+    // Real: 30k escritos en Sonnet ($0.075) y el pedido de siempre. Sin Toki, Opus leía
+    // esos 30k del caché y respondía en medio (salida ×1/0.73): $0.0115 + $0.0163.
+    expect(diag).toContain(' · 2 pedidos · entrada 4 · salida 400 · caché escrito 30998 · leído 29000 · $0.0844 · sin Toki $0.0278 · ')
+    const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
+    expect(estado.text).toContain('· costó de más: ~$0.06 (más esfuerzo o reescribir el caché)')
+  })
+
+  test('subagente en Sonnet: lo medido va al total y al día cuando termina la sesión', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const guardado = new Map<string, unknown>()
+    mundo(on, { guardado })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    const r = await $.agent.spawn({ prompt: 'Lista los archivos de src y dime cuáles usan fetch', subagentType: 'general-purpose', parentModel: OPUS } as never)
+    expect(r).toEqual({ model: SONNET, agentId: 'a1' })
+    for (let i = 0; i < 2; i++) {
+      const stream = $.turn.step({ turnId: 'ta', index: i, model: SONNET, effort: 'medium', messageCount: 2 + i, agentId: 'a1' } as never)
+      for await (const _ of stream) {
+        // Sin trozos.
+      }
+      await stream.result
+    }
+    // Se acredita al terminar el mensaje o la sesión, no a cada pedido.
+    expect(guardado.get('ahorroUsdTotal')).toBeUndefined()
+    await $.session.end({ reason: 'other', sessionId: 's1', resume: {} } as never)
+    // Cada pedido: $0.0148 en Opus contra $0.0074 en Sonnet, con el mismo caché (el subagente empieza de cero igual).
+    const total = Number(guardado.get('ahorroUsdTotal'))
+    expect(Math.abs(total - 0.014798)).toBeLessThan(1e-6)
+    expect(Object.values(guardado.get('historialDiarioUsd') as Record<string, number>)).toEqual([total])
+    // Solo hubo pedidos de subagentes: no hay último pedido del hilo principal que guardar.
+    expect(guardado.get('ultimoPedido')).toBeUndefined()
+  })
+
+  test('el último pedido queda guardado: la próxima sesión sabe qué caché sigue vivo', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const guardado = new Map<string, unknown>()
+    mundo(on, { guardado })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1)
+    expect(guardado.get('ultimoPedido')).toMatchObject({ familia: 'opus', sin: 'opus', tamano: 30_000 })
+    // Sin cambios de modelo, lo real es lo que habría costado: nada que acreditar por el modelo.
+    expect(Number(guardado.get('ahorroUsdTotal') ?? 0)).toBeLessThan(0.001)
   })
 })

@@ -178,13 +178,23 @@ export type Costo = { usd: number; reescribe: number }
  * nuevo, responder, y reescribir el caché si cambia el modelo. Con `nivel`, un
  * mensaje simple usa lo medido para mensajes simples.
  */
-export function costoMensaje(a: { familia: Familia; esfuerzo: Esfuerzo; contexto: number; pedidos: number; cambiaModelo: boolean; ttl1h: boolean; nivel?: Nivel }): Costo {
+export function costoMensaje(a: {
+  familia: Familia
+  esfuerzo: Esfuerzo
+  contexto: number
+  pedidos: number
+  cambiaModelo: boolean
+  ttl1h: boolean
+  nivel?: Nivel
+  /** Lo que cambiar de modelo reescribe en el caché; por defecto, todo el contexto. */
+  reescribe?: number
+}): Costo {
   const p = precio(a.familia, a.contexto)
   const escritura = a.ttl1h ? p.escritura1h : p.escritura5m
   const relectura = a.pedidos * a.contexto * p.lectura
   const nuevo = a.pedidos * CRECE_POR_PEDIDO * escritura
   const salida = a.pedidos * (a.nivel === 'trivial' ? SALIDA_SIMPLE : SALIDA_POR_PEDIDO)[a.esfuerzo] * p.salida
-  const reescribe = a.cambiaModelo ? a.contexto : 0
+  const reescribe = a.cambiaModelo ? Math.max(0, Math.min(a.contexto, a.reescribe ?? a.contexto)) : 0
   return { usd: (relectura + nuevo + salida + reescribe * escritura) / 1_000_000, reescribe }
 }
 
@@ -242,6 +252,12 @@ export function proponer(a: {
    */
   cacheFrio?: boolean
   /**
+   * Lo único que cambiar de modelo reescribiría, si no es todo el contexto: justo
+   * después de empezar, de /clear o de compactar, solo el comienzo (herramientas e
+   * instrucciones) sigue en el caché de tu modelo.
+   */
+  reescribe?: number
+  /**
    * "Solo Sonnet hasta que haga falta": el equilibrio va en Sonnet y Opus queda
    * para pensar a fondo o para cuando lo anterior no funcionó. Pasa a Sonnet
    * cuando sale gratis (caché frío) o cuando el cambio se paga.
@@ -259,7 +275,7 @@ export function proponer(a: {
     const familia = familiaDe(modelo) ?? fam ?? 'opus'
     const base = { familia, esfuerzo, contexto: a.contexto, pedidos, ttl1h: a.ttl1h, nivel: a.nivel }
     const ya = costoMensaje({ ...base, cambiaModelo: false })
-    const con = modelo !== a.modelo && a.cacheFrio !== true ? costoMensaje({ ...base, cambiaModelo: true }) : ya
+    const con = modelo !== a.modelo && a.cacheFrio !== true ? costoMensaje({ ...base, cambiaModelo: true, reescribe: a.reescribe }) : ya
     return { tipo, modelo, esfuerzo, usd: ya.usd, cambio: con.usd - ya.usd, reescribe: con.reescribe }
   }
   const sonnetPrimero = a.sonnetPrimero === true && puedeCambiar
@@ -482,7 +498,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     sinLectura: 'Toki todavía no leyó ningún mensaje en esta sesión (el primero calibra el esfuerzo).',
     porModelo: 'por modelo',
     balance: (a, e, s) =>
-      `Ahorro por mandar mensajes a algo más barato: ${aprox(a)} estimado a precio de API${s ? ' (con suscripción no es dinero: es límite que no gastas)' : ''}${e ? ` · gasto extra que aprobaste: ${aprox(e)}` : ''}`,
+      `Ahorro por el modelo y el esfuerzo de cada mensaje: ${aprox(a)} medido a precio de API${s ? ' (con suscripción no es dinero: es límite que no gastas)' : ''}${e ? ` · costó de más: ${aprox(e)} (más esfuerzo o reescribir el caché)` : ''}`,
     decision: {
       'ya-va-asi': 'ya iba así',
       'da-igual': 'sin cambio (casi no cambia el costo)',
@@ -555,7 +571,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     sinLectura: 'Toki has not read a message in this session yet (the first one calibrates the effort).',
     porModelo: 'by model',
     balance: (a, e, s) =>
-      `Saved by sending messages to something cheaper: ${aprox(a)} estimated at API prices${s ? ' (on a subscription it is not money: it is limit you keep)' : ''}${e ? ` · extra cost you approved: ${aprox(e)}` : ''}`,
+      `Saved by each message's model and effort: ${aprox(a)} measured at API prices${s ? ' (on a subscription it is not money: it is limit you keep)' : ''}${e ? ` · cost extra: ${aprox(e)} (more effort or cache rewrites)` : ''}`,
     decision: {
       'ya-va-asi': 'already on it',
       'da-igual': 'no change (it barely changes the cost)',
