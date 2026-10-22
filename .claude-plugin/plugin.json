@@ -1,6 +1,6 @@
 {
   "name": "toki",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, pone un presupuesto por tarea, compacta antes en modelos de 1M, recorta salidas ruidosas y búsquedas enormes, frena lecturas de archivos generados, guarda en un archivo los textos pegados enormes, rescata errores escondidos, recuerda lo importante al compactar y cada lunes te muestra una tarjeta con tu semana. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
     "name": "DMercadoCanas"
@@ -52,6 +52,12 @@
         "automatico",
         "no"
       ]
+    },
+    "sonnetPrimero": {
+      "type": "boolean",
+      "title": "Solo Sonnet hasta que haga falta",
+      "description": "Trabaja en Sonnet (la mitad del precio de Opus) y sube a Opus solo cuando hace falta: cuando pides pensarlo a fondo o lo anterior no funcionó. Cambia de modelo cuando sale gratis (al empezar o con el caché vencido) o cuando el cambio se paga; con un caché grande y caliente, espera. Con Fable u otros modelos solo ajusta el esfuerzo. Subir cuesta más: en modo preguntar, Toki te pregunta antes. Necesita «Modelo y esfuerzo por mensaje» prendido. También con /toki-sonnet.",
+      "default": false
     },
     "entrevista": {
       "type": "string",

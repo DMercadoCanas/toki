@@ -175,6 +175,8 @@ const ESFUERZO: Record<Exclude<TipoOpcion, 'actual'>, Record<Nivel, Esfuerzo>> =
 }
 /** Mensajes que se espera seguir en el modelo elegido: así se reparte lo que cuesta cambiar. */
 export const HORIZONTE = 4
+/** Con Sonnet primero, pasar a Sonnet es para quedarse: lo que cuesta cambiar se reparte en más mensajes. */
+export const HORIZONTE_BASE = 8
 
 const RECOMENDADA: Record<Nivel, Exclude<TipoOpcion, 'actual'>> = { trivial: 'ahorro', normal: 'equilibrio', complejo: 'equilibrio', profundo: 'calidad' }
 
@@ -198,6 +200,14 @@ export function proponer(a: {
    * o el caché ya venció. Ahí cambiar de modelo no reescribe nada extra.
    */
   cacheFrio?: boolean
+  /**
+   * "Solo Sonnet hasta que haga falta": el equilibrio va en Sonnet y Opus queda
+   * para pensar a fondo o para cuando lo anterior no funcionó. Pasa a Sonnet
+   * cuando sale gratis (caché frío) o cuando el cambio se paga.
+   */
+  sonnetPrimero?: boolean
+  /** Lo anterior no funcionó (o sigue esa tarea): con Sonnet primero, toca Opus. */
+  atascado?: boolean
 }): Propuesta {
   const fam = familiaDe(a.modelo)
   const pedidos = PEDIDOS_POR_NIVEL[a.nivel]
@@ -211,13 +221,24 @@ export function proponer(a: {
     const con = modelo !== a.modelo && a.cacheFrio !== true ? costoMensaje({ ...base, cambiaModelo: true }) : ya
     return { tipo, modelo, esfuerzo, usd: ya.usd, cambio: con.usd - ya.usd, reescribe: con.reescribe }
   }
+  const sonnetPrimero = a.sonnetPrimero === true && puedeCambiar
+  const horizonte = sonnetPrimero ? HORIZONTE_BASE : HORIZONTE
+  /** ¿Lo que `alla` ahorra frente a `aqui` en los próximos mensajes paga reescribir el caché? */
+  const sePaga = (aqui: Opcion, alla: Opcion): boolean => (aqui.usd - alla.usd) * horizonte > alla.cambio
   const actual = opcion('actual', a.modelo, a.esfuerzo)
   const calidad = opcion('calidad', alto, ESFUERZO.calidad[a.nivel])
-  const equilibrio = opcion('equilibrio', a.nivel === 'complejo' || a.nivel === 'profundo' ? alto : a.modelo, ESFUERZO.equilibrio[a.nivel])
+  const esfuerzoEquilibrio = ESFUERZO.equilibrio[a.nivel]
+  let modeloEquilibrio = a.nivel === 'complejo' || a.nivel === 'profundo' ? alto : a.modelo
+  if (sonnetPrimero) {
+    const haceFaltaOpus = a.nivel === 'profundo' || a.atascado === true
+    // Con un caché grande y caliente, volver a Sonnet espera a que se pague (o a que el caché venza).
+    modeloEquilibrio = haceFaltaOpus ? alto : bajo === a.modelo || sePaga(opcion('equilibrio', a.modelo, esfuerzoEquilibrio), opcion('equilibrio', bajo, esfuerzoEquilibrio)) ? bajo : a.modelo
+  }
+  const equilibrio = opcion('equilibrio', modeloEquilibrio, esfuerzoEquilibrio)
   // Ahorro: el modelo más barato, si lo que ahorra en los próximos mensajes paga reescribir el caché.
   const conCambio = opcion('ahorro', bajo, ESFUERZO.ahorro[a.nivel])
   const sinCambio = opcion('ahorro', a.modelo, bajo === a.modelo ? ESFUERZO.ahorro[a.nivel] : bajarEsfuerzo(equilibrio.esfuerzo))
-  const ahorro = bajo !== a.modelo && (sinCambio.usd - conCambio.usd) * HORIZONTE > conCambio.cambio ? conCambio : sinCambio
+  const ahorro = bajo !== a.modelo && sePaga(sinCambio, conCambio) ? conCambio : sinCambio
   const opciones = [calidad, equilibrio, ahorro].filter((o, i, todas) => todas.findIndex(p => p.modelo === o.modelo && p.esfuerzo === o.esfuerzo) === i)
   const tipoRecomendado = RECOMENDADA[a.nivel]
   const recomendada = opciones.find(o => o.tipo === tipoRecomendado) ?? equilibrio
@@ -242,6 +263,15 @@ export function deltaRuteo(elegida: Pick<Opcion, 'usd' | 'cambio'>, actual: Pick
   return actual.usd - (elegida.usd + elegida.cambio)
 }
 
+/**
+ * Lo que costaría el mensaje sin Toki: tu modelo, con el esfuerzo de la sesión y
+ * sin reescribir nada. Contra esto se cuenta lo que Toki ahorra en cada mensaje,
+ * también en los que siguen en el modelo que eligió.
+ */
+export function costoSinToki(a: { nivel: Nivel; modelo: string; esfuerzo: Esfuerzo; contexto: number; ttl1h: boolean }): Pick<Opcion, 'usd'> {
+  return costoMensaje({ familia: familiaDe(a.modelo) ?? 'opus', esfuerzo: a.esfuerzo, contexto: a.contexto, pedidos: PEDIDOS_POR_NIVEL[a.nivel], cambiaModelo: false, ttl1h: a.ttl1h })
+}
+
 /** Reescribir más que esto ya se nota: Toki pregunta antes. */
 export const REESCRITURA_QUE_PREGUNTA = 30_000
 
@@ -249,11 +279,14 @@ export const REESCRITURA_QUE_PREGUNTA = 30_000
  * ¿Toki pregunta, cambia solo (y avisa), o deja todo como está?
  * `preguntar`: pregunta cuando la recomendada cuesta más o reescribe el caché; si ahorra, la aplica y avisa.
  */
-export function decidirInterfaz(modo: ModoRuta, p: Propuesta, silenciado: boolean): 'nada' | 'auto' | 'preguntar' {
+export function decidirInterfaz(modo: ModoRuta, p: Propuesta, silenciado: boolean, base?: string): 'nada' | 'auto' | 'preguntar' {
   if (modo === 'no' || igual(p.recomendada, p.actual)) return 'nada'
   const masCara = p.recomendada.usd > p.actual.usd * 1.15
   const reescribe = p.recomendada.reescribe >= REESCRITURA_QUE_PREGUNTA
   if (modo === 'automatico') return 'auto'
+  // Sonnet primero (`base`): volver a Sonnet ya lo elegiste, y solo se recomienda si se paga.
+  const vuelveABase = base !== undefined && p.recomendada.modelo === base && p.actual.modelo !== base && !masCara
+  if (vuelveABase && modo !== 'siempre') return 'auto'
   // Callado (dijiste "dejar como está" varias veces): solo lo que ahorra sin tocar el caché.
   if (silenciado) return !masCara && !reescribe ? 'auto' : 'nada'
   if (modo === 'siempre') return 'preguntar'
@@ -266,13 +299,15 @@ export function decidirInterfaz(modo: ModoRuta, p: Propuesta, silenciado: boolea
  * padre) con un encargo simple. Explore y los demás traen su propio modelo
  * (a menudo Haiku, más barato aún): no se tocan. Nunca forks ni planes.
  */
-export function modeloSubagente(tipo: string, encargo: string, modeloPadre: string): string | undefined {
+export function modeloSubagente(tipo: string, encargo: string, modeloPadre: string, sonnetPrimero = false): string | undefined {
   const fam = familiaDe(modeloPadre)
   if (fam !== 'opus' && fam !== 'fable') return undefined
   const sonnet = hermano(modeloPadre, 'sonnet') ?? 'sonnet'
   if (tipo === 'general-purpose') {
     const l = nivelHeuristico(encargo)
     if (l.nivel === 'trivial' || (l.nivel === 'normal' && l.seguro)) return sonnet
+    // Sonnet primero: también lo complejo; Opus solo para pensar a fondo o si lo anterior no funcionó.
+    if (sonnetPrimero && fam === 'opus' && l.nivel !== 'profundo' && l.motivo !== 'atascado') return sonnet
   }
   return undefined
 }
@@ -310,7 +345,29 @@ export type TextosRuta = {
   /** La franja: el ahorro por elegir modelo o esfuerzo. */
   porModelo: string
   balance: (ahorro: string, extra: string | undefined, suscripcion: boolean) => string
-  decision: Record<'ya-va-asi' | 'callado' | 'auto' | 'preguntar', string>
+  decision: Record<Decision, string>
+  /** /toki-modelo deshacer */
+  deshacerHecho: (modelo: string, esfuerzo: string, nivel: string) => string
+  nadaQueDeshacer: string
+  sonnet: TextosSonnet
+}
+
+/** Lo que Toki hizo con el último mensaje (se ve en /toki-modelo). */
+export type Decision = 'ya-va-asi' | 'callado' | 'deshecho' | 'auto' | 'preguntar'
+
+export type TextosSonnet = {
+  titulo: string
+  cmd: string
+  pista: string
+  explicacion: string
+  estado: (activo: boolean) => string
+  pausa: string
+  conteo: (sonnet: number, opus: number) => string
+  activado: string
+  apagado: (vuelvesA: string | undefined) => string
+  sinRuteo: string
+  soloEsfuerzo: (modelo: string) => string
+  uso: string
 }
 
 export const textosRuta: Record<Idioma, TextosRuta> = {
@@ -345,7 +402,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     porToki: 'por Toki',
     titulo: 'Modelo y esfuerzo',
     cmd: 'Toki: cómo elige modelo y esfuerzo para cada mensaje (preguntar, siempre, automatico, no)',
-    uso: 'Cambia el modo con /toki-modelo preguntar | siempre | automatico | no',
+    uso: 'Cambia el modo con /toki-modelo preguntar | siempre | automatico | no. /toki-modelo deshacer vuelve atrás el último cambio. /toki-sonnet: Solo Sonnet hasta que haga falta.',
     modo: {
       preguntar: 'pregunta cuando cuesta más; si ahorra, cambia y avisa',
       siempre: 'pregunta antes de cualquier cambio',
@@ -360,7 +417,24 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     porModelo: 'por modelo',
     balance: (a, e, s) =>
       `Ahorro por mandar mensajes a algo más barato: ${aprox(a)} estimado a precio de API${s ? ' (con suscripción no es dinero: es límite que no gastas)' : ''}${e ? ` · gasto extra que aprobaste: ${aprox(e)}` : ''}`,
-    decision: { 'ya-va-asi': 'ya iba así', callado: 'sin cambio (no lo aplico sin preguntar)', auto: 'aplicado', preguntar: 'te pregunté' },
+    decision: { 'ya-va-asi': 'ya iba así', callado: 'sin cambio (no lo aplico sin preguntar)', deshecho: 'sin cambio (lo deshiciste antes)', auto: 'aplicado', preguntar: 'te pregunté' },
+    deshacerHecho: (m, e, n) => `Toki: deshecho. Vuelves a ${m} · ${e}, y no lo repito en esta sesión cuando el mensaje sea ${n}.`,
+    nadaQueDeshacer: 'Toki: no hay ningún cambio de modelo o esfuerzo que deshacer.',
+    sonnet: {
+      titulo: 'Solo Sonnet hasta que haga falta',
+      cmd: 'Toki: trabaja en Sonnet y sube a Opus solo cuando hace falta (sí, no)',
+      pista: 'sí | no',
+      explicacion:
+        'Trabaja en Sonnet (la mitad del precio de Opus) y sube a Opus solo cuando pides pensarlo a fondo o lo anterior no funcionó. Cambia de modelo cuando sale gratis (al empezar, o con el caché vencido) o cuando el cambio se paga; con un caché grande y caliente, espera. Subir cuesta más: en modo preguntar, Toki te pregunta antes.',
+      estado: a => (a ? 'activado' : 'apagado'),
+      pausa: 'en pausa en esta sesión: elegiste otro modelo con /model (/toki-sonnet sí lo reanuda)',
+      conteo: (s, o) => `Esta sesión: ${s} ${s === 1 ? 'mensaje' : 'mensajes'} en Sonnet, ${o} en Opus`,
+      activado: 'Toki: Solo Sonnet hasta que haga falta — activado, desde el próximo mensaje.',
+      apagado: m => `Toki: Solo Sonnet hasta que haga falta — apagado.${m ? ` Desde el próximo mensaje vuelves a ${m}.` : ''}`,
+      sinRuteo: 'Ojo: el modelo y esfuerzo por mensaje está apagado (/toki-modelo no). No hará nada hasta que lo prendas con /toki-modelo preguntar.',
+      soloEsfuerzo: m => `Con ${m} no cambia de modelo: solo ajusta el esfuerzo.`,
+      uso: 'Actívalo o apágalo con /toki-sonnet sí | no',
+    },
   },
   en: {
     esfuerzo: { low: 'low', medium: 'medium', high: 'high', xhigh: 'extra high', max: 'max' },
@@ -393,7 +467,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     porToki: 'by Toki',
     titulo: 'Model and effort',
     cmd: 'Toki: how it picks model and effort for each message (preguntar, siempre, automatico, no)',
-    uso: 'Change the mode with /toki-modelo preguntar | siempre | automatico | no',
+    uso: 'Change the mode with /toki-modelo preguntar | siempre | automatico | no. /toki-modelo undo reverts the last change. /toki-sonnet: Sonnet first, Opus when needed.',
     modo: {
       preguntar: 'asks when it costs more; switches and tells you when it saves',
       siempre: 'asks before any change',
@@ -408,7 +482,24 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     porModelo: 'by model',
     balance: (a, e, s) =>
       `Saved by sending messages to something cheaper: ${aprox(a)} estimated at API prices${s ? ' (on a subscription it is not money: it is limit you keep)' : ''}${e ? ` · extra cost you approved: ${aprox(e)}` : ''}`,
-    decision: { 'ya-va-asi': 'already on it', callado: 'no change (not applied without asking)', auto: 'applied', preguntar: 'asked you' },
+    decision: { 'ya-va-asi': 'already on it', callado: 'no change (not applied without asking)', deshecho: 'no change (you undid it before)', auto: 'applied', preguntar: 'asked you' },
+    deshacerHecho: (m, e, n) => `Toki: undone. Back to ${m} · ${e}, and I won't repeat it this session for messages like this one (${n}).`,
+    nadaQueDeshacer: 'Toki: there is no model or effort change to undo.',
+    sonnet: {
+      titulo: 'Sonnet first, Opus when needed',
+      cmd: 'Toki: work on Sonnet and move up to Opus only when needed (on, off)',
+      pista: 'on | off',
+      explicacion:
+        'Works on Sonnet (half the price of Opus) and moves up to Opus only when you ask to think it through or the last attempt did not work. It switches models when it is free (at the start, or with an expired cache) or when the switch pays off; with a large warm cache, it waits. Moving up costs more: in preguntar mode, Toki asks you first.',
+      estado: a => (a ? 'on' : 'off'),
+      pausa: 'paused this session: you picked another model with /model (/toki-sonnet on resumes it)',
+      conteo: (s, o) => `This session: ${s} ${s === 1 ? 'message' : 'messages'} on Sonnet, ${o} on Opus`,
+      activado: 'Toki: Sonnet first, Opus when needed — on, from the next message.',
+      apagado: m => `Toki: Sonnet first, Opus when needed — off.${m ? ` From the next message you are back on ${m}.` : ''}`,
+      sinRuteo: 'Note: model and effort per message is off (/toki-modelo no). It will do nothing until you turn it on with /toki-modelo preguntar.',
+      soloEsfuerzo: m => `With ${m} it does not switch models: it only adjusts effort.`,
+      uso: 'Turn it on or off with /toki-sonnet on | off',
+    },
   },
 }
 

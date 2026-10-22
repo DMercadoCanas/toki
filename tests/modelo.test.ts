@@ -4,6 +4,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import {
   costoMensaje,
+  costoSinToki,
   decidirInterfaz,
   deltaRuteo,
   etiquetas,
@@ -211,6 +212,8 @@ function mundo(on: On, opciones: { respondeCon?: string; preguntas?: string[]; r
     return { result: { questions: [], answers: { [q.question]: elegida } } } as never
   })
   on('agent.spawn', ($, e) => ({ model: e.model ?? e.parentModel, agentId: 'a1' }))
+  // /model del motor: aquí no cambia nada (eliges el mismo modelo que ya tenías).
+  on('command.run', { command: 'model' }, () => ({ text: '' }) as never)
   return { vistos, toasts }
 }
 
@@ -218,6 +221,11 @@ type Motor = Parameters<TestBody>[0]
 
 async function mensaje($: Motor, turnId: string, texto: string, pedidos = 2): Promise<void> {
   await $.prompt.submit({ text: texto, wait: false, origin: { kind: 'composer' } } as never)
+  await correr($, turnId, texto, pedidos)
+}
+
+/** El turno de un mensaje ya enviado: sus pedidos al modelo y el final. */
+async function correr($: Motor, turnId: string, texto: string, pedidos = 2): Promise<void> {
   await $.turn.start({ text: texto, turnId })
   for (let i = 0; i < pedidos; i++) {
     const stream = $.turn.step({ turnId, index: i, model: 'claude-opus-5-5', effort: 'medium', messageCount: 10 + i })
@@ -354,5 +362,208 @@ describe('ahorro por modelo', () => {
     expect(x.balance('$0.42', undefined, false)).toContain('~$0.42')
     expect(x.balance('$0.42', '$0.10', true)).toContain('límite')
     expect(x.balance('$0.42', '$0.10', true)).toContain('~$0.10')
+  })
+})
+
+// ---------- Solo Sonnet hasta que haga falta ----------
+
+const OPUS = 'claude-opus-5-5'
+const SONNET = 'claude-sonnet-5-5'
+const BOTON = 'agrega un botón de exportar a CSV en la tabla de pacientes'
+const COLUMNA = 'agrega una columna con la fecha de nacimiento en la tabla de pacientes'
+const FILTRO = 'agrega un filtro por fecha en la tabla de pacientes'
+const PROFUNDO = 'ultrathink: diseña la arquitectura de la sincronización offline y analiza todos los escenarios de conflicto'
+
+describe('solo Sonnet hasta que haga falta', () => {
+  const con = { ttl1h: true, permitirModelo: true, sonnetPrimero: true } as const
+
+  test('lo normal y lo complejo van en Sonnet; con el caché frío el cambio sale gratis y se aplica solo', () => {
+    const normal = proponer({ ...con, nivel: 'normal', modelo: OPUS, esfuerzo: 'medium', contexto: 35_000, cacheFrio: true })
+    expect(normal.recomendada).toMatchObject({ modelo: SONNET, esfuerzo: 'medium', reescribe: 0 })
+    expect(decidirInterfaz('preguntar', normal, false, SONNET)).toBe('auto')
+    const complejo = proponer({ ...con, nivel: 'complejo', modelo: OPUS, esfuerzo: 'medium', contexto: 35_000, cacheFrio: true })
+    expect(complejo.recomendada).toMatchObject({ modelo: SONNET, esfuerzo: 'high' })
+    // Sin Sonnet primero, lo complejo va en Opus.
+    const sin = proponer({ ttl1h: true, permitirModelo: true, nivel: 'complejo', modelo: OPUS, esfuerzo: 'medium', contexto: 35_000, cacheFrio: true })
+    expect(sin.recomendada.modelo).toBe(OPUS)
+  })
+
+  test('pensar a fondo, o lo que no funcionó, sube a Opus; subir cuesta más y pregunta', () => {
+    const profundo = proponer({ ...con, nivel: 'profundo', modelo: SONNET, esfuerzo: 'medium', contexto: 50_000 })
+    expect(profundo.recomendada).toMatchObject({ modelo: OPUS, esfuerzo: 'max' })
+    expect(decidirInterfaz('preguntar', profundo, false, SONNET)).toBe('preguntar')
+    expect(decidirInterfaz('automatico', profundo, false, SONNET)).toBe('auto')
+    const atascado = proponer({ ...con, nivel: 'complejo', modelo: SONNET, esfuerzo: 'medium', contexto: 50_000, atascado: true })
+    expect(atascado.recomendada).toMatchObject({ modelo: OPUS, esfuerzo: 'high' })
+    // Lo complejo que no está atascado se queda en Sonnet.
+    const sigue = proponer({ ...con, nivel: 'complejo', modelo: SONNET, esfuerzo: 'medium', contexto: 50_000 })
+    expect(sigue.recomendada).toMatchObject({ modelo: SONNET, esfuerzo: 'high' })
+  })
+
+  test('volver a Sonnet con el caché caliente: si se paga, se aplica solo aunque reescriba', () => {
+    const p = proponer({ ...con, nivel: 'normal', modelo: OPUS, esfuerzo: 'medium', contexto: 60_000 })
+    expect(p.recomendada).toMatchObject({ modelo: SONNET, esfuerzo: 'medium', reescribe: 60_000 })
+    expect(decidirInterfaz('preguntar', p, false, SONNET)).toBe('auto')
+    // Sin Sonnet primero, reescribir 60k pregunta; en "siempre" pregunta igual.
+    expect(decidirInterfaz('preguntar', p, false)).toBe('preguntar')
+    expect(decidirInterfaz('siempre', p, false, SONNET)).toBe('preguntar')
+  })
+
+  test('con un caché grande y caliente espera: lo simple solo baja el esfuerzo; lo normal se paga en 8 mensajes', () => {
+    const simple = proponer({ ...con, nivel: 'trivial', modelo: OPUS, esfuerzo: 'medium', contexto: 150_000 })
+    expect(simple.recomendada).toMatchObject({ modelo: OPUS, esfuerzo: 'low', reescribe: 0 })
+    const normal = proponer({ ...con, nivel: 'normal', modelo: OPUS, esfuerzo: 'medium', contexto: 150_000 })
+    expect(normal.recomendada.modelo).toBe(SONNET)
+    // Sin Sonnet primero (4 mensajes) a 150k no se paga.
+    expect(proponer({ ...con, sonnetPrimero: false, nivel: 'trivial', modelo: OPUS, esfuerzo: 'medium', contexto: 150_000 }).recomendada.modelo).toBe(OPUS)
+  })
+
+  test('con Fable no hay Sonnet al que pasar: solo el esfuerzo', () => {
+    const p = proponer({ ...con, nivel: 'normal', modelo: 'claude-fable-5-1', esfuerzo: 'high', contexto: 35_000, cacheFrio: true })
+    for (const o of p.opciones) expect(o.modelo).toBe('claude-fable-5-1')
+  })
+
+  test('subagentes generales: también lo complejo va en Sonnet; pensar a fondo y lo atascado, como vienen', () => {
+    const complejo = 'Diseña la arquitectura del módulo de pagos y compara tres opciones de seguridad'
+    expect(modeloSubagente('general-purpose', complejo, OPUS)).toBe(undefined)
+    expect(modeloSubagente('general-purpose', complejo, OPUS, true)).toBe(SONNET)
+    expect(modeloSubagente('general-purpose', PROFUNDO, OPUS, true)).toBe(undefined)
+    expect(modeloSubagente('general-purpose', 'sigue fallando el build con el mismo error', OPUS, true)).toBe(undefined)
+    expect(modeloSubagente('Explore', 'busca dónde se define X', OPUS, true)).toBe(undefined)
+  })
+
+  test('sin Toki: tu modelo con el esfuerzo de la sesión, sin reescribir nada', () => {
+    const sin = costoSinToki({ nivel: 'normal', modelo: OPUS, esfuerzo: 'medium', contexto: 50_000, ttl1h: true })
+    const directo = costoMensaje({ familia: 'opus', esfuerzo: 'medium', contexto: 50_000, pedidos: 4, cambiaModelo: false, ttl1h: true })
+    expect(Math.abs(sin.usd - directo.usd) < 1e-12).toBe(true)
+    expect(costoSinToki({ nivel: 'normal', modelo: SONNET, esfuerzo: 'medium', contexto: 50_000, ttl1h: true }).usd).toBeLessThan(sin.usd)
+  })
+
+  test('preguntar: va en Sonnet, cuenta cada mensaje, pregunta antes de subir a Opus y vuelve solo', { options: { sonnetPrimero: true } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const preguntas: string[] = []
+    const { vistos } = mundo(on, { preguntas })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    const ahorro = async (): Promise<number> => {
+      const t = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+      return Number(/barato: ~\$(\d+\.\d+)/.exec(t)?.[1] ?? 0)
+    }
+    await mensaje($, 't0', BOTON, 1)
+    expect(vistos.find(v => v.turnId === 't0')).toEqual({ turnId: 't0', model: SONNET, effort: 'medium' })
+    const primero = await ahorro()
+    expect(primero).toBeGreaterThan(0)
+    await mensaje($, 't1', COLUMNA, 1)
+    expect(vistos.find(v => v.turnId === 't1')?.model).toBe(SONNET)
+    // El que sigue en Sonnet también cuenta, aunque Toki no haya cambiado nada en él.
+    expect(Math.abs((await ahorro()) - 2 * primero) <= 0.011).toBe(true)
+    expect(preguntas.length).toBe(0)
+
+    await mensaje($, 't2', PROFUNDO, 1)
+    expect(preguntas.length).toBe(1)
+    expect(vistos.find(v => v.turnId === 't2')).toEqual({ turnId: 't2', model: OPUS, effort: 'max' })
+
+    await mensaje($, 't3', FILTRO, 1)
+    expect(preguntas.length).toBe(1)
+    expect(vistos.find(v => v.turnId === 't3')).toEqual({ turnId: 't3', model: SONNET, effort: 'medium' })
+
+    const estado = (await $.command.run({ command: 'toki-sonnet', args: '' } as never)) as { text: string }
+    expect(estado.text).toContain('Solo Sonnet hasta que haga falta: activado')
+    expect(estado.text).toContain('Esta sesión: 3 mensajes en Sonnet, 1 en Opus')
+    const modelo = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
+    expect(modelo.text).toContain('Solo Sonnet hasta que haga falta: activado')
+  })
+
+  test('automático: si algo sigue fallando sube a Opus, y un "dale" sigue ahí', { options: { recomendarModelo: 'automatico', sonnetPrimero: true } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const { vistos } = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1)
+    expect(vistos.find(v => v.turnId === 't0')?.model).toBe(SONNET)
+    await mensaje($, 't1', 'sigue fallando el build con el mismo error', 1)
+    expect(vistos.find(v => v.turnId === 't1')).toEqual({ turnId: 't1', model: OPUS, effort: 'high' })
+    await mensaje($, 't2', 'sí, dale', 1)
+    expect(vistos.find(v => v.turnId === 't2')).toEqual({ turnId: 't2', model: OPUS, effort: 'high' })
+    await mensaje($, 't3', FILTRO, 1)
+    expect(vistos.find(v => v.turnId === 't3')?.model).toBe(SONNET)
+  })
+
+  test('deshacer: vuelve a tu modelo y no lo repite solo para ese nivel', { options: { sonnetPrimero: true } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const { vistos } = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    const nada = (await $.command.run({ command: 'toki-modelo', args: 'deshacer' } as never)) as { text: string }
+    expect(nada.text).toContain('no hay ningún cambio')
+    await mensaje($, 't0', BOTON, 1)
+    expect(vistos.find(v => v.turnId === 't0')?.model).toBe(SONNET)
+    const r = (await $.command.run({ command: 'toki-modelo', args: 'deshacer' } as never)) as { text: string }
+    expect(r.text).toContain('Toki: deshecho. Vuelves a Opus · medio')
+    expect(r.text).toContain('cuando el mensaje sea normal')
+    await mensaje($, 't1', COLUMNA, 1)
+    expect(vistos.find(v => v.turnId === 't1')?.model).toBe(OPUS)
+    const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
+    expect(estado.text).toContain('sin cambio (lo deshiciste antes)')
+    // Otro nivel sí: lo simple pasa a Sonnet.
+    await mensaje($, 't2', 'renombra la variable foo a bar en utils', 1)
+    expect(vistos.find(v => v.turnId === 't2')).toEqual({ turnId: 't2', model: SONNET, effort: 'low' })
+    const otra = (await $.command.run({ command: 'toki-modelo', args: 'undo' } as never)) as { text: string }
+    expect(otra.text).toContain('cuando el mensaje sea simple')
+    const ya = (await $.command.run({ command: 'toki-modelo', args: 'deshacer' } as never)) as { text: string }
+    expect(ya.text).toContain('no hay ningún cambio')
+  })
+
+  test('deshacer antes de que empiece el mensaje: va con tu modelo y su cuenta vuelve atrás', { options: { sonnetPrimero: true } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const { vistos } = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await $.prompt.submit({ text: BOTON, wait: false, origin: { kind: 'composer' } } as never)
+    await $.command.run({ command: 'toki-modelo', args: 'deshacer' } as never)
+    await correr($, 't0', BOTON, 1)
+    expect(vistos[0]).toEqual({ turnId: 't0', model: OPUS, effort: 'medium' })
+    const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
+    expect(estado.text.includes('Ahorro por mandar')).toBe(false)
+  })
+
+  test('/toki-sonnet: se prende, se apaga y vuelves a tu modelo; avisa si el modelo por mensaje está apagado', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const { vistos } = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    const estado = (await $.command.run({ command: 'toki-sonnet', args: '' } as never)) as { text: string }
+    expect(estado.text).toContain('Solo Sonnet hasta que haga falta: apagado')
+    expect(estado.text).toContain('/toki-sonnet sí | no')
+    const si = (await $.command.run({ command: 'toki-sonnet', args: 'sí' } as never)) as { text: string }
+    expect(si.text).toContain('activado')
+    await mensaje($, 't0', BOTON, 1)
+    expect(vistos.find(v => v.turnId === 't0')?.model).toBe(SONNET)
+    const no = (await $.command.run({ command: 'toki-sonnet', args: 'no' } as never)) as { text: string }
+    expect(no.text).toContain('Desde el próximo mensaje vuelves a Opus')
+    await mensaje($, 't1', COLUMNA, 1)
+    expect(vistos.find(v => v.turnId === 't1')?.model).toBe(OPUS)
+    await $.command.run({ command: 'toki-modelo', args: 'no' } as never)
+    const sinRuteo = (await $.command.run({ command: 'toki-sonnet', args: 'on' } as never)) as { text: string }
+    expect(sinRuteo.text).toContain('/toki-modelo no')
+  })
+
+  test('/model: si eliges Opus, Sonnet primero espera hasta /toki-sonnet sí', { options: { recomendarModelo: 'automatico', sonnetPrimero: true } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const { vistos } = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1)
+    expect(vistos.find(v => v.turnId === 't0')?.model).toBe(SONNET)
+    await $.command.run({ command: 'model', args: 'opus' } as never)
+    await mensaje($, 't1', COLUMNA, 1)
+    expect(vistos.find(v => v.turnId === 't1')?.model).toBe(OPUS)
+    const estado = (await $.command.run({ command: 'toki-sonnet', args: '' } as never)) as { text: string }
+    expect(estado.text).toContain('en pausa en esta sesión')
+    await $.command.run({ command: 'toki-sonnet', args: 'sí' } as never)
+    await mensaje($, 't2', FILTRO, 1)
+    expect(vistos.find(v => v.turnId === 't2')?.model).toBe(SONNET)
+  })
+
+  test('subagentes: con Sonnet primero, también los encargos complejos van en Sonnet', { options: { sonnetPrimero: true } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    const r = (await $.agent.spawn({ prompt: 'Diseña la arquitectura del módulo de pagos y compara tres opciones de seguridad', subagentType: 'general-purpose', parentModel: OPUS } as never)) as { model: string }
+    expect(r.model).toBe(SONNET)
   })
 })

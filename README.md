@@ -8,7 +8,7 @@
 
 Habla español e inglés. No agrega ni un token fijo a tu contexto.
 
-> Versión 0.13. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+> Versión 0.15. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
 ## Instalación
 
@@ -19,6 +19,17 @@ En una sesión de Claude Code:
 ```
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
+
+## Lo nuevo en 0.15
+
+- **Solo Sonnet hasta que haga falta.** Actívalo con `/toki-sonnet sí` o en la configuración. Toki trabaja en Sonnet, que cuesta la mitad que Opus, y sube a Opus solo cuando hace falta: cuando pides pensarlo a fondo («ultrathink», «analiza a fondo…») o cuando algo sigue fallando. Cuando vuelves a algo normal, vuelve a Sonnet.
+  - Cambia de modelo cuando sale gratis (al empezar, o con el caché vencido) o cuando el cambio se paga en los próximos mensajes; con un caché grande y caliente, espera.
+  - Subir a Opus cuesta más: en modo `preguntar`, Toki te pregunta antes. Volver a Sonnet ahorra, así que lo hace solo y lo avisa.
+  - Los subagentes generales también van en Sonnet, salvo los que piden pensar a fondo o retoman algo que falló. Con Fable u otro modelo, Toki solo ajusta el esfuerzo.
+  - `/toki-sonnet` muestra si está activo y cuántos mensajes fueron en cada modelo en la sesión.
+- **Si eliges modelo con `/model`, manda tu elección.** Si eliges Opus, Sonnet primero queda en pausa por la sesión; `/toki-sonnet sí` lo reanuda.
+- **`/toki-modelo deshacer`** vuelve atrás el último cambio de modelo o esfuerzo, igual que el botón Deshacer, y Toki no lo repite solo en la sesión para mensajes del mismo tipo.
+- **El ahorro por modelo cuenta cada mensaje.** Antes contaba solo el mensaje en que Toki cambiaba de modelo. Ahora cuenta también los que siguen en el modelo más barato, contra lo que costaría cada uno sin Toki (tu modelo, con tu esfuerzo).
 
 ## Lo nuevo en 0.14
 
@@ -180,7 +191,8 @@ Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), lo que costó
 - **`/toki`**: el panel con todo lo anterior.
 - **`/toki-por-que`**: los últimos comandos y, para cada uno, si se compactó (y cuánto ahorró), si se rescató algo o por qué no se tocó. Si crees que Toki no está ahorrando, empieza por aquí.
 - **`/toki-entrevista`**: preguntas antes de pedidos grandes (`auto`, `preguntar`, `no`).
-- **`/toki-modelo`**: qué modelo y esfuerzo eligió para cada mensaje, y el modo (`preguntar`, `siempre`, `automatico`, `no`).
+- **`/toki-modelo`**: qué modelo y esfuerzo eligió para cada mensaje, y el modo (`preguntar`, `siempre`, `automatico`, `no`). `/toki-modelo deshacer` vuelve atrás el último cambio.
+- **`/toki-sonnet`** `sí` · `no`: Solo Sonnet hasta que haga falta; sin argumento, cómo va.
 - **`/toki-semana`** (o `/toki-semana pasada`): la tarjeta de la semana.
 - **`/toki-presupuesto`** `$2` · `500k` · `quitar`: un tope para la tarea actual; sin argumentos, cómo va.
 - **`/toki-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
@@ -255,6 +267,8 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - Settings: **Compact at…** (200k, 300k, 400k, 500k, or "no" to keep Claude Code's); if you already chose a window, Toki leaves it alone.
 - Measured with Haiku: when Claude cuts test output with `| tail` and the failure sits in the middle, the same task used **half the tokens** with Toki (93.1k vs 184.6k–192.6k) and needed one command instead of three. With a 1.6 MB output, 88.1k vs 134.2k–179.9k.
 - **Weekly card and per-task budget (0.13).** On the first Monday of the week Toki tells you last week's card is ready: `/toki-semana` shows the current week and `/toki-semana last` the previous one. The card shows savings by type, the change against the week before, and one tip. `/toki-presupuesto $2` or `/toki-presupuesto 500k` caps the task at hand. Toki warns at 50% and 80%. Past the cap, it asks before your next message: go on in saving mode, raise the cap 50%, stop, or remove it.
+- **Questions before a big request (0.14).** When you start something new and broad ("build me an app that…") without naming files or what done looks like, Toki asks Claude to put 2–4 multiple-choice questions to you first (recommended answer first) and saves the summary to `.claude/toki/spec.md`. It costs ~1–2k tokens and saves rework. Type "no questions" to skip it. `/toki-entrevista auto|preguntar|no`. Toki also shows short tips for asking better, and after two corrections on the same thing it offers to start fresh.
+- **Sonnet first, Opus when needed (0.15).** Turn it on with `/toki-sonnet on` or in the settings. Toki works on Sonnet (half the price of Opus) and moves up to Opus only when you ask for deep thinking or something keeps failing, then comes back. It switches when the switch is free (at the start, or with a cold cache) or pays for itself; moving up asks first in `preguntar` mode. Picking a model with `/model` pauses it for the session. `/toki-modelo undo` reverts the last model or effort change, and Toki won't repeat it for that kind of message. Model savings now count every message that stays on the cheaper model, against what it would cost without Toki.
 - Measured with `claude plugin eval` on Opus: a mechanical rename cost **54% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 
