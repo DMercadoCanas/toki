@@ -1,51 +1,67 @@
 // Toki en pixel art: cada cuadro se dibuja en una cuadrícula de 32×32 y se serializa
 // como SVG (un <path> por color, con bordes nítidos). Sin dependencias ni imágenes.
+//
+// Diseño "Cápsula visera · escoba": cuerpo bajo y compacto con visor de banda completa y
+// ojos anchos, orugas tipo WALL-E vistas de frente, brazos finos con hombro articulado y
+// manos de mitón, hoja en el pecho, brote fijo en la cabeza y audífonos discretos.
+// Cada parte se pega con su propio contorno de 1 px para que se lea a 64 px.
 import type { Actividad } from './mascota'
 
 export const ANCHO = 32
 export const ALTO = 32
 
-const AZUL = '#3f84dc'
-const AZUL_OSCURO = '#2a5cad'
-const AZUL_CLARO = '#79b3f2'
-const MARINO = '#172744'
-const MARINO_CLARO = '#2b4470'
-const NARANJA = '#f39a3d'
-const NARANJA_OSCURO = '#c96e1e'
-const GRIS = '#9aa3ad'
-const GRIS_OSCURO = '#4f575f'
-const BLANCO = '#f4f7fa'
-const CIAN = '#5fe3ea'
-const VERDE = '#34a853'
-const ROJO = '#ff6b6b'
-const AMARILLO = '#ffd84d'
-const HUMO = '#b8c0c8'
+const C = {
+  azul: '#3f84dc',
+  azulO: '#2a5cad',
+  azulC: '#8cc0f5',
+  borde: '#0e1a33',
+  marino: '#172744',
+  marinoC: '#2e4a7a',
+  naranja: '#f39a3d',
+  naranjaO: '#b85f14',
+  naranjaC: '#ffc27a',
+  gris: '#aab3bd',
+  grisO: '#5b646d',
+  blanco: '#f6f8fb',
+  cian: '#5fe3ea',
+  verde: '#3cc46a',
+  verdeO: '#1f8a45',
+  verdeC: '#9af0b4',
+  rojo: '#ff5c5c',
+  amarillo: '#ffd84d',
+  amarilloO: '#b8891a',
+  humo: '#c3cad2',
+  cafe: '#8a5a2b',
+  cafeO: '#5a3817',
+  crema: '#f1dcb8',
+} as const
 
 type Ojos = 'normal' | 'parpadeo' | 'feliz' | 'cerrados' | 'apretados' | 'grandes'
+type Pose = 'abajo' | 'dormido' | 'medio' | 'arriba' | 'cabeza' | 'barbilla' | 'caja' | 'escoba'
 
 export interface Cuadro {
+  /** Desplazamiento horizontal del cuerpo (temblor o paso al lado). */
+  dx?: number
   /** Desplazamiento vertical del cuerpo (rebote). */
   dy?: number
-  /** Desplazamiento horizontal del cuerpo (temblor). */
-  dx?: number
   ojos?: Ojos
   /** Hacia dónde miran los ojos. */
-  mirada?: { x: number; y: number }
-  brazoIzq?: 'abajo' | 'arriba' | 'medio' | 'barbilla' | 'caja'
-  brazoDer?: 'abajo' | 'arriba' | 'medio' | 'saludo' | 'manguera' | 'caja'
-  /** Cuadro de la manguera (0, 1, 2): el polvo entra en la boquilla. */
-  manguera?: number
+  mx?: number
+  my?: number
+  pose?: Pose
+  /** Paso de la animación de trabajo (0..5). */
+  paso?: number
   /** Caja de tokens comprimida: 0 ancha … 2 apretada. */
   caja?: number
   /** Zetas del sueño (0..2). */
   zzz?: number
-  /** Borde rojo (alerta). */
+  /** Cuerpo rojo (alerta). */
   alerta?: boolean
   /** Confeti (0..2). */
   confeti?: number
   /** Gota de sudor. */
   sudor?: boolean
-  /** Signo de pensar. */
+  /** Burbuja de pensar. */
   burbuja?: boolean
 }
 
@@ -54,6 +70,10 @@ class Lienzo {
   px(x: number, y: number, c: string): void {
     if (x < 0 || y < 0 || x >= ANCHO || y >= ALTO) return
     this.celdas[y * ANCHO + x] = c
+  }
+  get(x: number, y: number): string | null {
+    if (x < 0 || y < 0 || x >= ANCHO || y >= ALTO) return null
+    return this.celdas[y * ANCHO + x] ?? null
   }
   rect(x: number, y: number, w: number, h: number, c: string): void {
     for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.px(x + i, y + j, c)
@@ -66,8 +86,17 @@ class Lienzo {
       this.rect(x + margen, y + j, w - margen * 2, 1, c)
     }
   }
-  disco(cx: number, cy: number, r: number, c: string): void {
-    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r + r * 0.5) this.px(cx + x, cy + y, c)
+  /** Pega otra capa encima, dibujándole antes un contorno de 1 px. */
+  pegar(capa: Lienzo, borde: string = C.borde): void {
+    for (let y = 0; y < ALTO; y++)
+      for (let x = 0; x < ANCHO; x++) {
+        if (capa.get(x, y) !== null) continue
+        if (capa.get(x - 1, y) !== null || capa.get(x + 1, y) !== null || capa.get(x, y - 1) !== null || capa.get(x, y + 1) !== null) this.px(x, y, borde)
+      }
+    for (let i = 0; i < ANCHO * ALTO; i++) {
+      const c = capa.celdas[i]
+      if (c !== null && c !== undefined) this.celdas[i] = c
+    }
   }
   /** El contenido del cuadro: un <path> por color. */
   trazos(): string {
@@ -94,243 +123,300 @@ class Lienzo {
   }
 }
 
-// Geometría base (sin desplazar): cuerpo x 7..24, y 3..27.
-function cuerpo(l: Lienzo, ox: number, oy: number, alerta: boolean): void {
-  const B = alerta ? ROJO : AZUL_OSCURO
-  // Silueta (borde oscuro) y relleno.
-  l.redondo(ox + 7, oy + 3, 18, 25, B, 3)
-  l.redondo(ox + 8, oy + 4, 16, 23, AZUL, 2)
-  // Brillo del lado izquierdo.
-  l.rect(ox + 9, oy + 6, 1, 6, AZUL_CLARO)
-  l.rect(ox + 10, oy + 5, 2, 1, AZUL_CLARO)
-  // Costura de la cintura.
-  l.rect(ox + 8, oy + 16, 16, 1, AZUL_OSCURO)
-  // Etiqueta "Toki".
-  l.rect(ox + 13, oy + 18, 6, 2, BLANCO)
-  l.rect(ox + 14, oy + 18, 1, 2, MARINO_CLARO)
-  l.rect(ox + 16, oy + 18, 1, 2, MARINO_CLARO)
-  // Botón del pecho.
-  l.px(ox + 10, oy + 18, MARINO)
-  // Ventanilla de reciclaje.
-  l.disco(ox + 16, oy + 23, 3, GRIS_OSCURO)
-  l.disco(ox + 16, oy + 23, 2, BLANCO)
-  l.px(ox + 15, oy + 22, VERDE)
-  l.px(ox + 17, oy + 22, VERDE)
-  l.px(ox + 16, oy + 24, VERDE)
-  l.px(ox + 16, oy + 23, HUMO)
-  // Audífonos.
-  l.redondo(ox + 4, oy + 8, 3, 6, NARANJA_OSCURO, 1)
-  l.rect(ox + 5, oy + 9, 2, 4, NARANJA)
-  l.redondo(ox + 25, oy + 8, 3, 6, NARANJA_OSCURO, 1)
-  l.rect(ox + 25, oy + 9, 2, 4, NARANJA)
+const parte = (l: Lienzo, fn: (k: Lienzo) => void, borde?: string): void => {
+  const k = new Lienzo()
+  fn(k)
+  l.pegar(k, borde)
 }
 
-function visor(l: Lienzo, ox: number, oy: number): void {
-  l.redondo(ox + 10, oy + 5, 12, 9, MARINO, 2)
-  // Reflejo.
-  l.rect(ox + 12, oy + 7, 1, 2, MARINO_CLARO)
-  l.px(ox + 13, oy + 7, MARINO_CLARO)
-}
+// ---- Geometría base: cuerpo x 8..23, y 9..25; hombros en y 20; suelo en y 30 ----
+const G = { x: 8, y: 9, w: 16, h: 17, visorY: 2, visorH: 5, ojosY: 3, audif: 3, ojoW: 3, ojoSep: 1 } as const
+const SUELO = 30
 
-function ojos(l: Lienzo, ox: number, oy: number, tipo: Ojos, mirada: { x: number; y: number }): void {
-  const mx = Math.max(-2, Math.min(2, mirada.x))
-  const my = Math.max(-1, Math.min(1, mirada.y))
-  const li = ox + 13 + mx
-  const ld = ox + 18 + mx
-  const y = oy + 8 + my
-  switch (tipo) {
-    case 'normal':
-      l.rect(li, y, 2, 3, CIAN)
-      l.rect(ld, y, 2, 3, CIAN)
-      l.px(li, y, BLANCO)
-      l.px(ld, y, BLANCO)
-      return
-    case 'parpadeo':
-      l.rect(li, y + 2, 2, 1, CIAN)
-      l.rect(ld, y + 2, 2, 1, CIAN)
-      return
-    case 'feliz':
-      l.px(li, y + 1, CIAN)
-      l.px(li + 1, y, CIAN)
-      l.px(li + 2, y + 1, CIAN)
-      l.px(ld - 1, y + 1, CIAN)
-      l.px(ld, y, CIAN)
-      l.px(ld + 1, y + 1, CIAN)
-      return
-    case 'cerrados':
-      l.px(li, y + 1, CIAN)
-      l.px(li + 1, y + 2, CIAN)
-      l.px(li + 2, y + 1, CIAN)
-      l.px(ld - 1, y + 1, CIAN)
-      l.px(ld, y + 2, CIAN)
-      l.px(ld + 1, y + 1, CIAN)
-      return
-    case 'apretados':
-      // > <
-      l.px(li, y, CIAN)
-      l.px(li + 1, y + 1, CIAN)
-      l.px(li, y + 2, CIAN)
-      l.px(ld + 1, y, CIAN)
-      l.px(ld, y + 1, CIAN)
-      l.px(ld + 1, y + 2, CIAN)
-      return
-    case 'grandes':
-      l.rect(li - 1, y - 1, 3, 4, CIAN)
-      l.rect(ld, y - 1, 3, 4, CIAN)
-      l.px(li - 1, y - 1, BLANCO)
-      l.px(ld, y - 1, BLANCO)
-      return
+// ---- Adornos ----
+function zetas(l: Lienzo, x: number, y: number, paso: number): void {
+  const z = (zx: number, zy: number, c: string): void => {
+    l.rect(zx, zy, 3, 1, c)
+    l.px(zx + 1, zy + 1, c)
+    l.rect(zx, zy + 2, 3, 1, c)
   }
+  if (paso >= 0) z(x, y - paso, C.humo)
+  if (paso >= 1) z(x + 3, y - 3 - (paso - 1), C.blanco)
 }
-
-function brazoIzquierdo(l: Lienzo, ox: number, oy: number, pose: NonNullable<Cuadro['brazoIzq']>): void {
-  switch (pose) {
-    case 'abajo':
-      l.rect(ox + 5, oy + 17, 2, 5, GRIS)
-      l.rect(ox + 4, oy + 22, 3, 2, GRIS_OSCURO)
-      return
-    case 'medio':
-      l.rect(ox + 5, oy + 17, 2, 3, GRIS)
-      l.rect(ox + 3, oy + 18, 2, 2, GRIS)
-      l.rect(ox + 2, oy + 17, 2, 2, GRIS_OSCURO)
-      return
-    case 'arriba':
-      l.rect(ox + 5, oy + 15, 2, 3, GRIS)
-      l.rect(ox + 3, oy + 12, 2, 3, GRIS)
-      l.rect(ox + 2, oy + 6, 2, 6, GRIS)
-      l.rect(ox + 1, oy + 4, 3, 2, GRIS_OSCURO)
-      return
-    case 'barbilla':
-      l.rect(ox + 5, oy + 17, 2, 2, GRIS)
-      l.rect(ox + 6, oy + 15, 2, 2, GRIS)
-      l.rect(ox + 8, oy + 13, 3, 2, GRIS_OSCURO)
-      return
-    case 'caja':
-      l.rect(ox + 5, oy + 17, 2, 2, GRIS)
-      l.rect(ox + 6, oy + 19, 3, 2, GRIS)
-      return
-  }
-}
-
-function brazoDerecho(l: Lienzo, ox: number, oy: number, pose: NonNullable<Cuadro['brazoDer']>, manguera: number): void {
-  switch (pose) {
-    case 'abajo':
-      l.rect(ox + 25, oy + 17, 2, 5, GRIS)
-      l.rect(ox + 25, oy + 22, 3, 2, GRIS_OSCURO)
-      return
-    case 'medio':
-      l.rect(ox + 25, oy + 17, 2, 3, GRIS)
-      l.rect(ox + 27, oy + 18, 2, 2, GRIS)
-      l.rect(ox + 28, oy + 17, 2, 2, GRIS_OSCURO)
-      return
-    case 'arriba':
-      l.rect(ox + 25, oy + 15, 2, 3, GRIS)
-      l.rect(ox + 27, oy + 12, 2, 3, GRIS)
-      l.rect(ox + 28, oy + 6, 2, 6, GRIS)
-      l.rect(ox + 28, oy + 4, 3, 2, GRIS_OSCURO)
-      return
-    case 'saludo':
-      l.rect(ox + 25, oy + 15, 2, 3, GRIS)
-      l.rect(ox + 27, oy + 14, 2, 2, GRIS)
-      l.rect(ox + 28, oy + 11, 2, 3, GRIS)
-      l.rect(ox + 28, oy + 9, 3, 2, GRIS_OSCURO)
-      return
-    case 'caja':
-      l.rect(ox + 25, oy + 17, 2, 2, GRIS)
-      l.rect(ox + 23, oy + 19, 3, 2, GRIS)
-      return
-    case 'manguera': {
-      l.rect(ox + 25, oy + 17, 2, 4, GRIS)
-      l.rect(ox + 26, oy + 21, 2, 2, GRIS_OSCURO)
-      // Manguera gris azulada que baja al suelo.
-      l.rect(ox + 27, oy + 22, 1, 3, AZUL_OSCURO)
-      l.rect(ox + 28, oy + 24, 1, 3, AZUL_OSCURO)
-      l.rect(ox + 28, oy + 27, 3, 2, AZUL)
-      l.rect(ox + 27, oy + 29, 5, 1, AZUL_OSCURO)
-      // Polvo que entra en la boquilla.
-      const f = manguera % 3
-      if (f === 0) {
-        l.px(ox + 24, oy + 30, HUMO)
-        l.px(ox + 22, oy + 29, HUMO)
-      } else if (f === 1) {
-        l.px(ox + 25, oy + 30, HUMO)
-        l.px(ox + 23, oy + 28, HUMO)
-      } else {
-        l.px(ox + 26, oy + 30, HUMO)
-        l.px(ox + 25, oy + 28, HUMO)
-      }
-      return
-    }
-  }
-}
-
-function ruedas(l: Lienzo, ox: number, oy: number): void {
-  for (const cx of [ox + 11, ox + 21]) {
-    l.disco(cx, oy + 28, 2, MARINO)
-    l.px(cx, oy + 28, GRIS)
-  }
-}
-
-function caja(l: Lienzo, ox: number, oy: number, nivel: number): void {
-  // Caja de cartón delante del pecho; se aprieta a medida que sube el nivel.
-  const w = 10 - nivel * 2
-  const x = ox + 16 - Math.floor(w / 2)
-  l.rect(x, oy + 20, w, 6, NARANJA_OSCURO)
-  l.rect(x + 1, oy + 21, w - 2, 4, NARANJA)
-  l.rect(x + 1, oy + 22, w - 2, 1, NARANJA_OSCURO)
-  if (nivel > 0) {
-    // Líneas de presión.
-    l.px(x - 2, oy + 21, HUMO)
-    l.px(x - 2, oy + 24, HUMO)
-    l.px(x + w + 1, oy + 21, HUMO)
-    l.px(x + w + 1, oy + 24, HUMO)
-  }
-}
-
-function zetas(l: Lienzo, ox: number, oy: number, paso: number): void {
-  const z = (x: number, y: number, c: string) => {
-    l.rect(x, y, 3, 1, c)
-    l.px(x + 1, y + 1, c)
-    l.rect(x, y + 2, 3, 1, c)
-  }
-  if (paso >= 0) z(ox + 25, oy + 4 - paso, HUMO)
-  if (paso >= 1) z(ox + 28, oy + 1 - (paso - 1), BLANCO)
-}
-
 function confeti(l: Lienzo, paso: number): void {
-  const puntos: [number, number, string][] = [
-    [3, 3, AMARILLO],
-    [28, 5, CIAN],
-    [6, 1, VERDE],
-    [24, 1, ROJO],
-    [1, 9, CIAN],
-    [30, 10, AMARILLO],
+  const p: [number, number, string][] = [
+    [3, 3, C.amarillo],
+    [28, 5, C.cian],
+    [6, 1, C.verde],
+    [24, 1, C.rojo],
+    [1, 9, C.cian],
+    [30, 10, C.amarillo],
   ]
-  for (const [x, y, c] of puntos) l.px(x, (y + paso * 3) % 14, c)
+  for (const [x, y, c] of p) l.px(x, (y + paso * 3) % 14, c)
+}
+function sudor(l: Lienzo, x: number, y: number): void {
+  l.px(x, y, C.cian)
+  l.rect(x - 1, y + 1, 2, 2, C.cian)
+}
+function burbuja(l: Lienzo, x: number, y: number): void {
+  l.px(x, y, C.blanco)
+  l.px(x + 2, y - 2, C.blanco)
+  l.rect(x + 3, y - 5, 3, 3, C.blanco)
+  l.px(x + 4, y - 4, C.humo)
+}
+function token(l: Lienzo, x: number, y: number): void {
+  l.rect(x, y, 2, 2, C.amarillo)
+  l.px(x, y, C.blanco)
+}
+function caja(l: Lienzo, x: number, y: number, w: number, nivel: number): void {
+  parte(l, (k) => {
+    k.rect(x, y, w, 8, C.naranja)
+    k.rect(x, y, w, 2, C.naranjaC)
+    k.rect(x + Math.floor(w / 2) - 1, y, 2, 8, C.naranjaO)
+    k.rect(x, y + 4, w, 1, C.naranjaO)
+  })
+  if (nivel > 0) {
+    l.px(x - 2, y + 1, C.humo)
+    l.px(x - 2, y + 6, C.humo)
+    l.px(x + w + 1, y + 1, C.humo)
+    l.px(x + w + 1, y + 6, C.humo)
+  }
+}
+
+/** Escoba: mango diagonal desde la mano hasta el suelo, cepillo que barre tokens hacia un montoncito. */
+function escoba(l: Lienzo, hx: number, hy: number, paso: number): void {
+  const sway = [0, 1, 2, 2, 1, 0][paso % 6] ?? 0
+  const n = SUELO - 3 - hy
+  const bx = hx + Math.round((n - 1) * 0.35) + sway - 3
+  parte(l, (k) => {
+    for (let i = 0; i < n; i++) k.rect(hx + Math.round(i * 0.35) + Math.round((sway * i) / n), hy + i, 2, 1, i % 3 === 2 ? C.cafeO : C.cafe)
+    k.rect(bx, SUELO - 3, 8, 1, C.cafeO)
+    k.rect(bx, SUELO - 2, 8, 2, C.naranjaC)
+    for (let i = 0; i < 8; i += 2) k.px(bx + i, SUELO - 1, C.naranja)
+  })
+  for (let i = 0; i < 3; i++) l.px(bx - 2 - i * 2 + (paso % 2), SUELO - 1 - (i % 2), C.humo)
+  token(l, bx - 6 - sway, SUELO - 2)
+  l.px(bx - 9, SUELO - 1, C.amarilloO)
+  l.px(bx - 11, SUELO - 1, C.amarillo)
+  l.px(bx - 10, SUELO - 2, C.amarilloO)
+}
+
+// ---- Partes del cuerpo ----
+function orugas(l: Lienzo, x: number, y: number, paso: number): void {
+  const top = y + G.h - 5
+  for (const tx of [x - 2, x + G.w - 4])
+    parte(l, (k) => {
+      k.redondo(tx, top, 6, 8, C.marino, 1)
+      for (let j = 0; j < 8; j++) if ((j + paso) % 2 === 0) k.rect(tx + 1, top + j, 4, 1, C.marinoC)
+      k.rect(tx + 1, top, 1, 8, C.grisO)
+      k.rect(tx + 4, top, 1, 8, C.grisO)
+    })
+}
+function plantita(l: Lienzo, cx: number, y: number): void {
+  parte(l, (k) => {
+    k.rect(cx - 2, y - 2, 5, 2, C.cafe)
+    k.rect(cx - 1, y - 2, 3, 1, C.cafeO)
+  })
+  l.rect(cx, y - 5, 1, 3, C.verdeO)
+  l.px(cx - 1, y - 5, C.verde)
+  l.px(cx - 2, y - 5, C.verde)
+  l.px(cx - 2, y - 6, C.verde)
+  l.px(cx - 3, y - 6, C.verdeO)
+  l.px(cx + 1, y - 6, C.verde)
+  l.px(cx + 2, y - 6, C.verdeC)
+  l.px(cx + 2, y - 7, C.verde)
+  l.px(cx + 3, y - 7, C.verdeO)
+  l.px(cx, y - 6, C.verdeC)
+}
+/** Hoja del pecho: placa clara con una hoja inclinada, nervio central y tallo. */
+function hoja(l: Lienzo, cx: number, py: number): void {
+  parte(
+    l,
+    (k) => {
+      k.redondo(cx - 5, py, 10, 7, C.crema, 1)
+      k.rect(cx - 4, py + 5, 8, 1, C.humo)
+      k.px(cx + 4, py + 1, C.humo)
+    },
+    C.azulO,
+  )
+  const filas = ['......##', '....####', '..######', '.######.', '.#####..', '.###....']
+  filas.forEach((f, j) => {
+    for (let i = 0; i < f.length; i++) if (f[i] === '#') l.px(cx - 4 + i, py + j, C.verde)
+  })
+  for (const [i, j] of [[6, 1], [5, 2], [4, 3], [3, 4], [2, 5]] as const) l.px(cx - 4 + i, py + j, C.verdeC)
+  for (const [i, j] of [[1, 3], [1, 4], [2, 2], [4, 1]] as const) l.px(cx - 4 + i, py + j, C.verdeO)
+  l.px(cx - 3, py + 5, C.verdeO)
+  l.px(cx - 4, py + 6, C.verdeO)
+}
+/** Mano de mitón (4×3 redondeada). dir: hacia dónde apunta. */
+function miton(k: Lienzo, x: number, y: number, dir: 'abajo' | 'arriba' | 'der' | 'izq'): void {
+  k.redondo(x, y, 4, 3, C.gris, 1)
+  k.px(x + 1, y, C.humo)
+  k.rect(x + 1, y + 2, 2, 1, C.grisO)
+  if (dir === 'abajo' || dir === 'arriba') k.px(dir === 'abajo' ? x + 3 : x, y + 1, C.grisO)
+}
+/** Brazos finos con hombro articulado. Las poses de trabajo dibujan su herramienta. */
+function brazos(l: Lienzo, c: Cuadro, x: number, y: number): void {
+  const pose = c.pose ?? 'abajo'
+  const paso = c.paso ?? 0
+  const hombroY = y + G.visorY + G.visorH + 4
+  const cx = x + G.w / 2
+  const barbillaY = y + G.visorY + G.visorH - 1
+  const uno = (lado: 'izq' | 'der'): void => {
+    const s = lado === 'izq' ? -1 : 1
+    const bx = lado === 'izq' ? x - 2 : x + G.w
+    const brazo = (k: Lienzo, x0: number, y0: number, h: number): void => {
+      k.rect(x0, y0, 2, h, C.gris)
+      k.rect(x0 + (s > 0 ? 1 : 0), y0, 1, h, C.grisO)
+    }
+    const abajo = (k: Lienzo, extra = 0): void => {
+      brazo(k, bx, hombroY + extra, 7)
+      miton(k, bx - 1, hombroY + 7 + extra, 'abajo')
+    }
+    const sostener = (k: Lienzo): void => {
+      brazo(k, bx, hombroY - 2, 3)
+      k.rect(bx + 2, hombroY - 3, 3, 2, C.gris)
+      k.px(bx + 3, hombroY - 2, C.grisO)
+      miton(k, bx + 4, hombroY - 3, 'abajo')
+    }
+    const arriba = (k: Lienzo): void => {
+      brazo(k, bx, hombroY - 1, 2)
+      k.rect(bx + s * 2, hombroY - 6, 2, 6, C.gris)
+      k.rect(bx + s * 2 + (s > 0 ? 1 : 0), hombroY - 6, 1, 6, C.grisO)
+      miton(k, bx + s * 2 - 1, hombroY - 9, 'arriba')
+    }
+    parte(l, (k) => {
+      switch (pose) {
+        case 'abajo':
+          abajo(k)
+          break
+        case 'dormido':
+          abajo(k, 1)
+          break
+        case 'medio':
+          brazo(k, bx, hombroY, 3)
+          k.rect(bx + s * 2, hombroY + 1, 2, 2, C.gris)
+          miton(k, lado === 'izq' ? bx - 5 : bx + 4, hombroY, lado === 'izq' ? 'izq' : 'der')
+          break
+        case 'arriba':
+        case 'cabeza':
+          arriba(k)
+          break
+        case 'barbilla':
+          if (lado === 'izq') {
+            brazo(k, bx, hombroY, 2)
+            k.rect(bx + 2, hombroY - 1, 2, 2, C.gris)
+            miton(k, x + 1, barbillaY - 1, 'arriba')
+          } else abajo(k)
+          break
+        case 'caja': {
+          const cw = 12 - (c.caja ?? 0) * 2
+          const cxx = cx - cw / 2
+          brazo(k, bx, hombroY, 2)
+          if (lado === 'izq') {
+            k.rect(bx, hombroY + 2, cxx - 3 - bx + 1, 2, C.gris)
+            miton(k, cxx - 3, hombroY + 1, 'der')
+          } else {
+            k.rect(cxx + cw + 2, hombroY + 2, bx - (cxx + cw + 2) + 2, 2, C.gris)
+            miton(k, cxx + cw, hombroY + 1, 'izq')
+          }
+          break
+        }
+        case 'escoba':
+          if (lado === 'izq') abajo(k)
+          else sostener(k)
+          break
+      }
+    })
+  }
+  if (pose === 'caja') {
+    const cw = 12 - (c.caja ?? 0) * 2
+    caja(l, cx - cw / 2, hombroY, cw, c.caja ?? 0)
+  }
+  uno('izq')
+  if (pose === 'escoba') escoba(l, x + G.w + 5, hombroY, paso)
+  uno('der')
+}
+
+function ojos(l: Lienzo, c: Cuadro, x: number, y: number): void {
+  const tipo = c.ojos ?? 'normal'
+  const mx = c.mx ?? 0
+  const my = c.my ?? 0
+  const cx = x + G.w / 2
+  const ey = y + G.ojosY + my
+  const ew = G.ojoW
+  const li = cx - G.ojoSep - ew + mx
+  const ld = cx + G.ojoSep + mx
+  if (tipo === 'parpadeo' || tipo === 'cerrados') {
+    l.rect(li, ey + 1, ew, 1, C.cian)
+    l.rect(ld, ey + 1, ew, 1, C.cian)
+  } else if (tipo === 'feliz') {
+    l.rect(li, ey, ew, 1, C.cian)
+    l.rect(ld, ey, ew, 1, C.cian)
+    l.px(li - 1, ey + 1, C.cian)
+    l.px(li + ew, ey + 1, C.cian)
+    l.px(ld - 1, ey + 1, C.cian)
+    l.px(ld + ew, ey + 1, C.cian)
+  } else if (tipo === 'apretados') {
+    l.rect(li, ey, ew, 1, C.cian)
+    l.rect(ld, ey, ew, 1, C.cian)
+    l.px(li + ew - 1, ey + 1, C.cian)
+    l.px(ld, ey + 1, C.cian)
+  } else {
+    const gr = tipo === 'grandes' ? 1 : 0
+    l.rect(li, ey - gr, ew, 2 + gr, C.cian)
+    l.rect(ld, ey - gr, ew, 2 + gr, C.cian)
+    l.px(li, ey - gr, C.blanco)
+    l.px(ld, ey - gr, C.blanco)
+  }
 }
 
 export function dibujar(c: Cuadro): string {
   const l = new Lienzo()
-  const ox = c.dx ?? 0
-  const oy = c.dy ?? 0
-  if (c.zzz !== undefined) zetas(l, ox, oy, c.zzz)
+  const x = G.x + (c.dx ?? 0)
+  const y = G.y + (c.dy ?? 0)
+  const w = G.w
+  const h = G.h
+  const cx = x + w / 2
+  if (c.zzz !== undefined) zetas(l, x + w + 1, y + 2, c.zzz)
   if (c.confeti !== undefined) confeti(l, c.confeti)
-  ruedas(l, ox, oy)
-  cuerpo(l, ox, oy, c.alerta === true)
-  visor(l, ox, oy)
-  ojos(l, ox, oy, c.ojos ?? 'normal', c.mirada ?? { x: 0, y: 0 })
-  brazoIzquierdo(l, ox, oy, c.brazoIzq ?? 'abajo')
-  brazoDerecho(l, ox, oy, c.brazoDer ?? 'abajo', c.manguera ?? 0)
-  if (c.caja !== undefined) caja(l, ox, oy, c.caja)
-  if (c.sudor === true) {
-    l.px(ox + 24, oy + 3, CIAN)
-    l.rect(ox + 23, oy + 4, 2, 2, CIAN)
+  if (c.burbuja === true) burbuja(l, x + w, y + 3)
+  orugas(l, x, y, c.pose === 'escoba' ? (c.paso ?? 0) : 0)
+  parte(l, (k) => {
+    k.redondo(x, y, w, h, c.alerta === true ? C.rojo : C.azul, 3)
+    k.rect(x + w - 2, y + 3, 1, h - 6, C.azulO)
+    k.rect(x + 3, y + h - 1, w - 6, 1, C.azulO)
+    k.rect(x + w - 3, y + h - 2, 2, 1, C.azulO)
+    k.rect(x + 1, y + 3, 1, 6, C.azulC)
+    k.rect(x + 2, y + 2, 2, 1, C.azulC)
+    k.rect(x + 1, y + G.visorY + G.visorH + 2, w - 2, 1, C.azulO)
+  })
+  plantita(l, cx, y)
+  hoja(l, cx, y + G.visorY + G.visorH + 4)
+  parte(l, (k) => {
+    k.rect(x - 1, y + G.audif, 2, 4, C.naranja)
+    k.rect(x + w - 1, y + G.audif, 2, 4, C.naranja)
+    k.px(x - 1, y + G.audif, C.naranjaC)
+    k.px(x + w, y + G.audif, C.naranjaC)
+  })
+  parte(
+    l,
+    (k) => {
+      k.rect(x + 1, y + G.visorY, w - 2, G.visorH, C.marino)
+      k.px(x + 2, y + G.visorY + 1, C.marinoC)
+      k.rect(x + 3, y + G.visorY + G.visorH - 2, w - 6, 1, C.marinoC)
+    },
+    C.marino,
+  )
+  ojos(l, c, x, y)
+  const hombroY = y + G.visorY + G.visorH + 4
+  for (const sx of [x, x + w - 2]) {
+    l.rect(sx, hombroY - 1, 2, 3, C.azulO)
+    l.px(sx + (sx === x ? 0 : 1), hombroY, C.gris)
+    l.px(sx + (sx === x ? 1 : 0), hombroY, C.marinoC)
   }
-  if (c.burbuja === true) {
-    l.px(ox + 26, oy + 3, BLANCO)
-    l.px(ox + 28, oy + 1, BLANCO)
-    l.rect(ox + 29, oy - 1 < 0 ? 0 : oy - 1, 2, 2, BLANCO)
-  }
+  brazos(l, c, x, y)
+  if (c.sudor === true) sudor(l, x + w - 1, y - 1)
   return l.trazos()
 }
 
@@ -340,127 +426,53 @@ export interface Animacion {
   cuadros: Cuadro[]
 }
 
-const reposo = (extra: Cuadro = {}): Cuadro[] => [
-  { ...extra },
-  { ...extra },
-  { ...extra, dy: -1 },
-  { ...extra, dy: -1 },
-  { ...extra, dy: -1, ojos: 'parpadeo' },
-  { ...extra, dy: -1 },
-  { ...extra },
-  { ...extra },
+const reposo = (e: Cuadro = {}): Cuadro[] => [{ ...e }, { ...e }, { ...e, dy: -1 }, { ...e, dy: -1 }, { ...e, dy: -1, ojos: 'parpadeo' }, { ...e, dy: -1 }, { ...e }, { ...e, mx: 1 }]
+const pensar = (): Cuadro[] => [0, 1, 2, 3, 4, 5].map((i): Cuadro => ({ pose: 'barbilla', mx: 1, my: -1, burbuja: i < 4, dy: i === 1 || i === 2 ? -1 : 0, ojos: i === 5 ? 'parpadeo' : 'normal' }))
+const dormir = (): Cuadro[] => [
+  { ojos: 'cerrados', dy: 1, zzz: 0, pose: 'dormido' },
+  { ojos: 'cerrados', dy: 1, zzz: 1, pose: 'dormido' },
+  { ojos: 'cerrados', zzz: 2, pose: 'dormido' },
+  { ojos: 'cerrados', zzz: 2, pose: 'dormido' },
+  { ojos: 'cerrados', dy: 1, pose: 'dormido' },
 ]
+const alertar = (): Cuadro[] => [0, 1, 2, 3].map((i): Cuadro => ({ alerta: true, ojos: 'grandes', dx: i % 2 ? 1 : -1, sudor: i >= 2, pose: 'cabeza' }))
+const celebrar = (): Cuadro[] =>
+  [
+    { dy: 0, c: 0 },
+    { dy: -2, c: 1 },
+    { dy: -3, c: 2 },
+    { dy: -2, c: 0 },
+    { dy: 0, c: 1 },
+    { dy: 1, c: 2 },
+  ].map(({ dy, c }, i): Cuadro => ({ ojos: 'feliz', confeti: c, dy, pose: i < 4 ? 'arriba' : 'medio' }))
+const compactar = (): Cuadro[] =>
+  [{ caja: 0 }, { caja: 1, dy: 1 }, { caja: 2, dy: 1, sudor: true }, { caja: 2, sudor: true }, { caja: 1 }, { caja: 0 }].map((c): Cuadro => ({ ...c, ojos: c.caja === 0 ? 'normal' : 'apretados', pose: 'caja' }))
+const barrer = (dy = 0): Cuadro[] => [0, 1, 2, 3, 4, 5].map((i): Cuadro => ({ pose: 'escoba', paso: i, dx: -4, dy: i % 2 ? dy : 0, mx: 1, my: 1, ojos: i === 4 ? 'parpadeo' : 'normal' }))
+const mirar = (ojos: Ojos, puntos: [number, number][]): Cuadro[] => puntos.map(([mx, my], i): Cuadro => ({ mx, my, ojos: i === puntos.length - 1 && ojos === 'normal' ? 'parpadeo' : ojos }))
 
 export const ANIMACIONES: Record<Actividad, Animacion> = {
   tranquilo: { ms: 260, cuadros: reposo() },
   esperando: { ms: 220, cuadros: reposo({ ojos: 'grandes' }) },
-  pensando: {
-    ms: 300,
-    cuadros: [
-      { brazoIzq: 'barbilla', mirada: { x: 1, y: -1 }, burbuja: true },
-      { brazoIzq: 'barbilla', mirada: { x: 1, y: -1 }, burbuja: true, dy: -1 },
-      { brazoIzq: 'barbilla', mirada: { x: 2, y: -1 }, burbuja: true, dy: -1 },
-      { brazoIzq: 'barbilla', mirada: { x: 1, y: -1 }, burbuja: true },
-      { brazoIzq: 'barbilla', mirada: { x: 1, y: -1 } },
-      { brazoIzq: 'barbilla', mirada: { x: 1, y: -1 }, ojos: 'parpadeo' },
-    ],
-  },
-  leyendo: {
-    ms: 180,
-    cuadros: [
-      { mirada: { x: -2, y: 0 } },
-      { mirada: { x: -1, y: 0 } },
-      { mirada: { x: 0, y: 0 } },
-      { mirada: { x: 1, y: 0 } },
-      { mirada: { x: 2, y: 0 } },
-      { mirada: { x: 2, y: 1 } },
-      { mirada: { x: -2, y: 1 }, ojos: 'parpadeo' },
-    ],
-  },
-  buscando: {
-    ms: 120,
-    cuadros: [
-      { mirada: { x: -2, y: 0 }, ojos: 'grandes' },
-      { mirada: { x: -1, y: -1 }, ojos: 'grandes' },
-      { mirada: { x: 1, y: -1 }, ojos: 'grandes' },
-      { mirada: { x: 2, y: 0 }, ojos: 'grandes' },
-      { mirada: { x: 1, y: 1 }, ojos: 'grandes' },
-      { mirada: { x: -1, y: 1 }, ojos: 'grandes' },
-    ],
-  },
-  ejecutando: {
-    ms: 140,
-    cuadros: [
-      { brazoDer: 'manguera', manguera: 0, mirada: { x: 1, y: 1 } },
-      { brazoDer: 'manguera', manguera: 1, mirada: { x: 1, y: 1 }, dx: 1 },
-      { brazoDer: 'manguera', manguera: 2, mirada: { x: 1, y: 1 } },
-      { brazoDer: 'manguera', manguera: 0, mirada: { x: 1, y: 1 }, dx: -1 },
-      { brazoDer: 'manguera', manguera: 1, mirada: { x: 1, y: 1 } },
-      { brazoDer: 'manguera', manguera: 2, mirada: { x: 1, y: 1 }, ojos: 'parpadeo' },
-    ],
-  },
-  editando: {
-    ms: 140,
-    cuadros: [
-      { brazoDer: 'manguera', manguera: 0, mirada: { x: 1, y: 1 } },
-      { brazoDer: 'manguera', manguera: 1, mirada: { x: 1, y: 1 }, dy: -1 },
-      { brazoDer: 'manguera', manguera: 2, mirada: { x: 1, y: 1 } },
-      { brazoDer: 'manguera', manguera: 0, mirada: { x: 1, y: 1 }, dy: -1 },
-      { brazoDer: 'manguera', manguera: 1, mirada: { x: 1, y: 1 } },
-      { brazoDer: 'manguera', manguera: 2, mirada: { x: 1, y: 1 }, ojos: 'parpadeo' },
-    ],
-  },
-  compactando: {
-    ms: 200,
-    cuadros: [
-      { brazoIzq: 'caja', brazoDer: 'caja', caja: 0, ojos: 'apretados' },
-      { brazoIzq: 'caja', brazoDer: 'caja', caja: 1, ojos: 'apretados', dy: 1 },
-      { brazoIzq: 'caja', brazoDer: 'caja', caja: 2, ojos: 'apretados', dy: 1, sudor: true },
-      { brazoIzq: 'caja', brazoDer: 'caja', caja: 2, ojos: 'apretados', sudor: true },
-      { brazoIzq: 'caja', brazoDer: 'caja', caja: 1, ojos: 'apretados' },
-    ],
-  },
+  pensando: { ms: 300, cuadros: pensar() },
+  leyendo: { ms: 180, cuadros: mirar('normal', [[-2, 0], [-1, 0], [0, 0], [1, 0], [2, 0], [2, 1], [-2, 1]]) },
+  buscando: { ms: 120, cuadros: mirar('grandes', [[-2, 0], [-1, -1], [1, -1], [2, 0], [1, 1], [-1, 1]]) },
+  ejecutando: { ms: 160, cuadros: barrer() },
+  editando: { ms: 160, cuadros: barrer(-1) },
+  compactando: { ms: 200, cuadros: compactar() },
   listo: {
     ms: 220,
     cuadros: [
-      { brazoDer: 'saludo', ojos: 'feliz' },
-      { brazoDer: 'arriba', ojos: 'feliz', dy: -1 },
-      { brazoDer: 'saludo', ojos: 'feliz' },
-      { brazoDer: 'arriba', ojos: 'feliz', dy: -1 },
-      { brazoDer: 'saludo', ojos: 'feliz' },
-      { brazoDer: 'saludo', ojos: 'feliz' },
+      { pose: 'medio', ojos: 'feliz' },
+      { pose: 'arriba', ojos: 'feliz', dy: -1 },
+      { pose: 'medio', ojos: 'feliz' },
+      { pose: 'arriba', ojos: 'feliz', dy: -1 },
+      { pose: 'medio', ojos: 'feliz' },
+      { pose: 'medio', ojos: 'feliz' },
     ],
   },
-  dormido: {
-    ms: 450,
-    cuadros: [
-      { ojos: 'cerrados', dy: 1, zzz: 0 },
-      { ojos: 'cerrados', dy: 1, zzz: 1 },
-      { ojos: 'cerrados', zzz: 2 },
-      { ojos: 'cerrados', zzz: 2 },
-      { ojos: 'cerrados', dy: 1 },
-    ],
-  },
-  alerta: {
-    ms: 90,
-    cuadros: [
-      { alerta: true, ojos: 'grandes', dx: -1, brazoIzq: 'medio', brazoDer: 'medio' },
-      { alerta: true, ojos: 'grandes', dx: 1, brazoIzq: 'medio', brazoDer: 'medio' },
-      { alerta: true, ojos: 'grandes', dx: -1, brazoIzq: 'medio', brazoDer: 'medio', sudor: true },
-      { alerta: true, ojos: 'grandes', dx: 1, brazoIzq: 'medio', brazoDer: 'medio', sudor: true },
-    ],
-  },
-  celebrando: {
-    ms: 160,
-    cuadros: [
-      { brazoIzq: 'arriba', brazoDer: 'arriba', ojos: 'feliz', confeti: 0 },
-      { brazoIzq: 'arriba', brazoDer: 'arriba', ojos: 'feliz', confeti: 1, dy: -2 },
-      { brazoIzq: 'arriba', brazoDer: 'arriba', ojos: 'feliz', confeti: 2, dy: -3 },
-      { brazoIzq: 'arriba', brazoDer: 'arriba', ojos: 'feliz', confeti: 0, dy: -2 },
-      { brazoIzq: 'medio', brazoDer: 'medio', ojos: 'feliz', confeti: 1 },
-      { brazoIzq: 'medio', brazoDer: 'medio', ojos: 'feliz', confeti: 2, dy: 1 },
-    ],
-  },
+  dormido: { ms: 450, cuadros: dormir() },
+  alerta: { ms: 90, cuadros: alertar() },
+  celebrando: { ms: 160, cuadros: celebrar() },
 }
 
 const cache = new Map<Actividad, string[]>()
