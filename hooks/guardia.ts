@@ -75,12 +75,10 @@ export type OpcionFrio = 'enviar' | 'compactar' | 'limpio'
 
 /** Las etiquetas del diálogo, la recomendada primero y con ★. */
 export function opcionesFrio(f: Frio, x: TextosGuardia): { tipo: OpcionFrio; etiqueta: string }[] {
-  const todas: { tipo: OpcionFrio; etiqueta: string }[] = [
-    { tipo: 'compactar', etiqueta: x.frio.compactar(f.despuesPct) },
-    { tipo: 'enviar', etiqueta: x.frio.enviar },
-    { tipo: 'limpio', etiqueta: x.frio.limpio },
-  ]
-  const orden = f.recomendada === 'compactar' ? todas : [todas[1], todas[0], todas[2]]
+  const compactar = { tipo: 'compactar' as const, etiqueta: x.frio.compactar(f.despuesPct) }
+  const enviar = { tipo: 'enviar' as const, etiqueta: x.frio.enviar }
+  const limpio = { tipo: 'limpio' as const, etiqueta: x.frio.limpio }
+  const orden = f.recomendada === 'compactar' ? [compactar, enviar, limpio] : [enviar, compactar, limpio]
   return orden.map((o, i) => (i === 0 ? { ...o, etiqueta: `${o.etiqueta} ★` } : o))
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { agregarLeccion, claveDia, filasGrafica, fusionarHistorial, leccionCambioModelo, logrosNuevos, racha, sumarAlDia, totalDesde } from '../hooks/historial'
 import { tokiSvg } from '../hooks/toki-svg'
+import { ANIMACIONES, cuadroSvg, cuadrosDe } from '../hooks/toki-pixel'
 
 const HOY = Date.UTC(2026, 9, 20, 17, 0, 0) // 20 oct 2026, mediodía en Bogotá
 
@@ -68,20 +69,26 @@ describe('rachas y logros', () => {
   })
 })
 
-describe('Toki en vector', () => {
-  test('cada estado produce un SVG válido con accesorio', async () => {
-    for (const a of ['tranquilo', 'pensando', 'leyendo', 'ejecutando', 'editando', 'compactando', 'esperando', 'listo', 'dormido', 'alerta', 'celebrando'] as const) {
+describe('Toki en pixel art', () => {
+  test('cada estado produce cuadros distintos y un SVG animado válido', async () => {
+    for (const a of ['tranquilo', 'pensando', 'leyendo', 'buscando', 'ejecutando', 'editando', 'compactando', 'esperando', 'listo', 'dormido', 'alerta', 'celebrando'] as const) {
+      const cuadros = cuadrosDe(a)
+      expect(cuadros.length >= 4).toBe(true)
+      expect(new Set(cuadros).size > 1).toBe(true) // se mueve
+      for (const t of cuadros) expect(t.startsWith('<path')).toBe(true)
       const svg = tokiSvg(a)
       expect(svg.startsWith('<svg')).toBe(true)
       expect(svg.endsWith('</svg>')).toBe(true)
       expect(svg.length < 131072).toBe(true)
+      expect(svg).toContain('calcMode="discrete"')
+      expect(svg).toContain(`dur="${((cuadros.length * ANIMACIONES[a].ms) / 1000).toFixed(3)}s"`)
+      expect(cuadroSvg(a)).toContain(cuadros[0] ?? '')
     }
+    expect(tokiSvg('tranquilo')).toContain('#5fe3ea') // ojos cian
     expect(tokiSvg('tranquilo')).toContain('#f39a3d') // audífonos naranjas
-    expect(tokiSvg('tranquilo')).toContain('>Toki</text>')
-    expect(tokiSvg('listo')).toContain('#34a853') // el check verde
-    expect(tokiSvg('dormido')).toContain('>z<')
-    expect(tokiSvg('compactando')).toContain('animateMotion') // aspira
-    expect(tokiSvg('compactando')).toContain('rotate') // ruedas
-    expect(tokiSvg('celebrando')).toContain('#bc8cff') // confeti
+    expect(tokiSvg('alerta')).toContain('#ff5c5c') // cuerpo rojo
+    expect(tokiSvg('compactando')).toContain('#b85f14') // la caja
+    expect(tokiSvg('ejecutando')).toContain('#8a5a2b') // la escoba
+    expect(tokiSvg('tranquilo')).toContain('#3cc46a') // hoja y brote
   })
 })

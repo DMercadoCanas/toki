@@ -3,7 +3,7 @@
 // cero dependencias, y si algo falla, Claude sigue trabajando normal.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
+import type { EngineInterface, Register, RenderElement, RenderNode, ResolveInput, ToolCallResult } from 'claude-code'
 
 import type { Sesion } from '../types'
 import { avisoBucle, registrar, UMBRAL_FALLOS } from './bucles'
@@ -34,33 +34,9 @@ import { detectarIdioma, idiomaDeTexto, quitarEtiquetasDeSistema, t } from './id
 import type { Idioma, Textos } from './idioma'
 import { avisoMapa, CARPETAS_IGNORADAS, construirMapa, esBusqueda, extraerFicha, lenguaje, LIMITES_MAPA, RUTA_MAPA } from './mapa'
 import type { FichaArchivo } from './mapa'
-import {
-  actividadDeHerramienta,
-  barra,
-  colorDePorcentaje,
-  cuadro,
-  decidirActividad,
-  formatearDuracion,
-  formatearMinutos,
-  formatearTokens,
-  frase,
-  recortar,
-  relojCache,
-} from './mascota'
+import { actividadDeHerramienta, barra, colorDePorcentaje, cuadro, decidirActividad, formatearDuracion, formatearMinutos, formatearTokens, frase, recortar, relojCache } from './mascota'
 import type { Actividad } from './mascota'
-import {
-  estaVacia,
-  extraerDecisiones,
-  instruccionesDeCompactacion,
-  LIMITES_MEMORIA,
-  motivo,
-  notaPostCompactacion,
-  primerError,
-  recordar,
-  registrarDecision,
-  resumenCorto,
-  vacio,
-} from './memoria'
+import { estaVacia, extraerDecisiones, instruccionesDeCompactacion, LIMITES_MEMORIA, motivo, notaPostCompactacion, primerError, recordar, registrarDecision, resumenCorto, vacio } from './memoria'
 import type { Decision, Motivo, PuntoDeControl } from './memoria'
 import {
   decidirInterfaz,
@@ -102,7 +78,6 @@ import {
 } from './gasto'
 import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
-import { PRUEBA_A, PRUEBA_B } from './prueba-3d'
 import { TRAMO_GENERADO, textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
@@ -190,7 +165,17 @@ const vivo: {
   tokensVistos?: number
   ultimoAhorro?: { tokens: number; comando: string }
   bucleReciente: boolean
-  usoCache?: { pct?: number; ventana: number; tokens?: number; cincoHoras?: number; semana?: number; costo?: number; inicio: number; esSuscripcion: boolean; reinicios: Partial<Record<VentanaLimite, number>> }
+  usoCache?: {
+    pct?: number
+    ventana: number
+    tokens?: number
+    cincoHoras?: number
+    semana?: number
+    costo?: number
+    inicio: number
+    esSuscripcion: boolean
+    reinicios: Partial<Record<VentanaLimite, number>>
+  }
   usoLeido: number
   /** Costo de la sesión ya sumado a la semana. */
   costoContado: number
@@ -289,6 +274,13 @@ const vivo: {
   relecturas: RELECTURAS_VACIAS,
   contextoMax: 0,
   repetidas: {},
+}
+
+/** Toki en pixel art, animado dentro del SVG (fuera de la terminal). */
+function mascotaGrafica($: $, e: ResolveInput, actividad: Actividad, tamano: number): RenderElement | '' {
+  if (e.surface === 'terminal') return ''
+  const { Svg } = $.ui.resolve(e)
+  return <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={tamano} height={tamano} />
 }
 
 function tx(): Textos {
@@ -646,8 +638,7 @@ async function guardiaPresupuesto($: $, texto: string): Promise<ResultadoGuardia
     return undefined
   }
   const tipo: TipoOpcionPresupuesto =
-    opciones.find(o => o.etiqueta === respuesta)?.tipo ??
-    (/par|stop/i.test(respuesta) ? 'parar' : /sub|rais/i.test(respuesta) ? 'subir' : /sin|without|quit/i.test(respuesta) ? 'quitar' : 'ahorro')
+    opciones.find(o => o.etiqueta === respuesta)?.tipo ?? (/par|stop/i.test(respuesta) ? 'parar' : /sub|rais/i.test(respuesta) ? 'subir' : /sin|without|quit/i.test(respuesta) ? 'quitar' : 'ahorro')
   void anotarDiagnostico($, `presupuesto pasado (${g} de ${limite}): ${tipo}`)
   if (tipo === 'parar') {
     $.clock.after(100, () => void $.prompt.fill({ text: texto, mode: 'replace' }).catch(() => undefined))
@@ -1216,13 +1207,7 @@ async function compactarFallo($: $, comando: string, texto: string, captura: Cap
 }
 
 /** Un comando que terminó bien. Devuelve el stdout y stderr nuevos, o nada si se deja igual. */
-async function compactarExito(
-  $: $,
-  comando: string,
-  r: SalidaShell,
-  captura: Captura | undefined,
-  esPrincipal = true,
-): Promise<{ stdout: string; stderr: string } | undefined> {
+async function compactarExito($: $, comando: string, r: SalidaShell, captura: Captura | undefined, esPrincipal = true): Promise<{ stdout: string; stderr: string } | undefined> {
   const idioma = vivo.idioma
   if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) {
     anotarMotivo(comando, 'segundoPlano')
@@ -1687,7 +1672,10 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   const ahorro = enAhorro ? p.opciones.find(o => o.tipo === 'ahorro') : undefined
   if (enAhorro) modo = ahorro !== undefined && !igual(ahorro, p.actual) && ahorro.usd <= p.actual.usd ? 'auto' : 'nada'
   ruta.ultima = { nivel, motivo, actual: p.actual, recomendada: p.recomendada, decision: modo === 'nada' ? (igual(p.recomendada, p.actual) ? 'ya-va-asi' : 'callado') : modo }
-  void anotarDiagnostico($, `ruta: ${nivel} (${motivo}) ${actual.modelo}/${actual.esfuerzo} → ${p.recomendada.modelo}/${p.recomendada.esfuerzo} ${textoDiferencia(diferencia(p.recomendada, p.actual), xr())} [${ruta.ultima.decision}]`)
+  void anotarDiagnostico(
+    $,
+    `ruta: ${nivel} (${motivo}) ${actual.modelo}/${actual.esfuerzo} → ${p.recomendada.modelo}/${p.recomendada.esfuerzo} ${textoDiferencia(diferencia(p.recomendada, p.actual), xr())} [${ruta.ultima.decision}]`,
+  )
   // Lo que elegiste antes para este nivel se repite solo, si no reescribe el caché.
   const recordada = ruta.preferencias[nivel]
   let elegida: Opcion | undefined = ahorro ?? p.recomendada
@@ -1966,8 +1954,7 @@ async function guardiaLimite($: $, texto: string): Promise<ResultadoGuardia | un
   } catch {
     return undefined
   }
-  const tipo: OpcionLimite =
-    opciones.find(o => o.etiqueta === respuesta)?.tipo ?? (/esper|wait/i.test(respuesta) ? 'esperar' : /ahorro|saving|sonnet|bajo|low/i.test(respuesta) ? 'ahorro' : 'seguir')
+  const tipo: OpcionLimite = opciones.find(o => o.etiqueta === respuesta)?.tipo ?? (/esper|wait/i.test(respuesta) ? 'esperar' : /ahorro|saving|sonnet|bajo|low/i.test(respuesta) ? 'ahorro' : 'seguir')
   void anotarDiagnostico($, `límite ${p.ventana} ${p.pct}%: ${tipo}`)
   if (tipo === 'esperar') {
     $.clock.after(100, () => void $.prompt.fill({ text: texto, mode: 'replace' }).catch(() => undefined))
@@ -2567,7 +2554,12 @@ export const register: Register = (on, options) => {
     const semanas = await leerSemanasDe($)
     const pasada = /^(pasada|last|anterior|prev)/i.test(e.args.trim())
     const actual = lunesDe(ahora)
-    const lunes = pasada ? (Object.keys(semanas).filter(k => k < actual).sort().pop() ?? actual) : actual
+    const lunes = pasada
+      ? (Object.keys(semanas)
+          .filter(k => k < actual)
+          .sort()
+          .pop() ?? actual)
+      : actual
     const historial = await leerHistorial($)
     return { text: tarjetaSemana(semanas, lunes, ahora, historial, { idioma: vivo.idioma, mostrarCosto: vivo.usoCache?.esSuscripcion !== true, racha: racha(historial, ahora) }) }
   })
@@ -2654,13 +2646,9 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" paddingX={1}>
         {e.surface !== 'terminal' &&
           (() => {
-            const { Svg } = $.ui.resolve(e)
             return (
               <Box flexDirection="row" gap={2} alignItems="center" marginBottom={1}>
-                <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={96} height={84} isInteractive />
-                <Svg source={PRUEBA_A} alt="prueba A: webp interactivo" width={96} height={96} isInteractive />
-                <Svg source={PRUEBA_A} alt="prueba A2: webp no interactivo" width={96} height={96} />
-                <Svg source={PRUEBA_B} alt="prueba B: png interactivo" width={96} height={96} isInteractive />
+                {mascotaGrafica($, e, actividad, 120)}
                 <Box flexDirection="column" flexGrow={1}>
                   <Text color="claude" bold>
                     Toki
@@ -2900,10 +2888,12 @@ export const register: Register = (on, options) => {
     const botonDeshacer = avisoRuta?.deshacer !== undefined ? <Button key="deshacer" label={xr().deshacer} onPress={() => void deshacerEleccion($)} /> : null
     // Mientras el modelo o el esfuerzo de este turno no son los tuyos, se ve en la barra.
     const esfuerzoToki = ruta.esfuerzo !== undefined && ruta.turno !== undefined ? ruta.esfuerzo : ruta.pendiente?.esfuerzo
-    const partesChip = [ruta.modeloPrincipal !== undefined ? nombreCorto(ruta.modeloPrincipal) : undefined, esfuerzoToki !== undefined ? xr().esfuerzo[esfuerzoToki] : undefined].filter((p): p is string => p !== undefined)
+    const partesChip = [ruta.modeloPrincipal !== undefined ? nombreCorto(ruta.modeloPrincipal) : undefined, esfuerzoToki !== undefined ? xr().esfuerzo[esfuerzoToki] : undefined].filter(
+      (p): p is string => p !== undefined,
+    )
     const chipModelo = partesChip.length > 0 && avisoRuta === undefined ? `${partesChip.join(' · ')} · ${xr().porToki}` : undefined
     const pctTope = tarea.p !== undefined ? porcentaje(tarea.p, actualDe(tarea.p)) : undefined
-    const chipTope = pctTope !== undefined ? { texto: xp().chip(pctTope), color: pctTope >= 100 ? 'error' : pctTope >= 80 ? 'warning' : 'inactive' } as const : undefined
+    const chipTope = pctTope !== undefined ? ({ texto: xp().chip(pctTope), color: pctTope >= 100 ? 'error' : pctTope >= 80 ? 'warning' : 'inactive' } as const) : undefined
 
     if (esCompacto) {
       return (
@@ -2936,111 +2926,124 @@ export const register: Register = (on, options) => {
     }
 
     const anchoBarra = angosto ? 8 : 14
+    const grafico = e.surface !== 'terminal'
+    // Cada medida es un bloque que no se parte por dentro; la fila los envuelve cuando falta ancho.
+    const chip = (clave: string, nodos: RenderNode[]) => (
+      <Box key={clave} flexDirection="row" gap={1} flexShrink={0}>
+        {nodos}
+      </Box>
+    )
+    const medidas = [
+      chip('contexto', [
+        <Text dimColor>{x.contexto}</Text>,
+        <Text color={colorDePorcentaje(pct)} mono>
+          {barra(pct, anchoBarra)} {pctTexto}
+          {!angosto && uso !== undefined ? ` ${x.deVentana(formatearTokens(uso.ventana))}` : ''}
+        </Text>,
+      ]),
+      chip('cache', [
+        <Text dimColor>· {x.cache}</Text>,
+        <Text color={colorCache}>
+          {relojCache(cacheRestante, ttl)} {cacheTexto}
+        </Text>,
+        vivo.pingsEnPausa > 0 ? <Text dimColor>({x.cacheCaliente(vivo.pingsEnPausa)})</Text> : '',
+      ]),
+      chip('ahorrado', [
+        <Text dimColor>· {x.ahorrado}</Text>,
+        <Text color="success" bold>
+          ~{formatearTokens(s.tokensAhorrados)}
+        </Text>,
+      ]),
+      (s.relecturasEvitadas ?? 0) > 0 && !angosto ? chip('relecturas', [<Text dimColor>· {x.relecturas}</Text>, <Text color="success">~{formatearTokens(s.relecturasEvitadas)}</Text>]) : null,
+      conRacha && !angosto ? chip('racha', [<Text color="warning">· {x.rachaCorta(vivo.racha)}</Text>]) : null,
+      uso?.cincoHoras !== undefined && !angosto
+        ? chip('cinco', [
+            <Text dimColor>· {x.cincoHoras}</Text>,
+            <Text color={colorDePorcentaje(uso.cincoHoras)}>{Math.round(uso.cincoHoras)}%</Text>,
+            guardia.proyeccion.five_hour?.agotaEn !== undefined ? <Text color="warning">{xg().limite.seAcaba(hora(guardia.proyeccion.five_hour.agotaEn, 'five_hour', vivo.idioma))}</Text> : '',
+          ])
+        : null,
+      uso?.semana !== undefined && !angosto
+        ? chip('semana', [
+            <Text dimColor>· {x.semana}</Text>,
+            <Text color={colorDePorcentaje(uso.semana)}>{Math.round(uso.semana)}%</Text>,
+            guardia.proyeccion.seven_day?.agotaEn !== undefined ? <Text color="warning">{xg().limite.seAcaba(hora(guardia.proyeccion.seven_day.agotaEn, 'seven_day', vivo.idioma))}</Text> : '',
+          ])
+        : null,
+    ]
+    const cabecera = (
+      <Box flexDirection="row" gap={1} alignItems="center">
+        {!grafico && (
+          <Text color="claude" bold>
+            {mascota}
+          </Text>
+        )}
+        <Text color="claude" bold>
+          Toki
+        </Text>
+        <Text dimColor>·</Text>
+        <Text color={colorFrase} wrap="truncate-end">
+          {dicho.texto}
+        </Text>
+        {dicho.accion === 'compactar' && <Button key="compactar" variant="primary" hotkey="c" label={x.compactarAhora} onPress={() => void $.session.compact({})} />}
+        {dicho.accion === 'compactar' && (pct ?? 0) < 70 && (
+          <Button
+            key="luego"
+            plain
+            dimColor
+            label={x.en30min}
+            onPress={() => {
+              vivo.silencioPesadoHasta = ahora + 30 * 60_000
+              $.ui.invalidate('ui.render')
+            }}
+          />
+        )}
+        <Box flexGrow={1} />
+        {chipTope !== undefined && <Text color={chipTope.color}>{chipTope.texto}</Text>}
+        {chipModelo !== undefined && <Text dimColor>{chipModelo}</Text>}
+        {botonTamano}
+        {botonOcultar}
+      </Box>
+    )
+    const filaAviso =
+      avisoRuta !== undefined ? (
+        <Box flexDirection="row" gap={1}>
+          <Text color="warning" bold={destello} wrap="truncate-end">
+            {avisoRuta.texto}
+          </Text>
+          {botonDeshacer}
+        </Box>
+      ) : null
+    const filaMedidas = (
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
+        {medidas}
+        <Box flexGrow={1} />
+        <Button key="detalles" plain dimColor label={verDetalles ? x.menos : x.mas} onPress={() => update($, detalles, v => !v)} />
+      </Box>
+    )
+    const cuerpo = (
+      <Box flexDirection="column" flexGrow={1}>
+        {cabecera}
+        {filaAviso}
+        {filaMedidas}
+      </Box>
+    )
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={destello ? 'warning' : dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : 'claude'} paddingX={1}>
-        <Box flexDirection="row" gap={1}>
-          {e.surface === 'terminal' ? (
-            <Text color="claude" bold>
-              {mascota}
-            </Text>
-          ) : (
-            (() => {
-              const { Svg } = $.ui.resolve(e)
-              return <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={44} height={38} isInteractive />
+        {grafico
+          ? (() => {
+              return (
+                <Box flexDirection="row" gap={2} alignItems="center">
+                  {mascotaGrafica($, e, actividad, 64)}
+                  {cuerpo}
+                </Box>
+              )
             })()
-          )}
-          <Text color="claude" bold>
-            Toki
-          </Text>
-          <Text dimColor>·</Text>
-          <Text color={colorFrase} wrap="truncate-end">
-            {dicho.texto}
-          </Text>
-          {dicho.accion === 'compactar' && <Button key="compactar" variant="primary" hotkey="c" label={x.compactarAhora} onPress={() => void $.session.compact({})} />}
-          {dicho.accion === 'compactar' && (pct ?? 0) < 70 && (
-            <Button
-              key="luego"
-              plain
-              dimColor
-              label={x.en30min}
-              onPress={() => {
-                vivo.silencioPesadoHasta = ahora + 30 * 60_000
-                $.ui.invalidate('ui.render')
-              }}
-            />
-          )}
-          <Box flexGrow={1} />
-          {chipTope !== undefined && <Text color={chipTope.color}>{chipTope.texto}</Text>}
-          {chipModelo !== undefined && <Text dimColor>{chipModelo}</Text>}
-          {botonTamano}
-          {botonOcultar}
-        </Box>
-        {avisoRuta !== undefined && (
-          <Box flexDirection="row" gap={1}>
-            <Text color="warning" bold={destello} wrap="truncate-end">
-              {avisoRuta.texto}
-            </Text>
-            {botonDeshacer}
-          </Box>
-        )}
-        <Box flexDirection="row" gap={1}>
-          <Text dimColor>{x.contexto}</Text>
-          <Text color={colorDePorcentaje(pct)} mono>
-            {barra(pct, anchoBarra)} {pctTexto}
-            {!angosto && uso !== undefined ? ` ${x.deVentana(formatearTokens(uso.ventana))}` : ''}
-          </Text>
-          <Text dimColor>·</Text>
-          <Text dimColor>{x.cache}</Text>
-          <Text color={colorCache}>
-            {relojCache(cacheRestante, ttl)} {cacheTexto}
-          </Text>
-          {vivo.pingsEnPausa > 0 && <Text dimColor>({x.cacheCaliente(vivo.pingsEnPausa)})</Text>}
-          <Text dimColor>·</Text>
-          <Text dimColor>{x.ahorrado}</Text>
-          <Text color="success" bold>
-            ~{formatearTokens(s.tokensAhorrados)}
-          </Text>
-          {(s.relecturasEvitadas ?? 0) > 0 && !angosto && (
-            <Box flexDirection="row" gap={1}>
-              <Text dimColor>·</Text>
-              <Text dimColor>{x.relecturas}</Text>
-              <Text color="success">~{formatearTokens(s.relecturasEvitadas)}</Text>
-            </Box>
-          )}
-          {conRacha && !angosto && (
-            <Box flexDirection="row" gap={1}>
-              <Text dimColor>·</Text>
-              <Text color="warning">{x.rachaCorta(vivo.racha)}</Text>
-            </Box>
-          )}
-          {uso?.cincoHoras !== undefined && !angosto && (
-            <Box flexDirection="row" gap={1}>
-              <Text dimColor>·</Text>
-              <Text dimColor>{x.cincoHoras}</Text>
-              <Text color={colorDePorcentaje(uso.cincoHoras)}>{Math.round(uso.cincoHoras)}%</Text>
-              {guardia.proyeccion.five_hour?.agotaEn !== undefined && (
-                <Text color="warning">{xg().limite.seAcaba(hora(guardia.proyeccion.five_hour.agotaEn, 'five_hour', vivo.idioma))}</Text>
-              )}
-            </Box>
-          )}
-          {uso?.semana !== undefined && !angosto && (
-            <Box flexDirection="row" gap={1}>
-              <Text dimColor>·</Text>
-              <Text dimColor>{x.semana}</Text>
-              <Text color={colorDePorcentaje(uso.semana)}>{Math.round(uso.semana)}%</Text>
-              {guardia.proyeccion.seven_day?.agotaEn !== undefined && (
-                <Text color="warning">{xg().limite.seAcaba(hora(guardia.proyeccion.seven_day.agotaEn, 'seven_day', vivo.idioma))}</Text>
-              )}
-            </Box>
-          )}
-          <Box flexGrow={1} />
-          <Button key="detalles" plain dimColor label={verDetalles ? x.menos : x.mas} onPress={() => update($, detalles, v => !v)} />
-        </Box>
+          : cuerpo}
         {verDetalles && (
           <Box flexDirection="row" gap={1}>
             <Text dimColor wrap="wrap">
-              {x.sesion} {uso ? formatearDuracion(ahora - uso.inicio, vivo.idioma) : '—'} · {s.llamadas} {x.llamadas} · {s.compactaciones} {x.salidasCompactadas} · {s.bucles}{' '}
-              {x.bucles}
+              {x.sesion} {uso ? formatearDuracion(ahora - uso.inicio, vivo.idioma) : '—'} · {s.llamadas} {x.llamadas} · {s.compactaciones} {x.salidasCompactadas} · {s.bucles} {x.bucles}
               {vivo.aprovechado !== undefined ? ` · ${x.aprovechado(vivo.aprovechado)}` : ''}
               {uso?.costo !== undefined && !uso.esSuscripcion ? ` · $${uso.costo.toFixed(2)}` : ''} · {x.historico} ~{formatearTokens(Number((await $.store.get(CLAVE_TOTAL)) ?? 0))} · /toki
             </Text>
