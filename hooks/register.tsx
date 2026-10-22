@@ -89,11 +89,13 @@ import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjeta
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
 import type { Presupuesto, TipoOpcionPresupuesto } from './presupuesto'
+import { armarPedidoMejorado, CONTEXTO_CAMBIO_DE_TEMA, CONTEXTO_PARA_LIMPIAR, cambioDeTema, consejoDe, esCorreccion, esPedidoGrande, evaluarEntrevista, leerModoEntrevista, SALTOS_PARA_CALLAR, textosEntrevista } from './entrevista'
+import type { Consejo, ModoEntrevista, TextosEntrevista } from './entrevista'
 import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, opcionesFrio, preguntaFrio, proyectar, textosGuardia, VENTANAS } from './guardia'
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.13.2'
+export const VERSION = '0.14.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -2106,6 +2108,178 @@ function devolverMensaje($: $): void {
 
 // ---------- Registro ----------
 
+// ---------- Pedidos grandes: entrevista y consejos para pedir mejor ----------
+
+const CLAVE_ENTREVISTA = 'modoEntrevista'
+const CLAVE_CONSEJOS = 'consejosVistos'
+
+const entrevista: {
+  modo: ModoEntrevista
+  /** Mensajes tuyos en esta conversación (vuelve a 0 con /clear). */
+  mensajes: number
+  recientes: string[]
+  /** Veces seguidas que dijiste "sin preguntas" o enviaste así; a la tercera Toki se calla. */
+  saltos: number
+  silenciada: boolean
+  /** El último pedido grande: con entrevista o sin ella (para comparar las correcciones que siguen). */
+  grupo?: 'con' | 'sin'
+  /** La última tarea de verdad (no un "sí" ni una corrección) y las correcciones que lleva. */
+  tarea?: string
+  correcciones: string[]
+  consejos: Partial<Record<Consejo, number>>
+  consejosLeidos: boolean
+  limpioRechazos: number
+} = { modo: 'auto', mensajes: 0, recientes: [], saltos: 0, silenciada: false, correcciones: [], consejos: {}, consejosLeidos: false, limpioRechazos: 0 }
+
+function xe(): TextosEntrevista {
+  return textosEntrevista[vivo.idioma]
+}
+
+function reiniciarEntrevista(): void {
+  entrevista.mensajes = 0
+  entrevista.recientes = []
+  entrevista.grupo = undefined
+  entrevista.tarea = undefined
+  entrevista.correcciones = []
+  entrevista.limpioRechazos = 0
+}
+
+type CuentaEntrevista = 'con' | 'conCorr' | 'sin' | 'sinCorr' | 'consejos'
+
+async function contarEntrevista($: $, campo: CuentaEntrevista): Promise<void> {
+  await update($, sesion, s => {
+    const e = s.entrevista ?? { con: 0, conCorr: 0, sin: 0, sinCorr: 0, consejos: 0 }
+    return { ...s, entrevista: { ...e, [campo]: e[campo] + 1 } }
+  })
+}
+
+/** /clear y tu mensaje (o el pedido mejorado) de vuelta al cuadro. */
+function limpiarYDevolver($: $, texto: string): void {
+  const x = xe()
+  guardia.devolver = texto
+  $.clock.after(100, () => {
+    void $.command.run({ command: 'clear' }).catch(async () => {
+      await $.prompt.fill({ text: '/clear', mode: 'replace' }).catch(() => undefined)
+      $.ui.toast(x.pulsaEnter, { timeoutMs: 10_000 })
+    })
+  })
+  $.ui.toast(x.limpiando, { timeoutMs: 6_000 })
+}
+
+async function ofrecerLimpio($: $, pregunta: string, si: string, no: string, texto: string): Promise<boolean> {
+  let respuesta: string
+  try {
+    respuesta = await $.ui.ask(pregunta, { header: 'Toki', options: [si, no] })
+  } catch {
+    return false
+  }
+  if (respuesta !== si) {
+    entrevista.limpioRechazos += 1
+    return false
+  }
+  limpiarYDevolver($, texto)
+  return true
+}
+
+function contarSalto($: $): void {
+  entrevista.saltos += 1
+  if (entrevista.saltos >= SALTOS_PARA_CALLAR && !entrevista.silenciada) {
+    entrevista.silenciada = true
+    $.ui.toast(xe().callada, { timeoutMs: 8_000 })
+  }
+}
+
+/**
+ * Lo que Toki hace con un mensaje tuyo antes de que llegue a Claude: ofrecer empezar en
+ * limpio (cambio de tema con mucho contexto, o dos correcciones seguidas), pedirle a Claude
+ * que te entreviste si el pedido es grande y vago, o un consejo corto para pedir mejor.
+ */
+async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto?: string; drop?: string }> {
+  const texto = quitarEtiquetasDeSistema(textoCrudo)
+  if (texto === '' || texto.startsWith('/')) return {}
+  const e = entrevista
+  const previos = e.mensajes
+  const recientes = e.recientes
+  e.mensajes += 1
+  e.recientes = [...recientes, texto.slice(0, 600)].slice(-3)
+  if (e.modo === 'no' || !ruta.interactivo) return {}
+  if (!e.consejosLeidos) {
+    e.consejosLeidos = true
+    try {
+      const guardado = await $.store.get(CLAVE_CONSEJOS)
+      if (guardado !== null && typeof guardado === 'object') e.consejos = guardado as Partial<Record<Consejo, number>>
+    } catch {
+      // Sin memoria de consejos: se muestran de nuevo.
+    }
+  }
+  const x = xe()
+  const lectura = nivelHeuristico(texto, ruta.nivelPrevio)
+  const contexto = vivo.usoCache?.tokens ?? vivo.tokensUltimoTurno
+  // Si el aviso de caché vencido ya preguntó por este periodo, no se pregunta dos veces.
+  const yaPregunto = vivo.ultimoUsoCache > 0 && guardia.frioVisto === vivo.ultimoUsoCache
+
+  // Segunda corrección sobre lo mismo: la conversación está llena de intentos fallidos.
+  if (esCorreccion(texto)) {
+    if (e.grupo !== undefined) await contarEntrevista($, e.grupo === 'con' ? 'conCorr' : 'sinCorr')
+    e.correcciones.push(texto)
+    if (e.correcciones.length === 2 && e.tarea !== undefined && contexto >= CONTEXTO_PARA_LIMPIAR && e.limpioRechazos < 2 && !yaPregunto) {
+      const pedido = armarPedidoMejorado(e.tarea, e.correcciones, vivo.idioma)
+      if (await ofrecerLimpio($, x.correccion.pregunta(formatearTokens(contexto)), x.correccion.si, x.correccion.no, pedido)) return { drop: x.limpiando }
+    }
+    return {}
+  }
+
+  const seguimiento = lectura.motivo === 'seguimiento'
+  if (!seguimiento) e.correcciones = []
+  if (!seguimiento && lectura.nivel !== 'trivial' && texto.split(/\s+/).length >= 8) e.tarea = texto
+
+  // Cambio de tema con mucho contexto a cuestas: mejor empezar en limpio (y la entrevista, ya sin lastre).
+  if (!seguimiento && lectura.nivel !== 'trivial' && previos > 0 && contexto >= CONTEXTO_CAMBIO_DE_TEMA && e.limpioRechazos < 2 && !yaPregunto && cambioDeTema(recientes, texto)) {
+    if (await ofrecerLimpio($, x.tema.pregunta(formatearTokens(contexto)), x.tema.si, x.tema.no, texto)) return { drop: x.limpiando }
+  }
+
+  const entrada = { texto, nivel: lectura.nivel, motivo: lectura.motivo, interactivo: ruta.interactivo, mensajes: previos, recientes }
+  const ev = e.silenciada ? { entrevistar: false as const } : evaluarEntrevista(entrada)
+  let instruccion: string | undefined
+  if ('omitido' in ev && ev.omitido === 'sin-preguntas') {
+    contarSalto($)
+  } else if (ev.entrevistar) {
+    let acepta = true
+    if (e.modo === 'preguntar') {
+      try {
+        acepta = (await $.ui.ask(x.pregunta, { header: 'Toki', options: [x.opcionesPregunta.si, x.opcionesPregunta.no] })) === x.opcionesPregunta.si
+      } catch {
+        acepta = false
+      }
+      if (!acepta) contarSalto($)
+    }
+    if (acepta) {
+      e.saltos = 0
+      instruccion = x.instruccion(ev.porque)
+      if (e.modo === 'auto') $.ui.toast(x.aviso, { timeoutMs: 9_000 })
+      e.grupo = 'con'
+      await contarEntrevista($, 'con')
+      void anotarDiagnostico($, `entrevista: ${ev.porque}`)
+    }
+  }
+  if (instruccion === undefined && esPedidoGrande(entrada)) {
+    e.grupo = 'sin'
+    await contarEntrevista($, 'sin')
+  }
+
+  // Un consejo corto, solo si no hubo entrevista, y cada tipo un par de veces.
+  if (instruccion === undefined && !seguimiento) {
+    const c = consejoDe(texto, lectura.nivel, e.consejos)
+    if (c !== undefined) {
+      e.consejos[c] = (e.consejos[c] ?? 0) + 1
+      void $.store.set(CLAVE_CONSEJOS, e.consejos).catch(() => undefined)
+      $.ui.toast(x.consejos[c], { timeoutMs: 10_000 })
+      await contarEntrevista($, 'consejos')
+    }
+  }
+  return instruccion === undefined ? {} : { contexto: instruccion }
+}
+
 export const register: Register = (on, options) => {
   config.compresion = options['compresion'] !== false
   config.mapaAuto = options['mapaAutomatico'] !== false
@@ -2125,6 +2299,7 @@ export const register: Register = (on, options) => {
   ruta.modoConfig = leerModo(options['recomendarModelo'])
   ruta.modo = ruta.modoConfig
   ruta.subagentes = options['subagentesSonnet'] !== false
+  entrevista.modo = leerModoEntrevista(options['entrevista'])
   if (config.idioma === 'es' || config.idioma === 'en') {
     vivo.idioma = config.idioma
     vivo.idiomaFijo = true
@@ -2144,11 +2319,18 @@ export const register: Register = (on, options) => {
       description: vivo.idioma === 'en' ? 'Toki: your weekly savings card' : 'Toki: tu tarjeta semanal de ahorro',
       argumentHint: vivo.idioma === 'en' ? '[last]' : '[pasada]',
     })
+    await $.command.register({ name: 'toki-entrevista', description: xe().cmd, argumentHint: 'auto | preguntar | no' })
     await $.command.register({ name: 'toki-presupuesto', description: xp().cmd, argumentHint: xp().pista })
     ruta.interactivo = e.isInteractive === true
     try {
       const guardado = await $.store.get(CLAVE_MODO_RUTA)
       if (typeof guardado === 'string') ruta.modo = leerModo(guardado)
+    } catch {
+      // Sin preferencia guardada: la de /plugin.
+    }
+    try {
+      const guardada = await $.store.get(CLAVE_ENTREVISTA)
+      if (typeof guardada === 'string') entrevista.modo = leerModoEntrevista(guardada)
     } catch {
       // Sin preferencia guardada: la de /plugin.
     }
@@ -2205,6 +2387,7 @@ export const register: Register = (on, options) => {
       tarea.p = undefined
       reiniciarConversacion()
       reiniciarRuta()
+      reiniciarEntrevista()
       await update($, sesion, () => SESION_VACIA)
       await update($, gasto, () => GASTO_VACIO)
       await update($, fallos, () => ({}))
@@ -2234,12 +2417,22 @@ export const register: Register = (on, options) => {
     } catch (err) {
       $.ui.log(`Toki, guardias: ${String(err)}`, { to: 'debug' })
     }
+    let contexto: string | undefined
+    try {
+      const r = await entrevistaYConsejos($, texto)
+      if (r.drop !== undefined) return { drop: r.drop }
+      contexto = r.contexto
+    } catch (err) {
+      $.ui.log(`Toki, entrevista: ${String(err)}`, { to: 'debug' })
+    }
     try {
       await planearTurno($, texto, silenciar)
     } catch (err) {
       $.ui.log(`Toki, modelo y esfuerzo: ${String(err)}`, { to: 'debug' })
     }
-    return next(texto === e.text ? e : { ...e, text: texto })
+    const base = texto === e.text ? e : { ...e, text: texto }
+    // La instrucción va como contexto: Claude la lee junto a tu mensaje y tú no ves nada distinto.
+    return next(contexto === undefined ? base : { ...base, context: [...(e.context ?? []), contexto] })
   })
 
   // Subagentes con encargos simples: Sonnet. Empiezan sin contexto, no se pierde caché.
@@ -2619,6 +2812,20 @@ export const register: Register = (on, options) => {
       return { text: x.modoCambiado(x.modo[ruta.modo]) }
     }
     return { text: [...textoRuta(x, await read($, sesion)), '', x.uso].join('\n') }
+  })
+
+  on('command.run', { command: 'toki-entrevista' }, async ($, e) => {
+    const x = xe()
+    const arg = e.args.trim().toLowerCase()
+    if (/^(auto|autom[aá]tic[oa]|preguntar|no|off|apagad[oa])$/.test(arg)) {
+      entrevista.modo = leerModoEntrevista(arg)
+      entrevista.silenciada = false
+      entrevista.saltos = 0
+      await $.store.set(CLAVE_ENTREVISTA, entrevista.modo).catch(() => undefined)
+      return { text: x.modoCambiado(x.modos[entrevista.modo]) }
+    }
+    const s = (await read($, sesion)).entrevista ?? { con: 0, conCorr: 0, sin: 0, sinCorr: 0, consejos: 0 }
+    return { text: [...x.estado(entrevista.modo, s), '', x.uso].join('\n') }
   })
 
   on('command.run', { command: 'toki-mapa' }, async $ => {

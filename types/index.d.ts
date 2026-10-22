@@ -35,6 +35,11 @@ export type Sesion = {
   ruteoAhorroUsd?: number
   /** Dólares de más que aprobaste al subir de modelo o esfuerzo. Aparte: no resta al ahorro. */
   ruteoExtraUsd?: number
+  /**
+   * Pedidos grandes al empezar algo nuevo: `con` entrevista previa y `sin` ella, y las
+   * correcciones que siguieron a cada grupo; `consejos` son los tips para pedir mejor que se mostraron.
+   */
+  entrevista?: { con: number; conCorr: number; sin: number; sinCorr: number; consejos: number }
 }
 
 declare module 'claude-code' {

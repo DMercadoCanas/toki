@@ -20,6 +20,12 @@ En una sesión de Claude Code:
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
 
+## Lo nuevo en 0.14
+
+- **Preguntas antes de un pedido grande.** Si empiezas algo nuevo y amplio («quiero una app para…», «diseña la arquitectura de…») sin decir archivos ni cuándo está listo, Toki le pide a Claude que te haga 2-4 preguntas de opción múltiple (la recomendada primero) y deje el resumen en `.claude/toki/spec.md`. Cuesta ~1-2k tokens y evita correcciones. No pregunta en seguimientos, pedidos ya detallados, comandos ni con `claude -p`. Escribe «sin preguntas» para saltarla; tras 3 saltos Toki se calla. `/toki-entrevista auto|preguntar|no`; sin argumento muestra cuántas correcciones hubo con y sin entrevista.
+- **Consejos para pedir mejor.** Un aviso corto (una vez por tipo, máximo 2 veces): comprobar el resultado, nombrar el archivo, separar tareas mezcladas, acotar un «todo».
+- **Empezar en limpio.** Tras dos correcciones sobre lo mismo, o un cambio de tema con mucho contexto, Toki ofrece limpiar y te devuelve el mensaje (con lo que ya probaste, si fue una corrección).
+
 ## Lo nuevo en 0.13
 
 **Tarjeta semanal.** El primer lunes que abres Claude Code, Toki te avisa que la semana anterior ya está lista. Con `/toki-semana` ves la semana en curso; con `/toki-semana pasada`, la anterior. La tarjeta muestra cuánto ahorró por tipo (salidas compactadas, salidas repetidas, búsquedas, textos pegados), cómo te fue contra la semana previa, relecturas evitadas, lecturas frenadas, tokens leídos, pedidos y sesiones, tu mejor día y tu racha. El costo solo aparece si pagas por token. Cierra con un consejo según tu semana: por ejemplo, si muchos pedidos fueron con contexto largo, usa `/clear` o `/compact` entre tareas.
@@ -173,6 +179,7 @@ Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), lo que costó
 
 - **`/toki`**: el panel con todo lo anterior.
 - **`/toki-por-que`**: los últimos comandos y, para cada uno, si se compactó (y cuánto ahorró), si se rescató algo o por qué no se tocó. Si crees que Toki no está ahorrando, empieza por aquí.
+- **`/toki-entrevista`**: preguntas antes de pedidos grandes (`auto`, `preguntar`, `no`).
 - **`/toki-modelo`**: qué modelo y esfuerzo eligió para cada mensaje, y el modo (`preguntar`, `siempre`, `automatico`, `no`).
 - **`/toki-semana`** (o `/toki-semana pasada`): la tarjeta de la semana.
 - **`/toki-presupuesto`** `$2` · `500k` · `quitar`: un tope para la tarea actual; sin argumentos, cómo va.

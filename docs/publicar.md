@@ -16,7 +16,7 @@ Lista para el día que decidas enviarlo. Nada de esto se ha enviado.
 
 - [ ] **Decidir la mascota.** El ícono del directorio se toma **una sola vez**, la primera vez que guardas o envías el plugin en el portal; cambiarlo después no cambia el del listado. `.claude-plugin/icon.png` es el Toki actual (1024×1024). Si eliges otra mascota del lienzo, reemplaza ese archivo antes de enviar.
 - [ ] Nombre permanente: `toki`. No se cambia nunca; para otra etiqueta se usa `displayName`.
-- [ ] `version` subida en `plugin.json` (ahora 0.13.2) y el mismo número en `VERSION` de `hooks/register.tsx`.
+- [ ] `version` subida en `plugin.json` (ahora 0.14.0) y el mismo número en `VERSION` de `hooks/register.tsx`.
 - [ ] `claude plugin validate --strict .` → `Validation passed` sin advertencias (hoy pasa).
 - [ ] `claude plugin test .` → todo verde (hoy 152/152).
 - [ ] Instalar desde el marketplace en una carpeta limpia y abrir una sesión: `claude plugin marketplace add DMercadoCanas/toki`, luego `claude plugin install toki@toki`.

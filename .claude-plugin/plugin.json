@@ -1,6 +1,6 @@
 {
   "name": "toki",
-  "version": "0.13.2",
+  "version": "0.14.0",
   "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, pone un presupuesto por tarea, compacta antes en modelos de 1M, recorta salidas ruidosas y búsquedas enormes, frena lecturas de archivos generados, guarda en un archivo los textos pegados enormes, rescata errores escondidos, recuerda lo importante al compactar y cada lunes te muestra una tarjeta con tu semana. Español e inglés. Cero dependencias, cero tokens fijos en el contexto.",
   "author": {
     "name": "DMercadoCanas"
@@ -50,6 +50,17 @@
         "preguntar",
         "siempre",
         "automatico",
+        "no"
+      ]
+    },
+    "entrevista": {
+      "type": "string",
+      "title": "Preguntas antes de un pedido grande",
+      "description": "Si empiezas algo grande o cambias de tema con un pedido amplio y vago, Toki le pide a Claude que te haga unas preguntas de opción múltiple (recomendada primero) antes de empezar, y deja el resumen en .claude/toki/spec.md. Cuesta ~1-2k tokens y suele ahorrar correcciones. auto: avisa y Claude pregunta (escribe «sin preguntas» para saltarla). preguntar: te consulta antes. no: apagado. También con /toki-entrevista. Además muestra consejos cortos para pedir mejor (una vez por tipo) y, tras dos correcciones sobre lo mismo o un cambio de tema con mucho contexto, ofrece empezar en limpio.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "preguntar",
         "no"
       ]
     },
