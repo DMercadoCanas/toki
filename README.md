@@ -8,7 +8,7 @@
 
 Habla español e inglés. No agrega ni un token fijo a tu contexto.
 
-> Versión 0.16. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+> Versión 0.16.1. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
 ## Instalación
 
@@ -35,6 +35,7 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
   - Si casi todo fue a Opus, el consejo sugiere `/toki-sonnet sí`.
 - **`/toki-semana md`** guarda la tarjeta en Markdown en `.claude/toki/semana-AAAA-MM-DD.md`, lista para pegar en un documento o mandar al equipo. La carpeta se ignora sola en git. Con la semana anterior: `/toki-semana pasada md`.
 - **El aviso del lunes** lleva la nota y dice cómo ver la tarjeta: `/toki-semana pasada`.
+- **0.16.1: palabras con tilde y ñ.** Toki leía mal algunas: «no funcionó» no contaba como que seguías atascado (y el mensaje podía ir a un modelo más barato justo ahí), «área» contaba como pedir que pensara a fondo y «un pequeño sistema» no contaba como proyecto nuevo. Ahora reconoce cualquier letra. Y `/toki-sonnet actívalo` o `apágalo`, como dice su ayuda, ya funcionan.
 
 ## Lo nuevo en 0.15
 
@@ -288,6 +289,7 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **Questions before a big request (0.14).** When you start something new and broad ("build me an app that…") without naming files or what done looks like, Toki asks Claude to put 2–4 multiple-choice questions to you first (recommended answer first) and saves the summary to `.claude/toki/spec.md`. It costs ~1–2k tokens and saves rework. Type "no questions" to skip it. `/toki-entrevista auto|preguntar|no`. Toki also shows short tips for asking better, and after two corrections on the same thing it offers to start fresh.
 - **Sonnet first, Opus when needed (0.15).** Turn it on with `/toki-sonnet on` or in the settings. Toki works on Sonnet (half the price of Opus) and moves up to Opus only when you ask for deep thinking or something keeps failing, then comes back. It switches when the switch is free (at the start, or with a cold cache) or pays for itself; moving up asks first in `preguntar` mode. Picking a model with `/model` pauses it for the session. `/toki-modelo undo` reverts the last model or effort change, and Toki won't repeat it for that kind of message. Model savings now count every message that stays on the cheaper model, against what it would cost without Toki.
 - **Weekly grade and Markdown export (0.16).** The weekly card now has an A–F grade made of three parts, each with its reason: context (half the grade: requests past 150k), clarity (messages that correct the one before) and cache (coming back to an expired cache with a big context). The closing tip targets the weakest part. The card also shows what per-message model and effort choices saved, how many of your messages each model answered, corrections with and without questions first, and the tips Toki gave. `/toki-semana md` saves the card as Markdown under `.claude/toki/` (`/toki-semana last md` for last week). The Monday notice carries the grade and points to `/toki-semana last`.
+- **Accented words (0.16.1).** Toki misread some Spanish words with accents or ñ: «no funcionó» (it didn't work) didn't count as being stuck, so the message could go to a cheaper model right then; «área» counted as asking to think hard; and «un pequeño sistema» didn't count as a new project. It now handles any letter. `/toki-sonnet actívalo` and `apágalo`, as its help says, now work too.
 - Measured with `claude plugin eval` on Opus: a mechanical rename cost **55% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 

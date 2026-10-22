@@ -86,6 +86,7 @@ import { TRAMO_GENERADO, textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
 import type { TipoBusqueda } from './busquedas'
+import { conAcentos } from './palabras'
 import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
@@ -96,7 +97,7 @@ import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, o
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.16.0'
+export const VERSION = '0.16.1'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -2994,9 +2995,10 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'toki-sonnet' }, async ($, e) => {
     const x = xr()
     const xs = x.sonnet
-    const arg = e.args.trim().toLowerCase()
-    const prender = /^(s[ií]|on|activ\w*|yes|true|1|prende\w*|enciende\w*)$/.test(arg)
-    const apagar = /^(no|off|apag\w*|false|0|desactiv\w*)$/.test(arg)
+    const arg = e.args.trim().toLowerCase().normalize('NFC')
+    // «Actívalo o apágalo», como dice la ayuda: con tilde o sin ella.
+    const prender = conAcentos(/^(s[ií]|on|act[ií]v\w*|yes|true|1|pr[eé]nd\w*|enc(?:i[eé]|e)nd\w*)$/).test(arg)
+    const apagar = conAcentos(/^(no|off|ap[aá]g\w*|false|0|desact[ií]v\w*)$/).test(arg)
     if (prender || apagar) {
       ruta.sonnetPrimero = prender
       ruta.sonnetPausado = false

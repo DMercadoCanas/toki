@@ -44,6 +44,11 @@ describe('¿entrevistar? (puro)', () => {
     expect(evaluar(claro)).toEqual({ entrevistar: false })
   })
 
+  test('un proyecto con ñ o tildes en medio también cuenta', () => {
+    expect(evaluar('quiero un pequeño sistema de turnos para la barbería')).toEqual({ entrevistar: true, porque: 'proyecto' })
+    expect(esCorreccion('ya te lo dije, no funcionó')).toBe(true)
+  })
+
   test('un pedido muy detallado ya dice lo que la entrevista iba a preguntar', () => {
     const lista = ['crea una API de citas con estas rutas:', ...Array.from({ length: 6 }, (_, i) => `- GET /citas/${i} devuelve la cita y debe validar el token en src/auth/token.ts`), 'y corre los tests de tests/citas.test.ts'].join('\n')
     expect(esDetallado(lista)).toBe(true)

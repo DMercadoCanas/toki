@@ -60,6 +60,18 @@ describe('leer el mensaje', () => {
     expect(nivelHeuristico('still broken after your change', 'complejo').nivel).toBe('profundo')
   })
 
+  test('lee bien las palabras con tilde y ñ', () => {
+    // «no funcionó» es estar atascado, no un mensaje corto que se pueda bajar.
+    for (const t of ['no sirvió', 'no funcionó tu cambio', 'no arregló nada']) expect(nivelHeuristico(t, 'normal').motivo).toBe('atascado')
+    // «área» no es «REA»: no pide pensar a fondo.
+    expect(nivelHeuristico('cambia el color del área de texto').nivel).toBe('trivial')
+    expect(nivelHeuristico('REA: mercado de plugins de ahorro de tokens').nivel).toBe('profundo')
+    expect(nivelHeuristico('hazme el diseño de la pantalla de inicio').motivo).toBe('tarea-compleja')
+    // Texto descompuesto (NFD), como el que viene de nombres de archivo en macOS.
+    expect(nivelHeuristico('no funcionó'.normalize('NFD'), 'normal').motivo).toBe('atascado')
+    expect(limpiarPrompt('mira /docs/diseño-arquitectura.md y /src/app/módulo.ts')).toBe('mira y')
+  })
+
   test('una tarea corriente es normal', () => {
     expect(nivelHeuristico('agrega un botón de exportar a CSV en la tabla de pacientes').nivel).toBe('normal')
   })
@@ -541,6 +553,11 @@ describe('solo Sonnet hasta que haga falta', () => {
     expect(no.text).toContain('Desde el próximo mensaje vuelves a Opus')
     await mensaje($, 't1', COLUMNA, 1)
     expect(vistos.find(v => v.turnId === 't1')?.model).toBe(OPUS)
+    // Como dice la ayuda, «Actívalo o apágalo», con tilde.
+    const activalo = (await $.command.run({ command: 'toki-sonnet', args: 'Actívalo' } as never)) as { text: string }
+    expect(activalo.text).toContain('— activado')
+    const apagalo = (await $.command.run({ command: 'toki-sonnet', args: 'apágalo' } as never)) as { text: string }
+    expect(apagalo.text).toContain('— apagado')
     await $.command.run({ command: 'toki-modelo', args: 'no' } as never)
     const sinRuteo = (await $.command.run({ command: 'toki-sonnet', args: 'on' } as never)) as { text: string }
     expect(sinRuteo.text).toContain('/toki-modelo no')

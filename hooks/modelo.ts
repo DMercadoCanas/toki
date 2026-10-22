@@ -10,6 +10,7 @@
  */
 
 import type { Idioma } from './idioma'
+import { conAcentos } from './palabras'
 
 export type Nivel = 'trivial' | 'normal' | 'complejo' | 'profundo'
 export type Esfuerzo = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -33,28 +34,31 @@ export function leerModo(v: unknown): ModoRuta {
 
 // ---------- Leer el mensaje ----------
 
+const RUTA_SUELTA = conAcentos(/(^|\s)(~|\.{1,2})?\/[\w.\-/@]+/g)
+
 /** Fuera lo que infla el mensaje sin decir nada de la tarea: código, URLs, rutas, etiquetas. */
 export function limpiarPrompt(texto: string): string {
   return texto
+    .normalize('NFC')
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`[^`\n]*`/g, ' ')
     .replace(/https?:\/\/\S+/g, ' ')
     .replace(/<[^>\n]{1,200}>/g, ' ')
-    .replace(/(^|\s)(~|\.{1,2})?\/[\w.\-/@]+/g, ' ')
+    .replace(RUTA_SUELTA, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
 const PROFUNDO =
-  /\b(ultrathink|piensa (muy |lo )?(bien|a fondo|profundamente|con calma|detenidamente|en todo)|pi[eé]nsalo (bien|a fondo)|think (very )?(hard|harder|deeply|carefully)|a fondo|en profundidad|todos los escenarios|ingenier[ií]a inversa|reverse[- ]engineer\w*|an[aá]lisis (completo|exhaustivo|profundo)|exhaustiv\w*|thorough(ly)?|deep dive)\b|\bREA\b/i
+  conAcentos(/\b(ultrathink|piensa (muy |lo )?(bien|a fondo|profundamente|con calma|detenidamente|en todo)|pi[eé]nsalo (bien|a fondo)|think (very )?(hard|harder|deeply|carefully)|a fondo|en profundidad|todos los escenarios|ingenier[ií]a inversa|reverse[- ]engineer\w*|an[aá]lisis (completo|exhaustivo|profundo)|exhaustiv\w*|thorough(ly)?|deep dive)\b|\bREA\b/i)
 const COMPLEJO =
-  /\b(arquitectura|architect\w*|diseñ[ae]\w*|design\w*|refactori[zc]\w*|refactor\w*|migra(r|ción|cion|te|tion)\w*|causa ra[ií]z|root cause|por qu[eé] (falla|no funciona|se rompe|pasa)|why (does|is|doesn'?t|isn'?t)|investig\w*|debug\w*|depur\w*|seguridad|security|vulnerab\w*|trade-?offs?|compar[ae]\w*|optimi[zs]\w*|rendimiento|performance|concurren\w*|race condition|en todo el (proyecto|repo|c[oó]digo|sistema)|across the (codebase|repo|project)|end[- ]to[- ]end|estrategia|strategy|planifica\w*|integraci[oó]n|integrat\w*|escalab\w*|recom(ie|e)nd\w*|flujo|workflow|automati[zc]\w*|mejor (manera|forma|pr[aá]ctica|opci[oó]n)|best (way|practice|option|approach)|c[oó]mo (deber[ií]a|conviene|se debe)|how should)\b/i
+  conAcentos(/\b(arquitectura|architect\w*|diseñ[aeo]\w*|design\w*|refactori[zc]\w*|refactor\w*|migra(r|ción|cion|te|tion)\w*|causa ra[ií]z|root cause|por qu[eé] (falla|no funciona|se rompe|pasa)|why (does|is|doesn'?t|isn'?t)|investig\w*|debug\w*|depur\w*|seguridad|security|vulnerab\w*|trade-?offs?|compar[ae]\w*|optimi[zs]\w*|rendimiento|performance|concurren\w*|race condition|en todo el (proyecto|repo|c[oó]digo|sistema)|across the (codebase|repo|project)|end[- ]to[- ]end|estrategia|strategy|planifica\w*|integraci[oó]n|integrat\w*|escalab\w*|recom(ie|e)nd\w*|flujo|workflow|automati[zc]\w*|mejor (manera|forma|pr[aá]ctica|opci[oó]n)|best (way|practice|option|approach)|c[oó]mo (deber[ií]a|conviene|se debe)|how should)\b/i)
 const TRIVIAL =
-  /\b(renombra\w*|rename\w*|typo|errata|formatea\w*|reformat\w*|corre (los |las )?(tests?|pruebas)|run (the )?tests|git (status|add|commit|push|pull|log|diff|stash)|haz (el |un )?commit|commitea|haz push|lint\w*|instala\w*|install\w*|bump|cambia (el|la|este|esta) (texto|nombre|color|t[ií]tulo|label|etiqueta)|qu[eé] hora|lista (los )?archivos|list (the )?files|traduce|translate|corrige (la )?ortograf[ií]a|fix (the )?typo)\b/i
+  conAcentos(/\b(renombra\w*|rename\w*|typo|errata|formatea\w*|reformat\w*|corre (los |las )?(tests?|pruebas)|run (the )?tests|git (status|add|commit|push|pull|log|diff|stash)|haz (el |un )?commit|commitea|haz push|lint\w*|instala\w*|install\w*|bump|cambia (el|la|este|esta) (texto|nombre|color|t[ií]tulo|label|etiqueta)|qu[eé] hora|lista (los )?archivos|list (the )?files|traduce|translate|corrige (la )?ortograf[ií]a|fix (the )?typo)\b/i)
 const SEGUIMIENTO =
-  /^(s[ií]|si,?|no|ok(ay)?|vale|dale|listo|gracias|perfecto|bien|genial|sigue|contin[uú]a|adelante|hazlo|h[aá]galo|implem[eé]ntalo|procede|go( ahead)?|yes|yep|sure|thanks|lgtm|ship it|do it|continue|proceed|next)\b[\s.!,]*(por favor|please|gracias)?[\s.!]*$/i
+  conAcentos(/^(s[ií]|si,?|no|ok(ay)?|vale|dale|listo|gracias|perfecto|bien|genial|sigue|contin[uú]a|adelante|hazlo|h[aá]galo|implem[eé]ntalo|procede|go( ahead)?|yes|yep|sure|thanks|lgtm|ship it|do it|continue|proceed|next)\b[\s.!,]*(por favor|please|gracias)?[\s.!]*$/i)
 const ATASCO =
-  /\b((sigue|todav[ií]a|a[uú]n) (falla\w*|sin funcionar|no funciona|roto|igual)|otra vez (falla|el mismo error|lo mismo)|no (sirvi[oó]|funcion[oó]|arregl[oó])|still (fail\w*|broken|not working|the same)|didn'?t (work|fix)|same error)\b/i
+  conAcentos(/\b((sigue|todav[ií]a|a[uú]n) (falla\w*|sin funcionar|no funciona|roto|igual)|otra vez (falla|el mismo error|lo mismo)|no (sirvi[oó]|funcion[oó]|arregl[oó])|still (fail\w*|broken|not working|the same)|didn'?t (work|fix)|same error)\b/i)
 
 export type Lectura = { nivel: Nivel; seguro: boolean; motivo: Motivo }
 export type Motivo = 'pide-pensar' | 'tarea-compleja' | 'mensaje-largo' | 'tarea-mecanica' | 'mensaje-corto' | 'seguimiento' | 'atascado' | 'tarea-normal' | 'clasificador'
@@ -81,7 +85,7 @@ export function nivelHeuristico(textoCrudo: string, previo?: Nivel): Lectura {
   if (ATASCO.test(texto)) return { nivel: subir(mayor(previo ?? 'normal', 'normal')), seguro: true, motivo: 'atascado' }
   if (PROFUNDO.test(texto)) return { nivel: 'profundo', seguro: true, motivo: 'pide-pensar' }
   let puntos = 0
-  const complejas = (texto.match(new RegExp(COMPLEJO.source, 'gi')) ?? []).length
+  const complejas = (texto.match(new RegExp(COMPLEJO.source, 'giu')) ?? []).length
   puntos += Math.min(2, complejas) * 2
   if (palabras > 250) puntos += 2
   else if (palabras > 120) puntos += 1

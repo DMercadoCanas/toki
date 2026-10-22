@@ -4,6 +4,7 @@
 
 import { t } from './idioma'
 import type { Idioma } from './idioma'
+import { conAcentos } from './palabras'
 
 export type PuntoDeControl = {
   cuando: number
@@ -24,7 +25,7 @@ export function recordar(lista: string[], item: string, maximo: number): string[
   return [...lista.filter(x => x !== limpio), limpio].slice(-maximo)
 }
 
-const DECISION = /\b(decid\w+|vamos a usar|usaremos|optamos|acordamos|se queda con|elegimos|la opción elegida|en lugar de|no vamos a|descartamos|mantenemos|we decided|we'll use|going with|instead of)\b/i
+const DECISION = conAcentos(/\b(decid\w+|vamos a usar|usaremos|optamos|acordamos|se queda con|elegimos|la opción elegida|en lugar de|no vamos a|descartamos|mantenemos|we decided|we'll use|going with|instead of)\b/i)
 
 /** Extrae frases que parecen decisiones de una respuesta del asistente. */
 export function extraerDecisiones(texto: string): string[] {

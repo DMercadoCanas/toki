@@ -8,6 +8,7 @@
 
 import type { Idioma } from './idioma'
 import { limpiarPrompt, type Nivel } from './modelo'
+import { conAcentos } from './palabras'
 
 export type ModoEntrevista = 'auto' | 'preguntar' | 'no'
 
@@ -29,24 +30,24 @@ export const CONTEXTO_CAMBIO_DE_TEMA = 100_000
 // ---------- Leer el mensaje ----------
 
 const SIN_PREGUNTAS =
-  /\b(sin preguntas|sin entrevista|no (me )?(hagas |preguntes|des )?(preguntas|preguntes)|no quiero (que me hagas )?preguntas|hazlo directamente|solo hazlo|no questions|don'?t ask( me)?( any)?( questions)?|skip the (questions|interview)|just do it)\b/i
+  conAcentos(/\b(sin preguntas|sin entrevista|no (me )?(hagas |preguntes|des )?(preguntas|preguntes)|no quiero (que me hagas )?preguntas|hazlo directamente|solo hazlo|no questions|don'?t ask( me)?( any)?( questions)?|skip the (questions|interview)|just do it)\b/i)
 const VERIFICA =
-  /\b(tests?|pruebas?|verifica\w*|comprueba\w*|compila\w*|build|lint\w*|typecheck|ejecuta\w*|corre\w*|run|screenshot|captura|deber[ií]a|debe(n)?|should|expected|esperad[oa]s?|que pase\w*|passes|passing|criterios?|acceptance|resultado esperado|salida esperada)\b/i
+  conAcentos(/\b(tests?|pruebas?|verifica\w*|comprueba\w*|compila\w*|build|lint\w*|typecheck|ejecuta\w*|corre\w*|run|screenshot|captura|deber[ií]a|debe(n)?|should|expected|esperad[oa]s?|que pase\w*|passes|passing|criterios?|acceptance|resultado esperado|salida esperada)\b/i)
 const RUTA =
   /(?:^|[\s(])@?(?:\.{0,2}\/)?[\w.-]+\/[\w./-]+|\b[\w-]+\.(?:tsx?|jsx?|py|rs|go|java|kt|swift|rb|php|css|html|json|ya?ml|toml|md|sql|sh|cs|cpp)\b|@[\w./-]+/i
 const NOMBRES =
   'app|aplicaci[oó]n|proyecto|sistema|plataforma|sitio|p[aá]gina|web|api|bot|herramienta|plugin|extensi[oó]n|dashboard|tienda|juego|backend|frontend|servicio|cli|project|system|platform|site|website|tool|extension|store|game|service'
-const PROYECTO = new RegExp(
+const PROYECTO = conAcentos(new RegExp(
   `\\b(?:cre[ao]r?|cr[eé]ame|constru\\w+|arma\\w*|haz(?:me)?|hacer|desarroll\\w+|programa\\w*|implementa\\w*|quiero|necesito|build|create|develop|make|i want|i need)\\b[^.?!]{0,40}?\\b(?:una?|nuev[oa]s?|mi|nuestra|a|an|new|my)\\b(?:\\s+[\\w-]+){0,2}?\\s+(?:${NOMBRES})\\b`,
   'i',
-)
+))
 const ACCION =
-  /\b(arregla\w*|corrige\w*|cambia\w*|agrega\w*|a[ñn]ade\w*|implementa\w*|crea\w*|elimina\w*|borra\w*|modifica\w*|actualiza\w*|refactoriza\w*|reescribe\w*|fix|change|add|implement|create|remove|delete|update|modify|refactor|rewrite)\b/i
-const MEZCLA = /\b(adem[aá]s|aparte de eso|otra cosa|por otro lado|y tambi[eé]n necesito|another thing|separately|on another note|unrelated)\b/i
+  conAcentos(/\b(arregla\w*|corrige\w*|cambia\w*|agrega\w*|a[ñn]ade\w*|implementa\w*|crea\w*|elimina\w*|borra\w*|modifica\w*|actualiza\w*|refactoriza\w*|reescribe\w*|fix|change|add|implement|create|remove|delete|update|modify|refactor|rewrite)\b/i)
+const MEZCLA = conAcentos(/\b(adem[aá]s|aparte de eso|otra cosa|por otro lado|y tambi[eé]n necesito|another thing|separately|on another note|unrelated)\b/i)
 const AMPLIO =
-  /\b(revisa|analiza|audita|examina|review|audit|check|analy[sz]e)\b[^.]{0,20}\b(todo|todos|toda|todas|everything|the whole|entire|all the)\b/i
+  conAcentos(/\b(revisa|analiza|audita|examina|review|audit|check|analy[sz]e)\b[^.]{0,20}\b(todo|todos|toda|todas|everything|the whole|entire|all the)\b/i)
 const CORRECCION =
-  /\b(no,? (as[ií]|eso|esto) no|no era (eso|as[ií])|eso no es lo que|no (es|era) lo que (ped[ií]|quer[ií]a)|te ped[ií]|ya te dije|sigue (mal|igual|fallando)|a[uú]n (falla|no funciona)|todav[ií]a (falla|no funciona)|sigue sin|otra vez (falla|mal|lo mismo)|no funcion[oó]|no sirvi[oó]|est[aá] mal|incorrecto|that'?s (not what|wrong)|not what i (asked|meant|wanted)|i (asked|said)|still (fails?|broken|wrong|not working)|didn'?t work|undo|deshaz|revierte)(?![\wáéíóúüñ])/i
+  conAcentos(/\b(no,? (as[ií]|eso|esto) no|no era (eso|as[ií])|eso no es lo que|no (es|era) lo que (ped[ií]|quer[ií]a)|te ped[ií]|ya te dije|sigue (mal|igual|fallando)|a[uú]n (falla|no funciona)|todav[ií]a (falla|no funciona)|sigue sin|otra vez (falla|mal|lo mismo)|no funcion[oó]|no sirvi[oó]|est[aá] mal|incorrecto|that'?s (not what|wrong)|not what i (asked|meant|wanted)|i (asked|said)|still (fails?|broken|wrong|not working)|didn'?t work|undo|deshaz|revierte)\b/i)
 const LISTA = /^\s*(?:[-*]|\d+[.)])\s/gm
 
 function palabrasDe(texto: string): number {
@@ -77,7 +78,7 @@ const PALABRAS_VACIAS = new Set(
 
 function clave(texto: string): Set<string> {
   const salida = new Set<string>()
-  for (const w of limpiarPrompt(texto).replace(new RegExp(SIN_PREGUNTAS.source, 'gi'), ' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/)) {
+  for (const w of limpiarPrompt(texto).replace(new RegExp(SIN_PREGUNTAS.source, 'giu'), ' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/)) {
     if (w.length >= 5 && !PALABRAS_VACIAS.has(w)) salida.add(w.slice(0, 6))
   }
   return salida
