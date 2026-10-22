@@ -1,0 +1,6 @@
+{"type": "user", "message": {"role": "user", "content": "¿Qué hay en este proyecto y cómo está organizado?"}}
+{"type": "user", "message": {"role": "user", "content": "Explícame cómo funciona agendar y qué casos borde maneja."}}
+{"type": "user", "message": {"role": "user", "content": "Agrega validación en agendar: si inicio no es menor que fin, que lance un error claro."}}
+{"type": "user", "message": {"role": "user", "content": "¿Ves otros problemas en src/turnos.ts o en src/mat.ts?"}}
+{"type": "user", "message": {"role": "user", "content": "Escribe una prueba para la validación nueva en src/turnos.test.ts."}}
+{"type": "user", "message": {"role": "user", "content": "Gracias. ¿Algo más que debería saber antes de seguir?"}}

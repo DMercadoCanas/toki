@@ -116,6 +116,8 @@ export type Textos = {
   toastModelo: (modelo: string, tokens: string) => string
   toastCompacto: (resumen: string) => string
   toastConciso: string
+  /** La primera vez que Toki pide respuestas breves: qué hace, cuánto ahorra (medido) y cómo apagarlo. */
+  toastBreve: (pct: number) => string
   toastSalidasGrandes: string
   toastLogro: (nombres: string) => string
   // Lecciones
@@ -203,11 +205,13 @@ export type Textos = {
   menosPct: (pct: number) => string
   /** Lo mismo en tokens, bajo las cifras del panel. */
   tokensLinea: (sesion: string, total: string, relecturas: string | undefined) => string
-  aPrecioApi: (suscripcion: boolean) => string
+  /** `brevePct`: si las respuestas breves ya ahorraron algo, cuánto menos salida (medido). */
+  aPrecioApi: (suscripcion: boolean, brevePct?: number) => string
   estimadoPrevio: (cantidad: string) => string
   desgloseTitulo: string
   desgloseRelecturas: (usd: string, tokens: string) => string
   desgloseLimpio: (usd: string, tokens: string) => string
+  desgloseBreve: (usd: string, tokens: string, pct: number) => string
   /** Recién compactado: lo que costó compactar, antes de recuperarlo en los pedidos siguientes. */
   desgloseCompactar: (usd: string) => string
   desgloseRecorte: (usd: string, tokens: string) => string
@@ -293,6 +297,7 @@ const es: Textos = {
   toastModelo: (m, t) => `Toki: cambiaste a ${m} con el caché caliente. Tu próximo mensaje reprocesará ~${t} tokens. Para una tarea chica, mejor un subagente con model: haiku.`,
   toastCompacto: r => `Toki: se compactó el contexto y le recordé a Claude ${r}. Sigue donde quedó.`,
   toastConciso: 'Toki: la conversación ya es larga. Le pedí a Claude respuestas más concisas (sin recortar lo técnico).',
+  toastBreve: p => `Toki le pide a Claude respuestas breves, sin recortar código, comandos ni errores: ~${p} % menos salida, medido. Si quieres más detalle, pídeselo; para apagarlo, /plugin → Toki → Respuestas breves / Brief replies.`,
   toastSalidasGrandes: 'Toki: varias salidas enormes seguidas. Para esto, un subagente con Haiku sale más barato.',
   toastLogro: n => `🏅 Logro desbloqueado: ${n}`,
   leccionModelo: (de, a, t, costo) => `Cambiaste de ${de} a ${a} con el caché caliente: el siguiente mensaje reprocesó ~${t} tokens${costo} sin caché. Elige el modelo al inicio de la sesión; para una tarea chica, delega a un subagente con model: haiku.`,
@@ -402,12 +407,13 @@ const es: Textos = {
   costoDeMas: 'costó de más',
   menosPct: p => `−${p} %`,
   tokensLinea: (s, t, r) => `En tokens: ~${s} recortados esta sesión · ~${t} desde siempre${r !== undefined ? ` · ~${r} relecturas evitadas` : ''}`,
-  aPrecioApi: s =>
-    `En dólares a precio de API: lo de modelo y esfuerzo sale de lo que devolvió cada pedido; recortes y relecturas, de los tokens que Toki quitó.${s ? ' Con tu suscripción no lo pagas aparte: es uso de tus límites que te queda libre.' : ''}`,
+  aPrecioApi: (s, b) =>
+    `En dólares a precio de API: lo de modelo y esfuerzo sale de lo que devolvió cada pedido; recortes y relecturas, de los tokens que Toki quitó${b !== undefined ? `; las respuestas breves, de la salida de cada pedido con lo medido (~${b} % menos)` : ''}.${s ? ' Con tu suscripción no lo pagas aparte: es uso de tus límites que te queda libre.' : ''}`,
   estimadoPrevio: c => `Incluye ${c} de antes de la versión 0.17, estimados a precio de Sonnet (solo recortes y relecturas).`,
   desgloseTitulo: 'De dónde sale el ahorro de esta sesión',
   desgloseRelecturas: (u, t) => `Relecturas evitadas: ${u} (~${t} tokens que Claude no volvió a leer porque Toki compactó antes o sacó algo del contexto)`,
   desgloseLimpio: (u, t) => `Empezar en limpio: ${u} (~${t} tokens de la conversación de antes que Claude ya no releyó ni reescribió)`,
+  desgloseBreve: (u, t, p) => `Respuestas breves: ${u} (~${t} tokens de salida que Claude no escribió; estimado con lo medido, ~${p} % menos)`,
   desgloseCompactar: u => `Compactar antes: ${u} (lo que costó resumir la conversación; se recupera en los pedidos siguientes, que releen mucho menos)`,
   desgloseRecorte: (u, t) => `Salidas recortadas: ${u} (~${t} tokens que no entraron al contexto)`,
   desgloseRuteo: (n, a, e) =>
@@ -506,6 +512,7 @@ const en: Textos = {
   toastModelo: (m, t) => `Toki: you switched to ${m} with a warm cache. Your next message will reprocess ~${t} tokens. For a small task, a subagent with model: haiku is cheaper.`,
   toastCompacto: r => `Toki: the context was compacted and I reminded Claude of ${r}. It continues where it left off.`,
   toastConciso: 'Toki: the conversation is getting long. I asked Claude for more concise replies (without trimming technical detail).',
+  toastBreve: p => `Toki asks Claude for brief replies, without cutting code, commands or errors: ~${p}% less output, measured. If you want more detail, just ask; to turn it off, /plugin → Toki → Respuestas breves / Brief replies.`,
   toastSalidasGrandes: 'Toki: several huge outputs in a row. A Haiku subagent is cheaper for this.',
   toastLogro: n => `🏅 Achievement unlocked: ${n}`,
   leccionModelo: (de, a, t, costo) => `You switched from ${de} to ${a} with a warm cache: the next message reprocessed ~${t} tokens${costo} without cache. Pick the model at the start of a session; for a small task, delegate to a subagent with model: haiku.`,
@@ -615,12 +622,13 @@ const en: Textos = {
   costoDeMas: 'cost extra',
   menosPct: p => `−${p}%`,
   tokensLinea: (s, t, r) => `In tokens: ~${s} trimmed this session · ~${t} all time${r !== undefined ? ` · ~${r} re-reads avoided` : ''}`,
-  aPrecioApi: s =>
-    `In dollars at API prices: model and effort come from what each request returned; trims and re-reads, from the tokens Toki removed.${s ? ' On your subscription you do not pay it separately: it is usage of your limits left free.' : ''}`,
+  aPrecioApi: (s, b) =>
+    `In dollars at API prices: model and effort come from what each request returned; trims and re-reads, from the tokens Toki removed${b !== undefined ? `; brief replies, from each request's output with what was measured (~${b}% less)` : ''}.${s ? ' On your subscription you do not pay it separately: it is usage of your limits left free.' : ''}`,
   estimadoPrevio: c => `Includes ${c} from before version 0.17, estimated at Sonnet prices (trims and re-reads only).`,
   desgloseTitulo: "Where this session's savings come from",
   desgloseRelecturas: (u, t) => `Re-reads avoided: ${u} (~${t} tokens Claude did not read again because Toki compacted earlier or took something out of context)`,
   desgloseLimpio: (u, t) => `Starting clean: ${u} (~${t} tokens of the old conversation Claude no longer re-read or rewrote)`,
+  desgloseBreve: (u, t, p) => `Brief replies: ${u} (~${t} output tokens Claude did not write; estimated from what was measured, ~${p}% less)`,
   desgloseCompactar: u => `Compacting earlier: ${u} (what summarizing the conversation cost; it is made up in the following requests, which re-read much less)`,
   desgloseRecorte: (u, t) => `Trimmed outputs: ${u} (~${t} tokens that never entered the context)`,
   desgloseRuteo: (n, a, e) =>

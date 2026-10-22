@@ -17,6 +17,38 @@ export function factorSalida(sinToki: unknown, usado: unknown): number {
   return SALIDA_RELATIVA[sinToki] / SALIDA_RELATIVA[usado]
 }
 
+/**
+ * Salida con respuestas breves frente a sin ellas, medida: los mismos guiones sin
+ * Toki en Opus 5.5, tres corridas por brazo (oct 2026, evals/modo-breve). Con
+ * tareas de código bajó un 12 % y con preguntas abiertas un 15 %: se usa la menor.
+ */
+export const SALIDA_BREVE = 0.88
+
+/**
+ * La salida que Claude no escribió por las respuestas breves: sin ellas, la de este
+ * pedido habría sido 1/0,88 veces mayor (y `factorEsfuerzo` veces, con tu esfuerzo).
+ */
+export function salidaEvitadaBreve(salida: number, factorEsfuerzo = 1): number {
+  if (!(salida > 0) || !(factorEsfuerzo > 0) || !Number.isFinite(salida * factorEsfuerzo)) return 0
+  return salida * factorEsfuerzo * (1 / SALIDA_BREVE - 1)
+}
+
+/** Lo que vale esa salida, a precio del modelo que la habría escrito sin Toki. */
+export function ahorroBreve(salida: number, familia: Familia, contexto = 0, factorEsfuerzo = 1): number {
+  return (salidaEvitadaBreve(salida, factorEsfuerzo) * precio(familia, contexto).salida) / 1_000_000
+}
+
+/** Lo que mide la sección de respuestas breves en el system prompt: 201 tokens en Opus 5.5, con margen. */
+export const TOKENS_BREVE = 210
+
+/**
+ * Lo que cuesta mandar la sección en un pedido, que se descuenta de lo que ahorra:
+ * se lee del caché, o se escribe si el pedido escribió la conversación de nuevo.
+ */
+export function costoSeccionBreve(familia: Familia, escrita: boolean, ttl1h: boolean, contexto = 0): number {
+  return escrita ? valorEscritura(TOKENS_BREVE, familia, ttl1h, contexto) : valorLectura(TOKENS_BREVE, familia, contexto)
+}
+
 export type UsoMedido = { entrada: number; leido: number; escrito: number; salida: number }
 
 /** El último pedido del hilo principal: la familia que respondió, la que habría respondido sin Toki, su tamaño y cuándo fue. */
@@ -101,22 +133,30 @@ export function porcentajeAhorro(ahorro: number, gastado: number): number | unde
   return Math.round((ahorro / (gastado + ahorro)) * 100)
 }
 
-/** Lo que Toki ahorró en la sesión, en dólares: recortes, relecturas, empezar en limpio y modelo (menos el extra que costó). */
-export type AhorroUsd = { recorte?: number; relecturas?: number; limpio?: number; ruteo?: number; ruteoExtra?: number }
+/** Lo que Toki ahorró en la sesión, en dólares: recortes, relecturas, empezar en limpio, respuestas breves y modelo (menos el extra que costó). */
+export type AhorroUsd = { recorte?: number; relecturas?: number; limpio?: number; breve?: number; ruteo?: number; ruteoExtra?: number }
 
 export function ahorroNeto(s: AhorroUsd): number {
-  return (s.recorte ?? 0) + (s.relecturas ?? 0) + (s.limpio ?? 0) + (s.ruteo ?? 0) - (s.ruteoExtra ?? 0)
+  return (s.recorte ?? 0) + (s.relecturas ?? 0) + (s.limpio ?? 0) + (s.breve ?? 0) + (s.ruteo ?? 0) - (s.ruteoExtra ?? 0)
 }
 
 /** Las cifras en dólares de una sesión, como las guarda Toki. */
-export type CifrasUsd = { recorteUsd?: number; relecturasUsd?: number; limpioUsd?: number; ruteoAhorroUsd?: number; ruteoExtraUsd?: number; gastoMedidoUsd?: number }
+export type CifrasUsd = {
+  recorteUsd?: number
+  relecturasUsd?: number
+  limpioUsd?: number
+  breveUsd?: number
+  ruteoAhorroUsd?: number
+  ruteoExtraUsd?: number
+  gastoMedidoUsd?: number
+}
 
 /**
  * La cifra única: lo que Toki ahorró (neto), cuánto costó de verdad, cuánto
  * habría costado sin Toki y el "−18 %" (solo si hubo ahorro).
  */
 export function resumenAhorro(s: CifrasUsd): { neto: number; gastado: number; sinToki: number; pct?: number } {
-  const neto = ahorroNeto({ recorte: s.recorteUsd, relecturas: s.relecturasUsd, limpio: s.limpioUsd, ruteo: s.ruteoAhorroUsd, ruteoExtra: s.ruteoExtraUsd })
+  const neto = ahorroNeto({ recorte: s.recorteUsd, relecturas: s.relecturasUsd, limpio: s.limpioUsd, breve: s.breveUsd, ruteo: s.ruteoAhorroUsd, ruteoExtra: s.ruteoExtraUsd })
   const gastado = Math.max(0, s.gastoMedidoUsd ?? 0)
   const pct = porcentajeAhorro(neto, gastado)
   return { neto, gastado, sinToki: gastado + neto, ...(pct !== undefined && pct >= 1 ? { pct } : {}) }

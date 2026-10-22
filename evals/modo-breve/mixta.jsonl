@@ -1,0 +1,7 @@
+{"type": "user", "message": {"role": "user", "content": "¿Qué hace la función agendar en src/turnos.ts? Respóndeme en tres líneas."}}
+{"type": "user", "message": {"role": "user", "content": "Renombra la función sumar a add en src/mat.ts, también donde se usa."}}
+{"type": "user", "message": {"role": "user", "content": "¿Por qué falla src/turnos.test.ts? Lanza \"turno ocupado\" y no debería. Explica la causa en dos líneas y di qué cambiarías exactamente en src/turnos.ts. No edites archivos."}}
+{"type": "user", "message": {"role": "user", "content": "Dale, arréglalo."}}
+{"type": "user", "message": {"role": "user", "content": "no funcionó, sigue diciendo turno ocupado"}}
+{"type": "user", "message": {"role": "user", "content": "Piensa a fondo: ¿cómo cambiarías agendar para que acepte citas que cruzan la medianoche sin romper lo que ya funciona? Solo el plan, en cinco líneas, sin editar."}}
+{"type": "user", "message": {"role": "user", "content": "Perfecto, gracias."}}

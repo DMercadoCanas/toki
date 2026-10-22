@@ -6,8 +6,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderNode, ResolveInput, ToolCallResult, TurnStepInput, TurnUsage } from 'claude-code'
 
 import type { Sesion } from '../types'
-import { CENTAVO, cifraUsd, cifraUsdDia, cifraUsdFirmada, COMIENZO_TIPICO, costoClasificador, costoSinTokiPedido, esPedidoPrevio, estimarAhorroPrevio, factorSalida, leidoSinToki as leidoCacheSinToki, resumenAhorro, valorEscritura, valorLectura } from './ahorro'
+import { ahorroBreve, CENTAVO, cifraUsd, cifraUsdDia, cifraUsdFirmada, COMIENZO_TIPICO, costoClasificador, costoSeccionBreve, costoSinTokiPedido, esPedidoPrevio, estimarAhorroPrevio, factorSalida, leidoSinToki as leidoCacheSinToki, resumenAhorro, SALIDA_BREVE, salidaEvitadaBreve, valorEscritura, valorLectura } from './ahorro'
 import type { PedidoPrevio, UsoMedido } from './ahorro'
+import { breveActivo, decidirBreve, ID_BREVE, SECCION_BREVE } from './breve'
+import type { DecisionBreve } from './breve'
 import { avisoBucle, registrar, UMBRAL_FALLOS } from './bucles'
 import { debeMantenerCache, evaluarPing } from './cache'
 import {
@@ -142,6 +144,8 @@ const CLAVE_TARJETA = 'tarjetaSemanalMostrada'
 const CLAVE_VENTANA = 'ventanaPuestaPorToki'
 /** La ventana que Claude Code usaría sin Toki, por modelo. */
 const CLAVE_VENTANA_NATIVA = 'ventanaNativa'
+/** Ya se avisó (una vez, desde siempre) que Toki pide respuestas breves. */
+const CLAVE_AVISO_BREVE = 'avisoBreveDado'
 const RANURAS = 40
 /** Lo que Claude Code entrega de una salida exitosa sin ayuda: 30 KB. */
 const LIMITE_CLAUDE_CODE = 30_000
@@ -150,6 +154,8 @@ const HORAS_MAPA_VIGENTE = 24
 const CONTEXTO_RELEVANTE = 20_000
 /** Desde aquí cada mensaje relee mucho: Toki le pide a Claude respuestas más concisas. */
 const UMBRAL_CONCISO = 150_000
+/** Cuánto menos escribe Claude con respuestas breves, medido, para decirlo: 12. */
+const PCT_BREVE = Math.round((1 - SALIDA_BREVE) * 100)
 
 /** Las opciones de /plugin, leídas al registrar. */
 const config = {
@@ -275,6 +281,14 @@ const vivo: {
   cuentaRuteo: { real: number; sin: number }
   /** Dólares ahorrados que aún no se sumaron al total y al día (se guardan al terminar cada mensaje). */
   dolaresPendientes: number
+  /** Lo que Toki decidió sobre las respuestas breves al armar el último system prompt (sin decidir: el motor no lo deja tocar). */
+  breve?: DecisionBreve
+  /** Lo que las respuestas breves ahorraron en el mensaje en curso, aún sin acreditar: dólares y tokens de salida. */
+  cuentaBreve: { usd: number; tokens: number }
+  /** Ya se miró si había que avisar de las respuestas breves (el aviso es uno solo, desde siempre). */
+  breveAvisado: boolean
+  /** La sección ya se mandó en un pedido del hilo principal: desde ahí está en el caché. */
+  breveEnCache: boolean
 } = {
   idioma: 'es',
   idiomaFijo: false,
@@ -326,6 +340,9 @@ const vivo: {
   familiaSinDeAgente: new Map<string, Familia>(),
   cuentaRuteo: { real: 0, sin: 0 },
   dolaresPendientes: 0,
+  cuentaBreve: { usd: 0, tokens: 0 },
+  breveAvisado: false,
+  breveEnCache: false,
 }
 
 /** Toki en pixel art, animado dentro del SVG (fuera de la terminal). */
@@ -903,6 +920,30 @@ async function sumarRuteo($: $, usd: number): Promise<void> {
   }
 }
 
+/**
+ * Lo que vale la salida que Claude no escribió por las respuestas breves
+ * (estimado con lo medido): a la sesión, la semana y el total.
+ */
+async function sumarBreve($: $, usd: number, tokens: number): Promise<void> {
+  if (!Number.isFinite(usd) || usd <= 0) return
+  vivo.dolaresPendientes += usd
+  await update($, sesion, s => ({ ...s, breveUsd: (s.breveUsd ?? 0) + usd, breveTokens: Math.round((s.breveTokens ?? 0) + Math.max(0, tokens)) }))
+  await alaSemana($, { ahorroUsd: usd, breve: usd })
+}
+
+/** La primera vez (desde siempre) que Toki pide respuestas breves, lo dice: qué hace, cuánto ahorra y cómo apagarlo. */
+async function avisarBreve($: $): Promise<void> {
+  if (vivo.breveAvisado) return
+  vivo.breveAvisado = true
+  try {
+    if ((await $.store.get(CLAVE_AVISO_BREVE)) === true) return
+    await $.store.set(CLAVE_AVISO_BREVE, true)
+    $.ui.toast(tx().toastBreve(PCT_BREVE), { timeoutMs: 10_000 })
+  } catch {
+    // Sin store: no se avisa, para no repetirlo en cada sesión.
+  }
+}
+
 /** La familia que habría hecho este trabajo sin Toki: la de tu modelo o la que habría tenido el subagente. */
 function familiaSin(agente: string | undefined): Familia {
   const delAgente = agente === undefined ? undefined : vivo.familiaSinDeAgente.get(agente)
@@ -972,8 +1013,17 @@ function medirPedido(e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, sin:
     comienzo: vivo.prefijoSistema ?? COMIENZO_TIPICO,
     conPings: vivo.conPings,
   })
-  const c = { real: costoMedido(familia, uso, ttl1h), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h, factorSalida: factorSalida(e.effort, pedido.effort), leido }) }
+  const fSalida = factorSalida(e.effort, pedido.effort)
+  const c = { real: costoMedido(familia, uso, ttl1h), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h, factorSalida: fSalida, leido }) }
   sumarCuenta(c.real, c.sin)
+  // Con respuestas breves, la salida que Claude no escribió (en tu modelo y con tu esfuerzo habría sido más),
+  // menos lo que costó mandar la sección: leída del caché, o escrita si el pedido reescribió la conversación.
+  if (breveActivo(vivo.breve)) {
+    const escrita = !vivo.breveEnCache || uso.escrito > uso.leido
+    vivo.breveEnCache = true
+    const usd = ahorroBreve(uso.salida, sin, tamano, fSalida) - costoSeccionBreve(familia, escrita, ttl1h, tamano)
+    vivo.cuentaBreve = { usd: vivo.cuentaBreve.usd + usd, tokens: vivo.cuentaBreve.tokens + salidaEvitadaBreve(uso.salida, fSalida) }
+  }
   // El primer pedido tras limpiar, en el mismo modelo: lo que lee del caché es el comienzo.
   if (limpio && p !== undefined && p.familia === familia && uso.leido > 0) vivo.prefijoSistema = uso.leido
   vivo.pedidoPrevio = { familia, sin, tamano, cuando: ahora }
@@ -993,12 +1043,20 @@ function medirPedido(e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, sin:
 async function acreditar($: $): Promise<void> {
   const { real, sin } = vivo.cuentaRuteo
   vivo.cuentaRuteo = { real: 0, sin: 0 }
+  const breve = vivo.cuentaBreve
+  // Si mandar la sección costó más que lo que ahorró (respuestas de una palabra), la cuenta sigue en el próximo.
+  vivo.cuentaBreve = breve.usd < 0 ? breve : { usd: 0, tokens: 0 }
   try {
     if (real > 0) {
       await update($, sesion, s => ({ ...s, gastoMedidoUsd: (s.gastoMedidoUsd ?? 0) + real }))
       await alaSemana($, { gastoUsd: real })
     }
     await sumarRuteo($, sin - real)
+  } catch {
+    // Sin cifras esta vez.
+  }
+  try {
+    await sumarBreve($, breve.usd, breve.tokens)
   } catch {
     // Sin cifras esta vez.
   }
@@ -1757,6 +1815,7 @@ function lineasDesglose(x: Textos, s: Sesion): string[] {
     lineas.push(relecturas > 0 ? x.desgloseRelecturas(cifraUsd(relecturas), tokensFirmados(s.relecturasEvitadas ?? 0)) : x.desgloseCompactar(cifraUsdFirmada(relecturas)))
   }
   if ((s.limpioUsd ?? 0) >= CENTAVO) lineas.push(x.desgloseLimpio(cifraUsd(s.limpioUsd ?? 0), formatearTokens(s.limpioTokens ?? 0)))
+  if ((s.breveUsd ?? 0) >= CENTAVO) lineas.push(x.desgloseBreve(cifraUsd(s.breveUsd ?? 0), formatearTokens(s.breveTokens ?? 0), PCT_BREVE))
   if ((s.recorteUsd ?? 0) >= CENTAVO) lineas.push(x.desgloseRecorte(cifraUsd(s.recorteUsd ?? 0), formatearTokens(s.tokensAhorrados)))
   const a = s.ruteoAhorroUsd ?? 0
   const e = s.ruteoExtraUsd ?? 0
@@ -1786,9 +1845,10 @@ function chipAhorro(x: Textos, s: Sesion, angosto = false): { etiqueta: string; 
 }
 
 /** Las notas bajo la cifra: de dónde salen los dólares y lo estimado de antes de 0.17. */
-function notasAhorro(x: Textos, r: Pick<Reporte, 'ahorro' | 'suscripcion' | 'estimadoUsd' | 'totalUsd'>): string[] {
+function notasAhorro(x: Textos, r: Pick<Reporte, 'ahorro' | 'suscripcion' | 'estimadoUsd' | 'totalUsd' | 'sesion'>): string[] {
   const notas: string[] = []
-  if (Math.abs(r.ahorro.neto) >= CENTAVO || r.ahorro.gastado >= CENTAVO || r.totalUsd >= CENTAVO) notas.push(x.aPrecioApi(r.suscripcion))
+  const breve = (r.sesion.breveUsd ?? 0) >= CENTAVO ? PCT_BREVE : undefined
+  if (Math.abs(r.ahorro.neto) >= CENTAVO || r.ahorro.gastado >= CENTAVO || r.totalUsd >= CENTAVO) notas.push(x.aPrecioApi(r.suscripcion, breve))
   if (r.estimadoUsd >= CENTAVO) notas.push(x.estimadoPrevio(cifraUsd(r.estimadoUsd)))
   return notas
 }
@@ -1856,7 +1916,8 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
   if (!config.mantenerCache && vivo.ultimoTurnoCompleto > 0 && vivo.usoCache !== undefined && !vivo.usoCache.esSuscripcion) r.sugerencias.push(x.sugCache)
   if (!r.hayMapa) r.sugerencias.push(x.sugMapa)
   if (await $.fs.exists('.claude/ahorro-tokens').catch(() => false)) r.sugerencias.push(x.sugCarpetaVieja)
-  r.sugerencias.push(x.sugConciso)
+  // Con respuestas breves ya puestas (o con un estilo tuyo) el consejo sobra.
+  if (!breveActivo(vivo.breve) && vivo.breve !== 'tuyo') r.sugerencias.push(x.sugConciso)
   return r
 }
 
@@ -2920,6 +2981,11 @@ export const register: Register = (on, options) => {
   config.acompanante = options['acompanante'] !== false
   config.memoria = options['memoria'] !== false
   config.conciso = options['concisoAutomatico'] !== false
+  // Las respuestas breves se deciden de nuevo con el primer system prompt.
+  vivo.breve = undefined
+  vivo.breveAvisado = false
+  vivo.breveEnCache = false
+  vivo.cuentaBreve = { usd: 0, tokens: 0 }
   config.mantenerCache = options['mantenerCache'] === true
   config.idioma = typeof options['idioma'] === 'string' ? options['idioma'] : 'auto'
   config.ventana = leerVentana(options['ventanaCompactacion'])
@@ -3012,6 +3078,8 @@ export const register: Register = (on, options) => {
     }
     vivo.trasLimpiar = false
     vivo.conPings = false
+    vivo.breveEnCache = false
+    vivo.cuentaBreve = { usd: 0, tokens: 0 }
     ruta.soloComienzo = true
     ruta.alIniciar = true
     // Claude Code lee la ventana de compactación al empezar: puesta a mitad de un turno no cuenta.
@@ -3266,6 +3334,7 @@ export const register: Register = (on, options) => {
       }
       // Lo que ahorró (o costó de más) este mensaje, medido, a la sesión, la semana y el total.
       await acreditar($)
+      if (vivo.breve === 'agregar') await avisarBreve($)
       await guardarUltimoPedido($)
       if (config.memoria) await guardarMemoria($)
       await refrescarUso($, true)
@@ -3286,7 +3355,8 @@ export const register: Register = (on, options) => {
       }
       // Por tamaño, no por % de la ventana: con 1M de ventana el 50% llegaba tarde o nunca.
       const umbralConciso = Math.min(UMBRAL_CONCISO, Math.round((vivo.ventana ?? uso?.ventana ?? 200_000) * 0.5))
-      if (config.conciso && !vivo.nudgeConciso && (uso?.tokens ?? 0) >= umbralConciso) {
+      // Solo si el motor no dejó poner las respuestas breves en el system prompt.
+      if (config.conciso && vivo.breve === undefined && !vivo.nudgeConciso && (uso?.tokens ?? 0) >= umbralConciso) {
         vivo.nudgeConciso = true
         await notaParaClaude($, x.notaConciso)
         $.ui.toast(x.toastConciso, { timeoutMs: 6000 })
@@ -3299,6 +3369,20 @@ export const register: Register = (on, options) => {
       })
     }
     return next(e)
+  })
+
+  // Respuestas breves desde el primer mensaje: una sección fija al final del system prompt.
+  on('prompt.compose', async ($, e, next) => {
+    const r = await next(e)
+    try {
+      const d = decidirBreve({ activo: config.conciso, estilo: e.outputStyle?.name ?? null, traits: e.traits })
+      // /context mide sin mandar nada y un compañero arma el prompt de su líder: no cuentan para tu conversación.
+      if (!e.traits.includes('analysis') && !e.traits.includes('teammate')) vivo.breve = d
+      if (d !== 'agregar' || r.sections.some(sec => sec.id === ID_BREVE)) return r
+      return { sections: [...r.sections, { id: ID_BREVE, text: SECCION_BREVE, scope: 'session' as const }] }
+    } catch {
+      return r
+    }
   })
 
   // Observador: qué está haciendo Claude, para que Toki lo actúe.

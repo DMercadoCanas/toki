@@ -138,8 +138,8 @@
     },
     "concisoAutomatico": {
       "type": "boolean",
-      "title": "Modo conciso automático",
-      "description": "Cuando la conversación ya es larga (unos 150k tokens, o la mitad de la ventana de compactación), le pide a Claude respuestas más cortas sin recortar código ni errores.",
+      "title": "Respuestas breves / Brief replies",
+      "description": "Desde el primer mensaje le pide a Claude respuestas breves, sin recortar código, comandos ni errores (medido: ~12 % menos salida). Si eliges tu propio /output-style, se respeta. / Brief replies from the first message, without cutting code, commands or errors (measured: ~12% less output).",
       "default": true
     },
     "idioma": {

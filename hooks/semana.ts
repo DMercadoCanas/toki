@@ -47,8 +47,10 @@ export type ResumenSemana = {
   /** Lo que movió elegir modelo y esfuerzo por mensaje, en USD a precio de API: ahorrado y de más que aprobaste. */
   ruteo: number
   ruteoExtra: number
-  /** Lo que valen los recortes y las relecturas evitadas, en USD a precio de API (neto). */
+  /** Lo que valen los recortes, las relecturas evitadas, empezar en limpio y las respuestas breves, en USD a precio de API (neto). */
   ahorroUsd: number
+  /** De eso, lo que vale la salida que Claude no escribió por las respuestas breves (estimado con lo medido). */
+  breve: number
   /** Lo que de verdad costaron los pedidos (principal y subagentes), medido por Toki, en USD a precio de API. */
   gastoUsd: number
   entrevistas: Entrevistas
@@ -80,6 +82,7 @@ export const SEMANA_VACIA: ResumenSemana = {
   ruteo: 0,
   ruteoExtra: 0,
   ahorroUsd: 0,
+  breve: 0,
   gastoUsd: 0,
   entrevistas: { con: 0, conCorr: 0, sin: 0, sinCorr: 0 },
   consejos: 0,
@@ -141,6 +144,7 @@ function leerResumen(valor: unknown): ResumenSemana {
     ruteo: Math.max(0, numero(v['ruteo'])),
     ruteoExtra: Math.max(0, numero(v['ruteoExtra'])),
     ahorroUsd: numero(v['ahorroUsd']),
+    breve: Math.max(0, numero(v['breve'])),
     gastoUsd: Math.max(0, numero(v['gastoUsd'])),
     entrevistas: { con: e.con ?? 0, conCorr: e.conCorr ?? 0, sin: e.sin ?? 0, sinCorr: e.sinCorr ?? 0 },
     consejos: Math.max(0, numero(v['consejos'])),
@@ -175,8 +179,10 @@ export type Delta = {
   /** USD a precio de API; negativo al deshacer. */
   ruteo?: number
   ruteoExtra?: number
-  /** USD de recortes y relecturas evitadas (negativo al compactar). */
+  /** USD de recortes, relecturas evitadas, empezar en limpio y respuestas breves (negativo al compactar). */
   ahorroUsd?: number
+  /** USD de las respuestas breves (también van en `ahorroUsd`). */
+  breve?: number
   /** USD que de verdad costó un pedido. */
   gastoUsd?: number
   /** Uno más en ese grupo. */
@@ -210,6 +216,7 @@ export function sumarSemana(semanas: Semanas, ms: number, d: Delta): Semanas {
     ruteo: Math.max(0, s.ruteo + numero(d.ruteo)),
     ruteoExtra: Math.max(0, s.ruteoExtra + numero(d.ruteoExtra)),
     ahorroUsd: s.ahorroUsd + numero(d.ahorroUsd),
+    breve: s.breve + Math.max(0, numero(d.breve)),
     gastoUsd: s.gastoUsd + Math.max(0, numero(d.gastoUsd)),
     entrevistas,
     consejos: s.consejos + numero(d.consejos),
@@ -331,6 +338,7 @@ const ES = {
   tipos: { salida: 'salidas de terminal', busqueda: 'búsquedas enormes', pegado: 'textos pegados', repetida: 'salidas repetidas' } as Record<TipoAhorro, string>,
   relecturas: (t: string) => `Además, ~${t} tokens que Claude no tuvo que releer`,
   frenos: (n: number) => `${n} ${n === 1 ? 'lectura frenada' : 'lecturas frenadas'} de archivos generados`,
+  breve: (u: string) => `Respuestas breves: ${u} en salida que Claude no escribió (estimado con lo medido)`,
   ruteo: (ahorro: string, suscripcion: boolean, extra: string | undefined) =>
     `Elegir modelo y esfuerzo por mensaje ahorró ${ahorro} a precio de API${suscripcion ? ' (con suscripción: límite que no gastas)' : ''}${extra !== undefined ? ` · ${extra} de más que aprobaste` : ''}`,
   ruteoSoloExtra: (extra: string) => `Elegir modelo y esfuerzo por mensaje: ${extra} de más que aprobaste (a precio de API)`,
@@ -398,6 +406,7 @@ const EN: Textos = {
   tipos: { salida: 'terminal output', busqueda: 'huge searches', pegado: 'pasted text', repetida: 'repeated output' },
   relecturas: t => `Plus ~${t} tokens Claude didn't have to re-read`,
   frenos: n => `${n} full ${n === 1 ? 'read' : 'reads'} of generated files held back`,
+  breve: u => `Brief replies: ${u} of output Claude didn't write (estimated from what was measured)`,
   ruteo: (ahorro, suscripcion, extra) =>
     `Picking model and effort per message saved ${ahorro} at API prices${suscripcion ? " (on a subscription: limit you don't spend)" : ''}${extra !== undefined ? ` · ${extra} extra you approved` : ''}`,
   ruteoSoloExtra: extra => `Picking model and effort per message: ${extra} extra you approved (at API prices)`,
@@ -496,6 +505,11 @@ function lineaRuteo(s: ResumenSemana, x: Textos, suscripcion: boolean): string |
   return extra !== undefined ? x.ruteoSoloExtra(extra) : undefined
 }
 
+/** Lo que valen las respuestas breves en la semana (menos de medio centavo no se muestra). */
+function lineaBreve(s: ResumenSemana, x: Textos): string | undefined {
+  return s.breve >= 0.005 ? x.breve(aprox(usd(s.breve))) : undefined
+}
+
 /** Pedidos grandes con y sin preguntas antes, y cuántas correcciones siguieron a cada uno. */
 function lineaEntrevistas(s: ResumenSemana, x: Textos): string | undefined {
   const { con, conCorr, sin, sinCorr } = s.entrevistas
@@ -532,7 +546,7 @@ type Piezas = {
   /** La cifra de la semana (en dólares si llega a un centavo) y, debajo, lo recortado en tokens. */
   ahorro: string[]
   tipos: { etiqueta: string; tokens: number }[]
-  /** Más ahorro: relecturas, lecturas frenadas, modelo y esfuerzo. */
+  /** Más ahorro: relecturas, lecturas frenadas, respuestas breves, modelo y esfuerzo. */
   extras: string[]
   /** Cómo se usó Claude: lo leído, los modelos, los pedidos grandes, el mejor día. */
   uso: string[]
@@ -569,6 +583,8 @@ function piezas(semanas: Semanas, lunes: string, ms: number, historial: Historia
   const extras: string[] = []
   if (s.relecturas > 0) extras.push(x.relecturas(formatearTokens(s.relecturas)))
   if (s.frenos > 0) extras.push(x.frenos(s.frenos))
+  const breve = lineaBreve(s, x)
+  if (breve !== undefined) extras.push(breve)
   // Lo de la suscripción ya va debajo de la cifra en dólares: no se repite.
   const ruteo = lineaRuteo(s, x, suscripcion && !(usd.neto >= 0.01))
   if (ruteo !== undefined) extras.push(ruteo)

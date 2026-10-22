@@ -169,11 +169,11 @@ Medido con `claude -p` y Opus 5.5 de modelo:
 | **Modelo y esfuerzo por mensaje** | Lee tu mensaje antes de enviarlo y elige el modelo y el esfuerzo que pide la tarea. Si cuesta más, te muestra opciones con su costo; si ahorra, lo aplica y te avisa, con un botón Deshacer. | Model Matchmaker, claude-model-advisor, claude-router |
 | **Aviso de caché vencido** | Si el caché venció y la conversación es grande, Toki pregunta antes de enviar, con el costo de cada opción: compactar y enviar, enviar así o empezar en limpio. | Idea propia |
 | **Guardia de límites** | Calcula a tu ritmo cuándo se acaban tus límites de 5 h y semanal, y avisa si se acaban antes de renovarse. Al 90 % ofrece el modo ahorro. | Claude-Code-Usage-Monitor, ccusage |
-| **Estilo conciso** | Respuestas cortas sin relleno; el código, los errores y las rutas no se tocan. Se activa solo cuando la conversación pasa de ~150k tokens, o con `/output-style`. | Caveman (nivel lite) |
+| **Respuestas breves** | Desde el primer mensaje, una sección fija al final del system prompt le pide a Claude respuestas sin relleno; el código, los comandos, los errores y las rutas no se tocan. Medido sin Toki en Opus 5.5: ~12 % menos salida con tareas de código y ~15 % con preguntas abiertas, con los tests pasando igual ([evals/modo-breve](evals/modo-breve)). Si eliges tu propio `/output-style`, se respeta. | Caveman (nivel lite) |
 
 ### Reglas que nunca rompe
 
-1. **Cero tokens fijos en el contexto.** No agrega skills ni texto que se cargue en cada mensaje.
+1. **Casi cero tokens fijos.** No agrega skills. Lo único fijo es la sección de respuestas breves (~200 tokens, en el caché): lo que cuesta mandarla se resta de lo que ahorra, y puedes apagarla en `/plugin`.
 2. **No rompe el caché.** Todo lo que agrega va al final; nunca modifica lo que ya se envió. Cambiar de modelo sí lo reescribe. Toki lo hace sin preguntar solo si el caché está frío o la conversación es chica; si no, te muestra cuánto cuesta y decides tú.
 3. **Todo es reversible.** La salida original queda en `.claude/toki/salidas/` y Claude la puede leer cuando la necesite.
 4. **Nunca provoca reintentos.** Si no está seguro, no toca nada. No compacta lecturas de archivos, diffs ni salidas que Claude ya filtró con `| grep`.
@@ -215,11 +215,11 @@ Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), lo que costó
 - **`/toki-semana`** (o `/toki-semana pasada`): la tarjeta de la semana, con su nota de A a F. Agrega `md` para guardarla en Markdown.
 - **`/toki-presupuesto`** `$2` · `500k` · `quitar`: un tope para la tarea actual; sin argumentos, cómo va.
 - **`/toki-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
-- **`/output-style`** → `toki:conciso`: respuestas cortas desde ya.
+- **`/output-style`** → `toki:conciso`: lo mismo que **Respuestas breves**, como estilo (por si apagaste la opción).
 
 ## Configuración
 
-En `/plugin`, elige Toki y abre su configuración. Puedes apagar cualquier pieza (compactador, salidas repetidas, mapa automático, acompañante, sonidos, memoria, modo conciso), fijar el idioma, elegir **Compactar a los…** (200k, 300k, 400k, 500k o "no" para dejar el de Claude Code; el cambio vale desde la próxima sesión) y activar **Mantener el caché caliente**:
+En `/plugin`, elige Toki y abre su configuración. Puedes apagar cualquier pieza (compactador, salidas repetidas, mapa automático, acompañante, sonidos, memoria, respuestas breves), fijar el idioma, elegir **Compactar a los…** (200k, 300k, 400k, 500k o "no" para dejar el de Claude Code; el cambio vale desde la próxima sesión) y activar **Mantener el caché caliente**:
 
 - Solo sirve si pagas por token en la API, donde el caché dura 5 minutos. Con una suscripción el caché normalmente dura una hora y Toki no hace nada.
 - Mientras lees o piensas, Toki hace un "ping" que solo lee el caché cada ~4 minutos, como máximo 30 minutos después de tu último mensaje. Cada ping cuesta ~10% del precio normal de tu contexto; volver con el caché frío cuesta ~125%.

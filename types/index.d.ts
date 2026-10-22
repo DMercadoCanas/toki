@@ -50,6 +50,12 @@ export type Sesion = {
   limpioUsd?: number
   /** Esos tokens de la conversación de antes. */
   limpioTokens?: number
+  /**
+   * Lo que vale la salida que Claude no escribió porque Toki le pidió respuestas
+   * breves (estimado con lo medido: ~12 % menos salida), y esos tokens.
+   */
+  breveUsd?: number
+  breveTokens?: number
   /** Lo que de verdad costaron los pedidos de la conversación (principal y subagentes), a precio de API. */
   gastoMedidoUsd?: number
   /**
