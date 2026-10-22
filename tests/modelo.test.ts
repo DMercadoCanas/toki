@@ -5,6 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 import {
   costoMensaje,
   decidirInterfaz,
+  deltaRuteo,
   etiquetas,
   familiaDe,
   hermano,
@@ -251,6 +252,9 @@ describe('modelo y esfuerzo con el motor', () => {
     const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
     expect(estado.text).toContain('Último mensaje: simple (tarea mecánica) · Opus · medio → Sonnet · bajo')
     expect(estado.text).toContain('· aplicado')
+      // t1 subió a máximo (gasto extra, aparte) y t2 bajó a Sonnet (ahorro por modelo).
+      expect(estado.text).toContain('Ahorro por mandar mensajes a algo más barato: ')
+      expect(estado.text).toContain('gasto extra que aprobaste: ~$0.')
     const porQue = (await $.command.run({ command: 'toki-por-que', args: '' } as never)) as { text: string }
     expect(porQue.text).toContain('Modelo y esfuerzo: cambia solo y avisa')
     expect(porQue.text).toContain('Sonnet por Toki')
@@ -338,5 +342,17 @@ describe('modelo y esfuerzo con el motor', () => {
     expect(toasts.filter(t => t.includes('subagentes')).length).toBe(1)
     const explore = (await $.agent.spawn({ prompt: 'busca X', subagentType: 'Explore', parentModel: 'claude-opus-5-5' } as never)) as { model: string }
     expect(explore.model).toBe('claude-opus-5-5')
+  })
+})
+
+describe('ahorro por modelo', () => {
+  test('bajar ahorra, subir cuesta de más, y reescribir el caché se descuenta', async () => {
+    expect(Math.abs(deltaRuteo({ usd: 0.02, cambio: 0 }, { usd: 0.08 }) - (0.06)) < 1e-9).toBe(true)
+    expect(Math.abs(deltaRuteo({ usd: 0.1, cambio: 0 }, { usd: 0.08 }) - (-0.02)) < 1e-9).toBe(true)
+    expect(Math.abs(deltaRuteo({ usd: 0.02, cambio: 0.07 }, { usd: 0.08 }) - (-0.01)) < 1e-9).toBe(true)
+    const x = textosRuta.es
+    expect(x.balance('$0.42', undefined, false)).toContain('~$0.42')
+    expect(x.balance('$0.42', '$0.10', true)).toContain('límite')
+    expect(x.balance('$0.42', '$0.10', true)).toContain('~$0.10')
   })
 })

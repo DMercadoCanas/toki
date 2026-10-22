@@ -39,7 +39,9 @@ import type { Actividad } from './mascota'
 import { estaVacia, extraerDecisiones, instruccionesDeCompactacion, LIMITES_MEMORIA, motivo, notaPostCompactacion, primerError, recordar, registrarDecision, resumenCorto, vacio } from './memoria'
 import type { Decision, Motivo, PuntoDeControl } from './memoria'
 import {
+  aprox,
   decidirInterfaz,
+  deltaRuteo,
   diferencia,
   esEsfuerzo,
   etiquetas,
@@ -56,6 +58,7 @@ import {
   REESCRITURA_QUE_PREGUNTA,
   textoDiferencia,
   textosRuta,
+  usd as usdTexto,
 } from './modelo'
 import type { Esfuerzo, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, Propuesta, TextosRuta, TipoOpcion } from './modelo'
 import {
@@ -90,7 +93,7 @@ import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, o
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.13.0'
+export const VERSION = '0.13.1'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -113,6 +116,7 @@ const CLAVE_LOGROS = 'logros'
 const CLAVE_IDIOMA = 'idiomaDetectado'
 const CLAVE_MIGRADO = 'migradoDesdeAhorroTokens'
 const CLAVE_RELECTURAS = 'relecturasEvitadasTotal'
+const CLAVE_RUTEO = 'ruteoAhorroUsdTotal'
 const CLAVE_SEMANAS = 'semanas'
 const CLAVE_TARJETA = 'tarjetaSemanalMostrada'
 /** El valor que Toki puso en la variable, para no confundirlo con uno tuyo. */
@@ -280,7 +284,8 @@ const vivo: {
 function mascotaGrafica($: $, e: ResolveInput, actividad: Actividad, tamano: number): RenderElement | '' {
   if (e.surface === 'terminal') return ''
   const { Svg } = $.ui.resolve(e)
-  return <Svg source={tokiSvg(actividad)} alt={`Toki, ${actividad}`} width={tamano} height={tamano} />
+  // Una superficie que no dibuja SVG (una extensión vieja) muestra el alt: la carita, no una frase.
+  return <Svg source={tokiSvg(actividad)} alt={cuadro(actividad, 0)} width={tamano} height={tamano} />
 }
 
 function tx(): Textos {
@@ -733,6 +738,23 @@ async function sumarRelecturas($: $, tokens: number): Promise<void> {
   const total = Number((await $.store.get(CLAVE_RELECTURAS)) ?? 0)
   await $.store.set(CLAVE_RELECTURAS, total + tokens)
   await alaSemana($, { relecturas: tokens })
+}
+
+/**
+ * Lo que movió un cambio de modelo o esfuerzo, a precio de API: lo que ahorra va
+ * al ahorro (sesión e histórico), lo que cuesta de más va aparte. `signo` -1 lo
+ * devuelve (Deshacer).
+ */
+async function sumarRuteo($: $, usd: number, signo: 1 | -1 = 1): Promise<void> {
+  if (!Number.isFinite(usd) || Math.abs(usd) < 0.0005) return
+  const monto = Math.abs(usd) * signo
+  if (usd > 0) {
+    await update($, sesion, s => ({ ...s, ruteoAhorroUsd: Math.max(0, (s.ruteoAhorroUsd ?? 0) + monto) }))
+    const total = Number((await $.store.get(CLAVE_RUTEO)) ?? 0)
+    await $.store.set(CLAVE_RUTEO, Math.max(0, total + monto))
+  } else {
+    await update($, sesion, s => ({ ...s, ruteoExtraUsd: Math.max(0, (s.ruteoExtraUsd ?? 0) + monto) }))
+  }
 }
 
 /** Cada pedido al modelo: lo que costó de verdad y lo que Toki evitó que se releyera. */
@@ -1457,7 +1479,7 @@ async function textoDecisiones($: $): Promise<string> {
   if (ventana !== undefined) cuentas.push(ventana)
   const cero = explicarCero(x, s, g)
   const pie = [...(cero !== undefined ? ['', cero] : []), ...(cuentas.length > 0 ? ['', `${x.gastoTitulo}:`, ...cuentas.map(l => `  ${l}`)] : [])]
-  pie.push('', ...textoRuta(xr()))
+  pie.push('', ...textoRuta(xr(), s))
   if (vivo.decisiones.length === 0) return [x.sinComandos, ...pie].join('\n')
   const lineas = [x.decisionesTitulo]
   for (const d of [...vivo.decisiones].reverse()) {
@@ -1497,7 +1519,7 @@ function reporteEnTexto(r: Reporte): string {
     lineas.push('', `${x.gastoTitulo}:`)
     for (const l of cuentas) lineas.push(`  ${l}`)
   }
-  lineas.push('', ...textoRuta(xr()))
+  lineas.push('', ...textoRuta(xr(), r.sesion))
   if (r.ocupan.length > 0) {
     lineas.push('', `${x.queOcupa}:`)
     for (const c of r.ocupan) lineas.push(`  ${c.nombre}: ~${formatearTokens(c.tokens)}`)
@@ -1550,7 +1572,17 @@ function reiniciarSeguimiento(): void {
 // ---------- Modelo y esfuerzo por mensaje ----------
 
 type Eleccion = { modelo: string; esfuerzo: Esfuerzo }
-type DecisionRuta = { cuando: number; nivel: Nivel; motivo: MotivoRuta; antes: Eleccion; despues: Eleccion; como: 'auto' | 'elegido' | 'recordado' | 'deshecho'; dif: number }
+type DecisionRuta = {
+  cuando: number
+  nivel: Nivel
+  motivo: MotivoRuta
+  antes: Eleccion
+  despues: Eleccion
+  como: 'auto' | 'elegido' | 'recordado' | 'deshecho'
+  dif: number
+  /** Lo que ahorra (positivo) o cuesta de más (negativo), en dólares de API estimados. */
+  usd: number
+}
 
 const CLAVE_MODO_RUTA = 'modoModeloEsfuerzo'
 /** Cuánto espera Toki a Haiku en la zona dudosa antes de seguir con la heurística. */
@@ -1717,7 +1749,7 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
     como = 'elegido'
   }
   if (elegida === undefined || igual(elegida, p.actual)) return
-  await aplicarEleccion($, { nivel, motivo, antes: actual, despues: elegida, como, dif: diferencia(elegida, p.actual) })
+  await aplicarEleccion($, { nivel, motivo, antes: actual, despues: elegida, como, dif: diferencia(elegida, p.actual), usd: deltaRuteo(elegida, p.actual) })
 }
 
 /** Lo que escribiste bajo "Otro": "sonnet", "opus max", "bajo"… */
@@ -1745,6 +1777,7 @@ async function aplicarEleccion($: $, d: Omit<DecisionRuta, 'cuando'>): Promise<v
   ruta.modeloPrincipal = d.despues.modelo === vivo.modelo ? undefined : d.despues.modelo
   ruta.pendiente = { nivel: d.nivel, esfuerzo: d.despues.esfuerzo !== d.antes.esfuerzo ? d.despues.esfuerzo : undefined }
   ruta.historial = [...ruta.historial, { ...d, cuando: ahora }].slice(-12)
+  await sumarRuteo($, d.usd)
   void anotarDiagnostico($, `ruta aplicada: ${d.antes.modelo}/${d.antes.esfuerzo} → ${d.despues.modelo}/${d.despues.esfuerzo} [${d.como}]`)
   const x = xr()
   const texto = x.cambio(nombreCorto(d.despues.modelo), x.esfuerzo[d.despues.esfuerzo], `${textoDiferencia(d.dif, x)}${d.como === 'recordado' ? `, ${x.comoAntes}` : ''}`)
@@ -1762,6 +1795,7 @@ async function deshacerEleccion($: $): Promise<void> {
   ruta.pendiente = undefined
   const ultima = ruta.historial[ruta.historial.length - 1]
   if (ultima !== undefined) {
+    if (ultima.como !== 'deshecho') await sumarRuteo($, ultima.usd, -1)
     ruta.historial = [...ruta.historial.slice(0, -1), { ...ultima, como: 'deshecho' }]
     ruta.preferencias[ultima.nivel] = 'actual'
   }
@@ -1769,8 +1803,11 @@ async function deshacerEleccion($: $): Promise<void> {
   $.ui.invalidate('ui.render')
 }
 
-function textoRuta(x: TextosRuta): string[] {
+function textoRuta(x: TextosRuta, s?: Pick<Sesion, 'ruteoAhorroUsd' | 'ruteoExtraUsd'>): string[] {
   const lineas = [`${x.titulo}: ${x.modo[ruta.modo]}${ruta.silenciado ? ` (${x.silenciado})` : ''}`]
+  const ahorro = s?.ruteoAhorroUsd ?? 0
+  const extra = s?.ruteoExtraUsd ?? 0
+  if (ahorro >= 0.005 || extra >= 0.005) lineas.push(`  ${x.balance(usdTexto(ahorro), extra >= 0.005 ? usdTexto(extra) : undefined, vivo.usoCache?.esSuscripcion === true)}`)
   if (ruta.modeloPrincipal !== undefined) lineas.push(`  ${nombreCorto(ruta.modeloPrincipal)} ${x.porToki}`)
   if (guardia.ahorroHasta > 0) lineas.push(`  ${xg().limite.enAhorro(hora(guardia.ahorroHasta, guardia.ahorroVentana ?? 'five_hour', vivo.idioma))}`)
   if (ruta.subagentesEnSonnet > 0) lineas.push(`  ${x.subagentes.replace(/^Toki: /, '')} (${ruta.subagentesEnSonnet})`)
@@ -2581,7 +2618,7 @@ export const register: Register = (on, options) => {
       $.ui.invalidate('ui.render')
       return { text: x.modoCambiado(x.modo[ruta.modo]) }
     }
-    return { text: [...textoRuta(x), '', x.uso].join('\n') }
+    return { text: [...textoRuta(x, await read($, sesion)), '', x.uso].join('\n') }
   })
 
   on('command.run', { command: 'toki-mapa' }, async $ => {
@@ -2641,7 +2678,7 @@ export const register: Register = (on, options) => {
     }
     const colorFrase = dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : dicho.tono === 'bien' ? 'success' : 'text'
     const cacheRestante = vivo.enTurno ? ttl : ultimoUso > 0 ? Math.max(0, ttl - desdeCache) : undefined
-    const medidores = `${x.contexto} ${uso?.pct === undefined ? '—' : `${uso.pct}%`} · ${x.cache} ${relojCache(cacheRestante, ttl)} ${cacheRestante === undefined ? '—' : cacheRestante <= 0 ? x.frio : formatearMinutos(cacheRestante, vivo.idioma)} · ${x.ahorrado} ~${formatearTokens(s.tokensAhorrados)}`
+    const medidores = `${x.contexto} ${uso?.pct === undefined ? '—' : `${uso.pct}%`} · ${x.cache} ${relojCache(cacheRestante, ttl)} ${cacheRestante === undefined ? '—' : cacheRestante <= 0 ? x.frio : formatearMinutos(cacheRestante, vivo.idioma)} · ${x.ahorrado} ~${formatearTokens(s.tokensAhorrados)}${(s.ruteoAhorroUsd ?? 0) >= 0.005 ? ` · ${xr().porModelo} ${aprox(usdTexto(s.ruteoAhorroUsd ?? 0))}` : ''}`
     return (
       <Box flexDirection="column" paddingX={1}>
         {e.surface !== 'terminal' &&
@@ -2684,7 +2721,7 @@ export const register: Register = (on, options) => {
         </Box>
         {ruta.modo !== 'no' && (
           <Box flexDirection="column" marginTop={1}>
-            {textoRuta(xr()).map((l, i) =>
+            {textoRuta(xr(), r.sesion).map((l, i) =>
               i === 0 ? (
                 <Text bold wrap="wrap">
                   {l}
@@ -2954,6 +2991,9 @@ export const register: Register = (on, options) => {
           ~{formatearTokens(s.tokensAhorrados)}
         </Text>,
       ]),
+      (s.ruteoAhorroUsd ?? 0) >= 0.005
+        ? chip('ruteo', [<Text dimColor>· {xr().porModelo}</Text>, <Text color="success">{aprox(usdTexto(s.ruteoAhorroUsd ?? 0))}</Text>])
+        : null,
       (s.relecturasEvitadas ?? 0) > 0 && !angosto ? chip('relecturas', [<Text dimColor>· {x.relecturas}</Text>, <Text color="success">~{formatearTokens(s.relecturasEvitadas)}</Text>]) : null,
       conRacha && !angosto ? chip('racha', [<Text color="warning">· {x.rachaCorta(vivo.racha)}</Text>]) : null,
       uso?.cincoHoras !== undefined && !angosto

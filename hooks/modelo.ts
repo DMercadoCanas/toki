@@ -233,6 +233,15 @@ export function diferencia(o: Opcion, actual: Opcion): number {
   return actual.usd > 0 ? Math.round((o.usd / actual.usd - 1) * 100) : 0
 }
 
+/**
+ * Lo que el cambio ahorra (positivo) o cuesta de más (negativo) en este mensaje,
+ * a precio de API: lo de ahora menos lo elegido (con reescribir el caché, si toca).
+ * Es una estimación: el mensaje nunca corre en las dos opciones.
+ */
+export function deltaRuteo(elegida: Pick<Opcion, 'usd' | 'cambio'>, actual: Pick<Opcion, 'usd'>): number {
+  return actual.usd - (elegida.usd + elegida.cambio)
+}
+
 /** Reescribir más que esto ya se nota: Toki pregunta antes. */
 export const REESCRITURA_QUE_PREGUNTA = 30_000
 
@@ -298,6 +307,9 @@ export type TextosRuta = {
   sinDecisiones: string
   ultimoMensaje: string
   sinLectura: string
+  /** La franja: el ahorro por elegir modelo o esfuerzo. */
+  porModelo: string
+  balance: (ahorro: string, extra: string | undefined, suscripcion: boolean) => string
   decision: Record<'ya-va-asi' | 'callado' | 'auto' | 'preguntar', string>
 }
 
@@ -345,6 +357,9 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     sinDecisiones: 'Aún no hubo cambios de modelo o esfuerzo.',
     ultimoMensaje: 'Último mensaje',
     sinLectura: 'Toki todavía no leyó ningún mensaje en esta sesión (el primero calibra el esfuerzo).',
+    porModelo: 'por modelo',
+    balance: (a, e, s) =>
+      `Ahorro por mandar mensajes a algo más barato: ${aprox(a)} estimado a precio de API${s ? ' (con suscripción no es dinero: es límite que no gastas)' : ''}${e ? ` · gasto extra que aprobaste: ${aprox(e)}` : ''}`,
     decision: { 'ya-va-asi': 'ya iba así', callado: 'sin cambio (no lo aplico sin preguntar)', auto: 'aplicado', preguntar: 'te pregunté' },
   },
   en: {
@@ -390,12 +405,20 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     sinDecisiones: 'No model or effort changes yet.',
     ultimoMensaje: 'Last message',
     sinLectura: 'Toki has not read a message in this session yet (the first one calibrates the effort).',
+    porModelo: 'by model',
+    balance: (a, e, s) =>
+      `Saved by sending messages to something cheaper: ${aprox(a)} estimated at API prices${s ? ' (on a subscription it is not money: it is limit you keep)' : ''}${e ? ` · extra cost you approved: ${aprox(e)}` : ''}`,
     decision: { 'ya-va-asi': 'already on it', callado: 'no change (not applied without asking)', auto: 'applied', preguntar: 'asked you' },
   },
 }
 
 export function usd(n: number): string {
   return n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`
+}
+
+/** "~$0.42", o "<$0.01" tal cual (ya dice que es aproximado). */
+export function aprox(monto: string): string {
+  return monto.startsWith('<') ? monto : `~${monto}`
 }
 
 export function textoDiferencia(dif: number, x: TextosRuta): string {

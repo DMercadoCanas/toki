@@ -31,6 +31,10 @@ export type Sesion = {
    * sacó del contexto o compactó antes. Neto: puede bajar un momento al compactar.
    */
   relecturasEvitadas: number
+  /** Dólares (a precio de API, estimados) que Toki ahorró mandando mensajes a un modelo o esfuerzo más barato. */
+  ruteoAhorroUsd?: number
+  /** Dólares de más que aprobaste al subir de modelo o esfuerzo. Aparte: no resta al ahorro. */
+  ruteoExtraUsd?: number
 }
 
 declare module 'claude-code' {
