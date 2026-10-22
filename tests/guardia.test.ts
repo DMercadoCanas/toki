@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { cifraUsd, valorEscritura, valorLectura } from '../hooks/ahorro'
 import { recortarPegado } from '../hooks/pegados'
 import { agregarMuestra, evaluarCacheFrio, opcionesFrio, preguntaFrio, proyectar, textosGuardia } from '../hooks/guardia'
 
@@ -217,6 +218,54 @@ describe('guardias con el motor', () => {
     await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} } as never)
     await reloj.advance(500)
     expect(m.fills.some(f => f.startsWith('ahora agrega también el filtro por fecha'))).toBe(true)
+  })
+
+  test('empezar en limpio cuenta como ahorro: el primer pedido ya no reescribe lo de antes y los siguientes no lo releen', async ($, on) => {
+    const reloj = mock.clock(on, { now: 50 * H })
+    const o = { tokens: 220_000, respuesta: (ls: string[]) => ls.find(l => l.startsWith('Empezar en limpio')) ?? '' }
+    const m = mundo(on, o)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'agrega un botón de exportar a CSV en la tabla de pacientes')
+    await reloj.advance(6 * MIN)
+    await mensaje($, 't1', 'ahora agrega también el filtro por fecha')
+    await reloj.advance(200)
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} } as never)
+    await reloj.advance(500)
+    // La conversación nueva pesa 25k. Sin Toki, tu mensaje reescribía los 220k de antes (en la API, caché de 5 min).
+    o.tokens = 25_000
+    await mensaje($, 't2', 'ahora agrega también el filtro por fecha')
+    const primero = valorEscritura(195_000, 'opus', false)
+    let toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).toContain(`  Empezar en limpio: ${cifraUsd(primero)} (~195.0k tokens de la conversación de antes que Claude ya no releyó ni reescribió)\n`)
+    // La cifra de arriba ya lo incluye (más lo del modelo, si el mensaje fue a uno más barato).
+    const cifra = Number(/^Toki · ~\$([\d.]+) ahorrados en esta sesión/.exec(toki)?.[1])
+    expect(cifra).toBeGreaterThanOrEqual(Number(primero.toFixed(2)))
+    expect(m.toasts).toContain(`Empezar en limpio ya ahorró ${cifraUsd(primero)}: Claude no tuvo que reescribir ~195.0k tokens de la conversación de antes.`)
+    // El siguiente, con la conversación nueva en 27k: sin Toki releía 222k del caché.
+    o.tokens = 27_000
+    await reloj.advance(10_000)
+    await mensaje($, 't3', 'y el de estado también')
+    toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).toContain(`  Empezar en limpio: ${cifraUsd(primero + valorLectura(195_000, 'opus'))} (~390.0k tokens`)
+    // El aviso, una sola vez.
+    expect(m.toasts.filter(t => t.startsWith('Empezar en limpio ya ahorró')).length).toBe(1)
+  })
+
+  test('un /clear tuyo, sin que Toki lo propusiera, no se cuenta como ahorro', async ($, on) => {
+    const reloj = mock.clock(on, { now: 50 * H })
+    const o = { tokens: 220_000 }
+    const m = mundo(on, o)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'agrega un botón de exportar a CSV en la tabla de pacientes')
+    await reloj.advance(10_000)
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} } as never)
+    o.tokens = 25_000
+    await mensaje($, 't1', 'ahora agrega también el filtro por fecha')
+    await reloj.advance(10_000)
+    await mensaje($, 't2', 'y el de estado también')
+    const toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).not.toContain('Empezar en limpio')
+    expect(m.toasts.some(t => t.startsWith('Empezar en limpio ya ahorró'))).toBe(false)
   })
 
   test('"Enviar así" dos veces y no vuelve a preguntar en la sesión', async ($, on) => {

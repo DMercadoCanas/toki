@@ -138,6 +138,14 @@ describe('ahorro medido', () => {
     expect(resumenAhorro({ recorteUsd: 0.001, gastoMedidoUsd: 5 }).pct).toBeUndefined()
   })
 
+  test('empezar en limpio también es ahorro: entra en el neto y en lo que habría costado', async () => {
+    cerca(ahorroNeto({ relecturas: 0.5, limpio: 1.25 }), 1.75)
+    const r = resumenAhorro({ limpioUsd: 1, gastoMedidoUsd: 3 })
+    cerca(r.neto, 1)
+    cerca(r.sinToki, 4)
+    expect(r.pct).toBe(25)
+  })
+
   test('las cifras en dólares, con signo y por día', async () => {
     expect(cifraUsd(3.071)).toBe('~$3.07')
     expect(cifraUsd(0.004)).toBe('<$0.01')

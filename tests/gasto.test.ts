@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   alCompactar,
+  contarLimpio,
   contarPedido,
   contarTemprana,
   decidirVentana,
@@ -15,6 +16,7 @@ import {
   retirar,
   sumarPedido,
   tamanoDelPedido,
+  topeLimpio,
   totalGasto,
 } from '../hooks/gasto'
 
@@ -65,6 +67,44 @@ describe('gasto', () => {
     expect(p.evitadas).toBe(0)
     expect(p.t).toBe(undefined)
     expect(contarTemprana(undefined, 80_000).evitadas).toBe(0)
+  })
+
+  test('empezar en limpio con el caché vivo: el primer pedido no cuenta, desde el segundo se deja de releer lo de antes', async () => {
+    const l = { antes: 150_000, tope: topeLimpio(1_000_000), frio: false }
+    expect(l.tope).toBe(800_000)
+    let p = contarLimpio(l, 25_000)
+    expect(p.relecturas).toBe(0)
+    expect(p.reescritura).toBe(0)
+    expect(p.l?.inicio).toBe(25_000)
+    p = contarLimpio(p.l, 30_000)
+    // Sin Toki: 150k + lo que creció (5k) = 155k; con Toki: 30k. Se cuenta lo que pesaba la de antes y ya no se relee.
+    expect(p.relecturas).toBe(125_000)
+    expect(p.sinToki).toBe(155_000)
+    // Si la nueva pesa menos que al empezar (Claude Code limpió algo), no se cuenta más que eso.
+    p = contarLimpio(p.l, 10_000)
+    expect(p.relecturas).toBe(125_000)
+    // La de antes habría llegado al 80 % de la ventana: Claude Code la habría compactado, no se cuenta más.
+    p = contarLimpio(p.l, 700_000)
+    expect(p.relecturas).toBe(0)
+    expect(p.l).toBe(undefined)
+    expect(contarLimpio(undefined, 30_000).relecturas).toBe(0)
+  })
+
+  test('empezar en limpio con el caché vencido: el primer pedido ya no reescribe la conversación de antes', async () => {
+    let p = contarLimpio({ antes: 220_000, tope: 800_000, frio: true }, 25_000)
+    expect(p.reescritura).toBe(195_000)
+    expect(p.relecturas).toBe(0)
+    expect(p.sinToki).toBe(220_000)
+    p = contarLimpio(p.l, 27_000)
+    expect(p.reescritura).toBe(0)
+    expect(p.relecturas).toBe(195_000)
+  })
+
+  test('empezar en limpio no cuenta si la nueva ya pesa lo de antes o si la de antes estaba por compactarse', async () => {
+    expect(contarLimpio({ antes: 20_000, tope: 800_000, frio: true }, 25_000)).toEqual({ l: undefined, relecturas: 0, reescritura: 0, sinToki: 25_000 })
+    expect(contarLimpio({ antes: 170_000, tope: topeLimpio(200_000), frio: true }, 25_000).l).toBe(undefined)
+    // Sin ventana conocida no hay tope: no se cuenta.
+    expect(contarLimpio({ antes: 170_000, tope: topeLimpio(0), frio: false }, 25_000).l).toBe(undefined)
   })
 
   test('baja la ventana solo si nadie la eligió y si la de Claude Code es más grande', async () => {

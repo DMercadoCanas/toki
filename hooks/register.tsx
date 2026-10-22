@@ -68,6 +68,7 @@ import {
 import type { Decision as DecisionMensaje, Esfuerzo, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, Propuesta, TextosRuta, TipoOpcion } from './modelo'
 import {
   alCompactar,
+  contarLimpio,
   contarPedido,
   contarTemprana,
   decidirVentana,
@@ -82,9 +83,10 @@ import {
   retirar,
   sumarPedido,
   tamanoDelPedido,
+  topeLimpio,
   totalGasto,
 } from './gasto'
-import type { Gasto, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
+import type { Gasto, Limpio, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
 import { tokiSvg } from './toki-svg'
 import { TRAMO_GENERADO, textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
@@ -243,6 +245,12 @@ const vivo: {
   relecturas: Relecturas
   /** Una compactación que Toki adelantó: lo que se ahorra en los pedidos siguientes. */
   temprana?: Temprana
+  /** Empezaste en limpio porque Toki lo propuso: lo que se ahorra en los pedidos de la conversación nueva. */
+  limpio?: Limpio
+  /** Toki propuso empezar en limpio y dijiste que sí: falta que llegue el /clear. */
+  limpioPropuesto?: { antes: number; frio: boolean; cuando: number }
+  /** Ya se avisó cuánto ahorró empezar en limpio (una vez por conversación nueva). */
+  limpioAvisado: boolean
   /** La ventana a la que Claude Code compacta ahora, y de quién es. */
   ventana?: number
   ventanaNativa?: number
@@ -310,6 +318,7 @@ const vivo: {
   total: 0,
   totalUsd: 0,
   relecturas: RELECTURAS_VACIAS,
+  limpioAvisado: false,
   contextoMax: 0,
   repetidas: {},
   trasLimpiar: false,
@@ -859,6 +868,26 @@ async function sumarRelecturas($: $, tokens: number, familia: Familia): Promise<
 }
 
 /**
+ * Empezar en limpio cuando Toki lo propuso: la conversación de antes que este
+ * pedido ya no releyó (`relecturas`) o no reescribió (`reescritura`, con el caché
+ * vencido), a precio del modelo que la habría leído sin Toki y con el tamaño que
+ * habría tenido el pedido (`contexto`). El primero que cuenta se avisa.
+ */
+async function sumarLimpio($: $, relecturas: number, reescritura: number, familia: Familia, contexto: number): Promise<void> {
+  const tokens = relecturas + reescritura
+  if (tokens <= 0) return
+  const usd = valorLectura(relecturas, familia, contexto) + valorEscritura(reescritura, familia, ttl1hSesion(), contexto)
+  vivo.dolaresPendientes += usd
+  await update($, sesion, s => ({ ...s, limpioUsd: (s.limpioUsd ?? 0) + usd, limpioTokens: (s.limpioTokens ?? 0) + tokens }))
+  const total = Number((await $.store.get(CLAVE_RELECTURAS)) ?? 0)
+  await $.store.set(CLAVE_RELECTURAS, total + tokens)
+  await alaSemana($, { relecturas: tokens, ahorroUsd: usd })
+  if (vivo.limpioAvisado) return
+  vivo.limpioAvisado = true
+  $.ui.toast(tx().toastLimpio(cifraUsd(usd), formatearTokens(tokens), reescritura > 0), { timeoutMs: 9_000 })
+}
+
+/**
  * Lo que movieron el modelo y el esfuerzo de un mensaje, medido: lo que ahorró va
  * al ahorro (sesión, semana y total); lo que costó de más, aparte.
  */
@@ -1022,6 +1051,16 @@ async function alPedido($: $, subagente: boolean, u: UsoPedido, familia: Familia
   const tt = contarTemprana(vivo.temprana, contexto)
   vivo.temprana = tt.t
   await sumarRelecturas($, c.evitadas + tt.evitadas, familia)
+  // Llegó un pedido sin el /clear que Toki propuso: ya no se cuenta.
+  vivo.limpioPropuesto = undefined
+  if (vivo.limpio === undefined) return
+  const l = contarLimpio(vivo.limpio, contexto)
+  if (l.l === undefined) {
+    await terminarLimpio($, 'la conversación nueva ya pesa como la de antes, o la de antes ya se habría compactado')
+    return
+  }
+  vivo.limpio = l.l
+  await sumarLimpio($, l.relecturas, l.reescritura, familia, l.sinToki)
 }
 
 /** La ventana se recalcula en varios momentos: al registro solo llega cuando cambia. */
@@ -1264,6 +1303,8 @@ async function registrarCompactacion($: $, origen: 'marca' | 'turno' | 'resumen'
   vivo.relecturas = alCompactar()
   vivo.repetidas = {}
   vivo.temprana = undefined
+  // Compactada la conversación nueva, deja de contarse contra la de antes (lo que siga, si acaso, es de la compactación).
+  await terminarLimpio($, 'se compactó la conversación nueva')
   // ¿La adelantó la ventana de Toki? Claude Code no habría compactado hasta la nativa.
   if (vivo.ventanaFuente === 'toki' && vivo.ventana !== undefined && vivo.ventanaNativa !== undefined && antes >= vivo.ventana * 0.7 && antes < vivo.ventanaNativa * 0.9) {
     const inicio = iniciarTemprana(antes, vivo.ventanaNativa)
@@ -1386,7 +1427,6 @@ async function mantenerCaliente($: $): Promise<void> {
   }
 }
 
-/** Cada 5 s: cifras del contexto (y compactaciones a mitad de turno) y el modelo. */
 /**
  * Donde la franja sobre el prompt no se dibuja (por ejemplo, la app de Claude con una
  * sesión remota), Toki se muestra en su panel. Deja una línea de diagnóstico.
@@ -1429,6 +1469,7 @@ async function anotarDiagnostico($: $, linea: string): Promise<void> {
   return filaDiagnostico
 }
 
+/** Cada 5 s: cifras del contexto (y compactaciones a mitad de turno) y el modelo. */
 async function vigilar($: $): Promise<void> {
   await refrescarUso($)
   await revisarModelo($)
@@ -1715,6 +1756,7 @@ function lineasDesglose(x: Textos, s: Sesion): string[] {
   if (Math.abs(relecturas) >= CENTAVO) {
     lineas.push(relecturas > 0 ? x.desgloseRelecturas(cifraUsd(relecturas), tokensFirmados(s.relecturasEvitadas ?? 0)) : x.desgloseCompactar(cifraUsdFirmada(relecturas)))
   }
+  if ((s.limpioUsd ?? 0) >= CENTAVO) lineas.push(x.desgloseLimpio(cifraUsd(s.limpioUsd ?? 0), formatearTokens(s.limpioTokens ?? 0)))
   if ((s.recorteUsd ?? 0) >= CENTAVO) lineas.push(x.desgloseRecorte(cifraUsd(s.recorteUsd ?? 0), formatearTokens(s.tokensAhorrados)))
   const a = s.ruteoAhorroUsd ?? 0
   const e = s.ruteoExtraUsd ?? 0
@@ -1925,6 +1967,7 @@ function reiniciarSeguimiento(): void {
   vivo.contextoMax = 0
   vivo.relecturas = RELECTURAS_VACIAS
   vivo.temprana = undefined
+  vivo.limpio = undefined
   vivo.repetidas = {}
 }
 
@@ -2576,6 +2619,7 @@ async function guardiaFrio($: $, texto: string): Promise<ResultadoGuardia | unde
   // Empezar en limpio: /clear y tu mensaje de vuelta al cuadro, con lo importante de antes.
   const nota = conMemoria ? notaPostCompactacion(vivo.memoria, vivo.idioma).replace(/^[^\n]*/, x.notaTitulo) : ''
   guardia.devolver = nota === '' ? texto : `${texto}\n\n${nota}`
+  proponerLimpio(f.contexto, true, ahora)
   $.clock.after(100, () => {
     void $.command.run({ command: 'clear' }).catch(async () => {
       await $.prompt.fill({ text: '/clear', mode: 'replace' }).catch(() => undefined)
@@ -2723,7 +2767,8 @@ function limpiarYDevolver($: $, texto: string): void {
   $.ui.toast(x.limpiando, { timeoutMs: 6_000 })
 }
 
-async function ofrecerLimpio($: $, pregunta: string, si: string, no: string, texto: string): Promise<boolean> {
+/** `contexto`: lo que pesa la conversación que se deja (si dices que sí, eso se deja de releer). */
+async function ofrecerLimpio($: $, pregunta: string, si: string, no: string, texto: string, contexto: number): Promise<boolean> {
   let respuesta: string
   try {
     respuesta = await $.ui.ask(pregunta, { header: 'Toki', options: [si, no] })
@@ -2734,8 +2779,40 @@ async function ofrecerLimpio($: $, pregunta: string, si: string, no: string, tex
     entrevista.limpioRechazos += 1
     return false
   }
+  const ahora = await $.clock.now()
+  // Con el caché vencido (contado con el plazo largo, para no inflar), sin Toki tu mensaje la reescribía entera.
+  proponerLimpio(contexto, vivo.ultimoUsoCache > 0 && ahora - vivo.ultimoUsoCache > ttlMs(), ahora)
   limpiarYDevolver($, texto)
   return true
+}
+
+/** Entre decir que sí y el /clear: si tarda más (pulsaste Enter mucho después), ese /clear no se cuenta como de Toki. */
+const LIMPIO_PLAZO_MS = 10 * 60_000
+
+/** Dijiste que sí a empezar en limpio: lo que pesaba la conversación de antes, para contar lo que ya no se relee tras el /clear. */
+function proponerLimpio(antes: number, frio: boolean, ahora: number): void {
+  vivo.limpioPropuesto = antes > 0 ? { antes, frio, cuando: ahora } : undefined
+}
+
+/** Llegó el /clear que Toki propuso: desde el próximo pedido se cuenta lo que ya no se relee. */
+function empezarLimpio($: $, ahora: number): void {
+  const p = vivo.limpioPropuesto
+  vivo.limpioPropuesto = undefined
+  // Un /clear mucho después de decir que sí ya es tuyo, no de Toki.
+  if (p === undefined || ahora - p.cuando > LIMPIO_PLAZO_MS) return
+  // Sin Toki la conversación de antes habría seguido hasta que Claude Code la compactara (con tu ventana o la suya).
+  const ventana = vivo.ventanaNativa ?? vivo.ventana ?? vivo.usoCache?.ventana ?? 0
+  vivo.limpio = { antes: p.antes, tope: topeLimpio(ventana), frio: p.frio }
+  vivo.limpioAvisado = false
+  void anotarDiagnostico($, `empezar en limpio: se deja ${formatearTokens(p.antes)}${p.frio ? ' con el caché vencido' : ''}; se cuenta hasta ${formatearTokens(vivo.limpio.tope)}`)
+}
+
+/** Dejó de contarse lo de empezar en limpio: cuánto ahorró, al diagnóstico. */
+async function terminarLimpio($: $, motivo: string): Promise<void> {
+  if (vivo.limpio === undefined) return
+  vivo.limpio = undefined
+  const s = await read($, sesion)
+  void anotarDiagnostico($, `empezar en limpio: ${motivo}; ahorró ${cifraUsd(s.limpioUsd ?? 0)} (~${formatearTokens(s.limpioTokens ?? 0)} tokens)`)
 }
 
 function contarSalto($: $): void {
@@ -2781,7 +2858,7 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
     e.correcciones.push(texto)
     if (e.correcciones.length === 2 && e.tarea !== undefined && contexto >= CONTEXTO_PARA_LIMPIAR && e.limpioRechazos < 2 && !yaPregunto) {
       const pedido = armarPedidoMejorado(e.tarea, e.correcciones, vivo.idioma)
-      if (await ofrecerLimpio($, x.correccion.pregunta(formatearTokens(contexto)), x.correccion.si, x.correccion.no, pedido)) return { drop: x.limpiando }
+      if (await ofrecerLimpio($, x.correccion.pregunta(formatearTokens(contexto)), x.correccion.si, x.correccion.no, pedido, contexto)) return { drop: x.limpiando }
     }
     return {}
   }
@@ -2792,7 +2869,7 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
 
   // Cambio de tema con mucho contexto a cuestas: mejor empezar en limpio (y la entrevista, ya sin lastre).
   if (!seguimiento && lectura.nivel !== 'trivial' && previos > 0 && contexto >= CONTEXTO_CAMBIO_DE_TEMA && e.limpioRechazos < 2 && !yaPregunto && cambioDeTema(recientes, texto)) {
-    if (await ofrecerLimpio($, x.tema.pregunta(formatearTokens(contexto)), x.tema.si, x.tema.no, texto)) return { drop: x.limpiando }
+    if (await ofrecerLimpio($, x.tema.pregunta(formatearTokens(contexto)), x.tema.si, x.tema.no, texto, contexto)) return { drop: x.limpiando }
   }
 
   const entrada = { texto, nivel: lectura.nivel, motivo: lectura.motivo, interactivo: ruta.interactivo, mensajes: previos, recientes }
@@ -2967,6 +3044,7 @@ export const register: Register = (on, options) => {
     // Lo medido de esta conversación se acredita antes de olvidarla.
     await acreditar($)
     await guardarUltimoPedido($)
+    await terminarLimpio($, 'terminó la conversación')
     reiniciarSeguimiento()
     if (e.reason === 'clear') {
       // El caché del pedido anterior sigue vivo, pero la conversación nueva solo comparte el comienzo.
@@ -2981,8 +3059,11 @@ export const register: Register = (on, options) => {
       await update($, gasto, () => GASTO_VACIO)
       await update($, fallos, () => ({}))
       await update($, avisoMapaDado, () => false)
+      empezarLimpio($, await $.clock.now())
       devolverMensaje($)
     }
+    // Otro final (salir, reanudar otra): lo propuesto ya no aplica.
+    vivo.limpioPropuesto = undefined
     return next(e)
   })
 

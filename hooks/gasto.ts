@@ -100,6 +100,45 @@ export function contarTemprana(t: Temprana | undefined, contexto: number): { t: 
 }
 
 /**
+ * Empezar en limpio cuando Toki lo propuso y dijiste que sí. Sin Toki seguías en
+ * la conversación de antes, y cada pedido la habría releído entera; con Toki la
+ * nueva arranca en `inicio`. Cada pedido se ahorra `antes − inicio` mientras la de
+ * antes no habría llegado al `tope`, donde Claude Code la habría compactado.
+ */
+export type Limpio = {
+  /** Lo que pesaba la conversación de antes. */
+  antes: number
+  tope: number
+  /** El caché había vencido: sin Toki, el primer pedido reescribía la conversación de antes entera. */
+  frio: boolean
+  /** Lo que pesó el primer pedido de la conversación nueva. */
+  inicio?: number
+}
+
+/** Claude Code compacta antes de llenar la ventana: se cuenta solo hasta el 80 %, para no inflar. */
+export function topeLimpio(ventana: number): number {
+  return Math.round(ventana * 0.8)
+}
+
+/**
+ * Un pedido de la conversación nueva: `relecturas`, lo que sin Toki se habría
+ * releído del caché; `reescritura`, lo que se habría reescrito (solo el primero,
+ * con el caché vencido); `sinToki`, lo que habría pesado el pedido. El primero con
+ * el caché vivo no cuenta: la conversación nueva aún se escribe en el caché.
+ */
+export function contarLimpio(l: Limpio | undefined, contexto: number): { l: Limpio | undefined; relecturas: number; reescritura: number; sinToki: number } {
+  if (l === undefined || contexto <= 0) return { l, relecturas: 0, reescritura: 0, sinToki: contexto }
+  const inicio = l.inicio ?? contexto
+  const evitadas = l.antes - inicio
+  const sinToki = l.antes + Math.max(0, contexto - inicio)
+  // La nueva ya pesa lo que la de antes, o la de antes ya se habría compactado: no queda diferencia.
+  if (evitadas <= 0 || sinToki >= l.tope) return { l: undefined, relecturas: 0, reescritura: 0, sinToki: contexto }
+  const siguiente = { ...l, inicio }
+  if (l.inicio !== undefined) return { l: siguiente, relecturas: evitadas, reescritura: 0, sinToki }
+  return { l: siguiente, relecturas: 0, reescritura: l.frio ? evitadas : 0, sinToki }
+}
+
+/**
  * ¿Toki baja la ventana de compactación? Solo si nadie la eligió a propósito
  * (ni tú en la configuración ni con la variable de entorno), y si la de Claude
  * Code es más grande que la elegida.

@@ -110,6 +110,8 @@ export type Textos = {
   menosDe1Min: string
   // Avisos emergentes
   toastAhorro: (tokens: string, comando: string) => string
+  /** El primer pedido tras empezar en limpio (porque Toki lo propuso) que ya ahorró; `reescritura`: con el caché vencido. */
+  toastLimpio: (usd: string, tokens: string, reescritura: boolean) => string
   toastBucle: string
   toastModelo: (modelo: string, tokens: string) => string
   toastCompacto: (resumen: string) => string
@@ -205,10 +207,10 @@ export type Textos = {
   estimadoPrevio: (cantidad: string) => string
   desgloseTitulo: string
   desgloseRelecturas: (usd: string, tokens: string) => string
+  desgloseLimpio: (usd: string, tokens: string) => string
   /** Recién compactado: lo que costó compactar, antes de recuperarlo en los pedidos siguientes. */
   desgloseCompactar: (usd: string) => string
   desgloseRecorte: (usd: string, tokens: string) => string
-  /** `extra`: lo que costó de más (ya restado), si hubo. */
   /** `ahorro`: undefined si no ahorró nada (solo costó de más); `extra`: undefined si no costó de más. */
   desgloseRuteo: (neto: string, ahorro: string | undefined, extra: string | undefined) => string
   desgloseCosto: (gastado: string, sinToki: string) => string
@@ -283,6 +285,10 @@ const es: Textos = {
   h: 'h',
   menosDe1Min: 'menos de 1 min',
   toastAhorro: (t, c) => `Toki te ahorró ~${t} tokens en «${c}»`,
+  toastLimpio: (u, t, r) =>
+    r
+      ? `Empezar en limpio ya ahorró ${u}: Claude no tuvo que reescribir ~${t} tokens de la conversación de antes.`
+      : `Empezar en limpio ya ahorró ${u}: cada mensaje deja de releer ~${t} tokens de la conversación de antes.`,
   toastBucle: 'Toki: el mismo comando falló 3 veces seguidas. Le pedí a Claude cambiar de enfoque.',
   toastModelo: (m, t) => `Toki: cambiaste a ${m} con el caché caliente. Tu próximo mensaje reprocesará ~${t} tokens. Para una tarea chica, mejor un subagente con model: haiku.`,
   toastCompacto: r => `Toki: se compactó el contexto y le recordé a Claude ${r}. Sigue donde quedó.`,
@@ -401,6 +407,7 @@ const es: Textos = {
   estimadoPrevio: c => `Incluye ${c} de antes de la versión 0.17, estimados a precio de Sonnet (solo recortes y relecturas).`,
   desgloseTitulo: 'De dónde sale el ahorro de esta sesión',
   desgloseRelecturas: (u, t) => `Relecturas evitadas: ${u} (~${t} tokens que Claude no volvió a leer porque Toki compactó antes o sacó algo del contexto)`,
+  desgloseLimpio: (u, t) => `Empezar en limpio: ${u} (~${t} tokens de la conversación de antes que Claude ya no releyó ni reescribió)`,
   desgloseCompactar: u => `Compactar antes: ${u} (lo que costó resumir la conversación; se recupera en los pedidos siguientes, que releen mucho menos)`,
   desgloseRecorte: (u, t) => `Salidas recortadas: ${u} (~${t} tokens que no entraron al contexto)`,
   desgloseRuteo: (n, a, e) =>
@@ -491,6 +498,10 @@ const en: Textos = {
   h: 'h',
   menosDe1Min: 'under 1 min',
   toastAhorro: (t, c) => `Toki saved you ~${t} tokens on "${c}"`,
+  toastLimpio: (u, t, r) =>
+    r
+      ? `Starting clean already saved ${u}: Claude did not have to rewrite ~${t} tokens of the old conversation.`
+      : `Starting clean already saved ${u}: each message no longer re-reads ~${t} tokens of the old conversation.`,
   toastBucle: 'Toki: the same command failed 3 times in a row. I asked Claude to change approach.',
   toastModelo: (m, t) => `Toki: you switched to ${m} with a warm cache. Your next message will reprocess ~${t} tokens. For a small task, a subagent with model: haiku is cheaper.`,
   toastCompacto: r => `Toki: the context was compacted and I reminded Claude of ${r}. It continues where it left off.`,
@@ -609,6 +620,7 @@ const en: Textos = {
   estimadoPrevio: c => `Includes ${c} from before version 0.17, estimated at Sonnet prices (trims and re-reads only).`,
   desgloseTitulo: "Where this session's savings come from",
   desgloseRelecturas: (u, t) => `Re-reads avoided: ${u} (~${t} tokens Claude did not read again because Toki compacted earlier or took something out of context)`,
+  desgloseLimpio: (u, t) => `Starting clean: ${u} (~${t} tokens of the old conversation Claude no longer re-read or rewrote)`,
   desgloseCompactar: u => `Compacting earlier: ${u} (what summarizing the conversation cost; it is made up in the following requests, which re-read much less)`,
   desgloseRecorte: (u, t) => `Trimmed outputs: ${u} (~${t} tokens that never entered the context)`,
   desgloseRuteo: (n, a, e) =>

@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { cifraUsd, valorLectura } from '../hooks/ahorro'
 import {
   armarPedidoMejorado,
   cambioDeTema,
@@ -139,7 +140,8 @@ type Mundo = {
 
 function mundo(on: On, o: { tokens?: number; respuesta?: (etiquetas: string[]) => string } = {}): Mundo {
   const m: Mundo = { toasts: [], preguntas: [], etiquetas: [], contextos: [], entrados: [], fills: [], comandos: [] }
-  const tokens = o.tokens ?? 30_000
+  // Se lee en cada pedido: una prueba puede cambiarlo (por ejemplo, tras /clear).
+  const tokens = (): number => o.tokens ?? 30_000
   mock.store(on)
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
@@ -160,7 +162,7 @@ function mundo(on: On, o: { tokens?: number; respuesta?: (etiquetas: string[]) =
   on('command.register', ($, e) => ({ value: { command: e.name } }) as never)
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.surfaces', () => ({ value: [] }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens, window: 1_000_000, percent: 10 }, rateLimits: [] } }) as never)
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: tokens(), window: 1_000_000, percent: 10 }, rateLimits: [] } }) as never)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('prompt.submit', ($, e) => {
@@ -186,7 +188,7 @@ function mundo(on: On, o: { tokens?: number; respuesta?: (etiquetas: string[]) =
       answer: '',
       toolUses: [],
       stopReason: 'end_turn' as const,
-      usage: { input_tokens: 2, output_tokens: 200, cache_read_input_tokens: tokens - 1_000, cache_creation_input_tokens: 998, model: e.model },
+      usage: { input_tokens: 2, output_tokens: 200, cache_read_input_tokens: tokens() - 1_000, cache_creation_input_tokens: 998, model: e.model },
     }
   })
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
@@ -328,6 +330,30 @@ describe('entrevista con el motor', () => {
     await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} } as never)
     await reloj.advance(500)
     expect(m.fills.some(f => f.startsWith(ARQUITECTURA))).toBe(true)
+  })
+
+  test('empezar en limpio por cambio de tema, con el caché vivo: desde el segundo pedido se cuenta lo que ya no se relee', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const o = { tokens: 150_000, respuesta: (ls: string[]) => ls.find(l => l.startsWith('Empezar en limpio')) ?? '' }
+    const m = mundo(on, o)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'agrega un botón de exportar a CSV en la tabla de pacientes')
+    await mensaje($, 't1', ARQUITECTURA)
+    await reloj.advance(200)
+    await $.session.end({ reason: 'clear', sessionId: 's1', resume: {} } as never)
+    await reloj.advance(500)
+    o.tokens = 25_000
+    await mensaje($, 't2', ARQUITECTURA)
+    // El primero aún escribe la conversación nueva en el caché: no se cuenta.
+    let toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).not.toContain('Empezar en limpio')
+    o.tokens = 27_000
+    await reloj.advance(10_000)
+    await mensaje($, 't3', 'empieza por el módulo de sincronización')
+    const usd = valorLectura(125_000, 'opus')
+    toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).toContain(`  Empezar en limpio: ${cifraUsd(usd)} (~125.0k tokens de la conversación de antes que Claude ya no releyó ni reescribió)\n`)
+    expect(m.toasts).toContain(`Empezar en limpio ya ahorró ${cifraUsd(usd)}: cada mensaje deja de releer ~125.0k tokens de la conversación de antes.`)
   })
 
   test('cambio de tema con poco contexto: no pregunta, solo entrevista', async ($, on) => {

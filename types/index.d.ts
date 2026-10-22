@@ -43,6 +43,13 @@ export type Sesion = {
   recorteUsd?: number
   /** Lo que valen las relecturas evitadas (puede bajar un momento al compactar). */
   relecturasUsd?: number
+  /**
+   * Lo que vale haber empezado en limpio cuando Toki lo propuso: la conversación de
+   * antes, que los pedidos de la nueva ya no releyeron (ni reescribieron, si el caché había vencido).
+   */
+  limpioUsd?: number
+  /** Esos tokens de la conversación de antes. */
+  limpioTokens?: number
   /** Lo que de verdad costaron los pedidos de la conversación (principal y subagentes), a precio de API. */
   gastoMedidoUsd?: number
   /**

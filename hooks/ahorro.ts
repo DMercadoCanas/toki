@@ -101,22 +101,22 @@ export function porcentajeAhorro(ahorro: number, gastado: number): number | unde
   return Math.round((ahorro / (gastado + ahorro)) * 100)
 }
 
-/** Lo que Toki ahorró en la sesión, en dólares: recortes, relecturas y modelo (menos el extra que costó). */
-export type AhorroUsd = { recorte?: number; relecturas?: number; ruteo?: number; ruteoExtra?: number }
+/** Lo que Toki ahorró en la sesión, en dólares: recortes, relecturas, empezar en limpio y modelo (menos el extra que costó). */
+export type AhorroUsd = { recorte?: number; relecturas?: number; limpio?: number; ruteo?: number; ruteoExtra?: number }
 
 export function ahorroNeto(s: AhorroUsd): number {
-  return (s.recorte ?? 0) + (s.relecturas ?? 0) + (s.ruteo ?? 0) - (s.ruteoExtra ?? 0)
+  return (s.recorte ?? 0) + (s.relecturas ?? 0) + (s.limpio ?? 0) + (s.ruteo ?? 0) - (s.ruteoExtra ?? 0)
 }
 
 /** Las cifras en dólares de una sesión, como las guarda Toki. */
-export type CifrasUsd = { recorteUsd?: number; relecturasUsd?: number; ruteoAhorroUsd?: number; ruteoExtraUsd?: number; gastoMedidoUsd?: number }
+export type CifrasUsd = { recorteUsd?: number; relecturasUsd?: number; limpioUsd?: number; ruteoAhorroUsd?: number; ruteoExtraUsd?: number; gastoMedidoUsd?: number }
 
 /**
  * La cifra única: lo que Toki ahorró (neto), cuánto costó de verdad, cuánto
  * habría costado sin Toki y el "−18 %" (solo si hubo ahorro).
  */
 export function resumenAhorro(s: CifrasUsd): { neto: number; gastado: number; sinToki: number; pct?: number } {
-  const neto = ahorroNeto({ recorte: s.recorteUsd, relecturas: s.relecturasUsd, ruteo: s.ruteoAhorroUsd, ruteoExtra: s.ruteoExtraUsd })
+  const neto = ahorroNeto({ recorte: s.recorteUsd, relecturas: s.relecturasUsd, limpio: s.limpioUsd, ruteo: s.ruteoAhorroUsd, ruteoExtra: s.ruteoExtraUsd })
   const gastado = Math.max(0, s.gastoMedidoUsd ?? 0)
   const pct = porcentajeAhorro(neto, gastado)
   return { neto, gastado, sinToki: gastado + neto, ...(pct !== undefined && pct >= 1 ? { pct } : {}) }
