@@ -187,7 +187,7 @@ Medido con `claude -p` y Opus 5.5 de modelo:
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-- **Toki actúa lo que pasa:** su cara va en la pantalla del robot. `[•_•]···` pensando, `[⊙‿⊙]` leyendo, `[•‿•] ⠋` ejecutando, `✎` editando, `[>‿<] ≋` aspirando (compactando), `[•o•]?` esperando tu permiso, `[^‿^]✓` listo, `\[^‿^]/ ✦` celebrando un logro, `[−_−]zZ` caché frío, `[•△•]!` contexto alto. En la app de escritorio es un dibujo animado: flota, parpadea, gira las ruedas cuando trabaja, aspira con la manguera cuando compacta y lanza confeti con cada logro.
+- **Toki actúa lo que pasa:** su cara va en la pantalla del robot. `[•_•]···` pensando, `[⊙‿⊙]` leyendo, `[•‿•] ⠋` ejecutando, `✎` editando, `[>‿<] ≋` aspirando (compactando), `[•o•]?` esperando tu permiso, `[^‿^]✓` listo, `\[^‿^]/ ✦` celebrando un logro, `[−_−]zZ` caché frío, `[•△•]!` contexto alto. En la app de escritorio es un dibujo animado en píxeles: parpadea, se toca la barbilla cuando piensa, barre con la escoba cuando trabaja, aprieta una caja cuando compacta, duerme cuando el caché se enfría y lanza confeti con cada logro.
 - **Una frase y, si hace falta, un botón:** al 70% de contexto (o si la conversación ya pesa más de 200k tokens) aparece **Compactar ahora** (atajo `c`).
 - **Medidores:** contexto (contra el tamaño al que se compacta, no contra el millón del modelo), reloj del caché (`●` lleno → `○` frío), tokens ahorrados en la sesión, relecturas evitadas, tu racha y, en planes con suscripción, los límites de 5 horas y de la semana.
 - **Cada ahorro y cada rescate te lo dice** con un aviso corto, y una campanita (solo macOS).
