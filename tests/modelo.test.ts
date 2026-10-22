@@ -471,6 +471,9 @@ describe('solo Sonnet hasta que haga falta', () => {
     expect(estado.text).toContain('Esta sesión: 3 mensajes en Sonnet, 1 en Opus')
     const modelo = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
     expect(modelo.text).toContain('Solo Sonnet hasta que haga falta: activado')
+    // La tarjeta semanal cuenta cada mensaje en el modelo que de verdad respondió.
+    const semana = (await $.command.run({ command: 'toki-semana', args: '' } as never)) as { text: string }
+    expect(semana.text).toContain('Mensajes por modelo: Sonnet 3 · Opus 1')
   })
 
   test('automático: si algo sigue fallando sube a Opus, y un "dale" sigue ahí', { options: { recomendarModelo: 'automatico', sonnetPrimero: true } }, async ($, on) => {

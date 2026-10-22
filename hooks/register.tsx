@@ -86,7 +86,7 @@ import { TRAMO_GENERADO, textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
 import type { TipoBusqueda } from './busquedas'
-import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjetaPendiente, tarjetaSemana } from './semana'
+import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
 import type { Presupuesto, TipoOpcionPresupuesto } from './presupuesto'
@@ -96,7 +96,7 @@ import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, o
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.15.0'
+export const VERSION = '0.16.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -755,8 +755,10 @@ async function sumarRuteo($: $, usd: number, signo: 1 | -1 = 1): Promise<void> {
     await update($, sesion, s => ({ ...s, ruteoAhorroUsd: Math.max(0, (s.ruteoAhorroUsd ?? 0) + monto) }))
     const total = Number((await $.store.get(CLAVE_RUTEO)) ?? 0)
     await $.store.set(CLAVE_RUTEO, Math.max(0, total + monto))
+    await alaSemana($, { ruteo: monto })
   } else {
     await update($, sesion, s => ({ ...s, ruteoExtraUsd: Math.max(0, (s.ruteoExtraUsd ?? 0) + monto) }))
+    await alaSemana($, { ruteoExtra: monto })
   }
 }
 
@@ -1914,6 +1916,8 @@ const guardia: {
   hechosLeidos: boolean
   /** El periodo frío por el que ya se preguntó (el `ultimoUsoCache` de entonces). */
   frioVisto: number
+  /** El periodo frío ya contado en la tarjeta semanal (se cuenta una vez, aunque el mensaje vuelva). */
+  frioContado: number
   frioRechazos: number
   pegadoRechazos: number
   /** Hasta cuándo va el modo ahorro por límite (0 = apagado). */
@@ -1921,7 +1925,7 @@ const guardia: {
   ahorroVentana?: VentanaLimite
   /** Tu mensaje (con lo importante de antes), para devolverlo al cuadro después de /clear. */
   devolver?: string
-} = { muestras: {}, proyeccion: {}, hechos: [], hechosLeidos: false, frioVisto: 0, frioRechazos: 0, pegadoRechazos: 0, ahorroHasta: 0 }
+} = { muestras: {}, proyeccion: {}, hechos: [], hechosLeidos: false, frioVisto: 0, frioContado: 0, frioRechazos: 0, pegadoRechazos: 0, ahorroHasta: 0 }
 
 const CLAVE_GUARDIA = 'guardia-hechos'
 
@@ -2162,9 +2166,40 @@ async function compactarYReenviar($: $, texto: string, conMemoria: boolean): Pro
   } catch {
     // Sin plan: va como está.
   }
+  // Ya compactado: cuenta como mensaje tuyo, no como uno que salió con el caché vencido.
+  await contarMensaje($, texto).catch(() => undefined)
   await $.prompt.submit({ text: texto, asUser: true }).catch(async () => {
     await $.prompt.fill({ text: texto, mode: 'replace' }).catch(() => undefined)
   })
+}
+
+// ---------- Tarjeta semanal: tus mensajes ----------
+
+/** El modelo de cada mensaje tuyo se cuenta en su primer pedido: el que de verdad respondió. */
+const modeloPorContar: { pendiente: boolean; turno?: string } = { pendiente: false }
+
+/** ¿Este mensaje sale con el caché vencido y mucho contexto? Devuelve el periodo frío, para contarlo una sola vez. */
+async function mensajeFrio($: $): Promise<number | undefined> {
+  if (vivo.ultimoUsoCache <= 0 || vivo.ultimoUsoCache === guardia.frioContado) return undefined
+  const f = evaluarCacheFrio({
+    ahora: await $.clock.now(),
+    ultimoUsoCache: vivo.ultimoUsoCache,
+    ttlMin: ttlMinutos(),
+    contexto: vivo.usoCache?.tokens ?? vivo.tokensUltimoTurno,
+    familia: familiaDe(ruta.modeloPrincipal ?? vivo.modelo) ?? 'opus',
+    ttl1h: vivo.usoCache?.esSuscripcion ?? true,
+  })
+  return f === undefined ? undefined : vivo.ultimoUsoCache
+}
+
+/** Un mensaje tuyo que sale hacia Claude: a la tarjeta, con si corregía lo anterior y si salió frío. */
+async function contarMensaje($: $, textoCrudo: string, frio?: number): Promise<void> {
+  const texto = quitarEtiquetasDeSistema(textoCrudo)
+  if (texto === '' || texto.startsWith('/')) return
+  const contarFrio = frio !== undefined && frio !== guardia.frioContado
+  if (contarFrio) guardia.frioContado = frio
+  modeloPorContar.pendiente = true
+  await alaSemana($, { mensajes: 1, correcciones: esCorreccion(texto) ? 1 : 0, frios: contarFrio ? 1 : 0 })
 }
 
 /** Después de /clear: tu mensaje vuelve al cuadro. */
@@ -2227,6 +2262,7 @@ async function contarEntrevista($: $, campo: CuentaEntrevista): Promise<void> {
     const e = s.entrevista ?? { con: 0, conCorr: 0, sin: 0, sinCorr: 0, consejos: 0 }
     return { ...s, entrevista: { ...e, [campo]: e[campo] + 1 } }
   })
+  await alaSemana($, campo === 'consejos' ? { consejos: 1 } : { entrevista: campo })
 }
 
 /** /clear y tu mensaje (o el pedido mejorado) de vuelta al cuadro. */
@@ -2395,7 +2431,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'toki-semana',
       description: vivo.idioma === 'en' ? 'Toki: your weekly savings card' : 'Toki: tu tarjeta semanal de ahorro',
-      argumentHint: vivo.idioma === 'en' ? '[last]' : '[pasada]',
+      argumentHint: vivo.idioma === 'en' ? '[last] [md]' : '[pasada] [md]',
     })
     await $.command.register({ name: 'toki-entrevista', description: xe().cmd, argumentHint: 'auto | preguntar | no' })
     await $.command.register({ name: 'toki-presupuesto', description: xp().cmd, argumentHint: xp().pista })
@@ -2485,6 +2521,13 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     const deLaPersona = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
     if (e.command !== undefined || e.isMeta === true || e.turnId !== undefined || !deLaPersona) return next(e)
+    // Antes de las guardias: si sale frío pese a todo, la tarjeta lo cuenta.
+    let frio: number | undefined
+    try {
+      frio = await mensajeFrio($)
+    } catch {
+      frio = undefined
+    }
     let silenciar = false
     let texto = e.text
     try {
@@ -2514,6 +2557,11 @@ export const register: Register = (on, options) => {
     } catch (err) {
       $.ui.log(`Toki, modelo y esfuerzo: ${String(err)}`, { to: 'debug' })
     }
+    try {
+      await contarMensaje($, texto, frio)
+    } catch {
+      // Solo estadística.
+    }
     const base = texto === e.text ? e : { ...e, text: texto }
     // La instrucción va como contexto: Claude la lee junto a tu mensaje y tú no ves nada distinto.
     return next(contexto === undefined ? base : { ...base, context: [...(e.context ?? []), contexto] })
@@ -2537,6 +2585,9 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
+      // Si este turno es un mensaje tuyo ya contado, su primer pedido dice qué modelo respondió.
+      modeloPorContar.turno = modeloPorContar.pendiente ? e.turnId : undefined
+      modeloPorContar.pendiente = false
       // El esfuerzo que se eligió para este mensaje vale para todos sus pedidos, y solo para ellos.
       ruta.turno = ruta.pendiente !== undefined ? e.turnId : undefined
       ruta.esfuerzo = ruta.pendiente?.esfuerzo
@@ -2585,6 +2636,11 @@ export const register: Register = (on, options) => {
       }
     }
     const respuesta = yield* next(pedido)
+    if (e.agentId === undefined && e.index === 0 && e.turnId === modeloPorContar.turno) {
+      modeloPorContar.turno = undefined
+      const familia = familiaDe(respuesta.usage?.model ?? pedido.model)
+      if (familia !== undefined) await alaSemana($, { modelo: familia })
+    }
     if (e.agentId === undefined && respuesta.usage !== null) {
       ruta.cacheFrio = false
       // Cada pedido lee o escribe el caché: desde aquí corre su vida (1 h o 5 min).
@@ -2866,7 +2922,14 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'toki-semana' }, async ($, e) => {
     const ahora = await $.clock.now()
     const semanas = await leerSemanasDe($)
-    const pasada = /^(pasada|last|anterior|prev)/i.test(e.args.trim())
+    const palabras = e.args
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(p => p !== '')
+    const pasada = palabras.some(p => /^(pasada|last|anterior|prev)/.test(p))
+    // "md" (o "exportar", "guardar"…): la tarjeta en Markdown, en un archivo para guardarla o compartirla.
+    const md = palabras.some(p => /^(md|markdown|export\w*|guard\w*|archivo|file|save)$/.test(p))
     const actual = lunesDe(ahora)
     const lunes = pasada
       ? (Object.keys(semanas)
@@ -2875,7 +2938,21 @@ export const register: Register = (on, options) => {
           .pop() ?? actual)
       : actual
     const historial = await leerHistorial($)
-    return { text: tarjetaSemana(semanas, lunes, ahora, historial, { idioma: vivo.idioma, mostrarCosto: vivo.usoCache?.esSuscripcion !== true, racha: racha(historial, ahora) }) }
+    const suscripcion = vivo.usoCache?.esSuscripcion === true
+    const opciones = { idioma: vivo.idioma, mostrarCosto: !suscripcion, suscripcion, racha: racha(historial, ahora), sonnetPrimero: sonnetActivo() }
+    if (!md || semanas[lunes] === undefined) return { text: tarjetaSemana(semanas, lunes, ahora, historial, opciones) }
+    const archivo = `${CARPETA}/semana-${lunes}.md`
+    try {
+      await asegurarCarpeta($)
+      await $.fs.write(archivo, tarjetaSemana(semanas, lunes, ahora, historial, { ...opciones, formato: 'md' }))
+    } catch (err) {
+      return { text: tarjetaNoGuardada(String(err), vivo.idioma) }
+    }
+    const donde = await $.session
+      .cwd()
+      .then(c => `${c.replace(/[\\/]$/, '')}/${archivo}`)
+      .catch(() => archivo)
+    return { text: tarjetaGuardada(donde, vivo.idioma) }
   })
 
   on('command.run', { command: 'toki-por-que' }, async $ => ({ text: await textoDecisiones($) }))

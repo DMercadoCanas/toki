@@ -348,6 +348,39 @@ describe('textos pegados enormes', () => {
     expect(pasada.text).toContain('19 oct')
   })
 
+  test('la nota sale de tus mensajes (pedidos largos, correcciones, caché vencido) y se guarda en Markdown', async ($, on) => {
+    const reloj = mock.clock(on, { now: new Date(2026, 9, 21, 12).getTime() })
+    const m = mundo(on, {
+      tokens: 220_000,
+      respuesta: ls => ls.find(l => l.startsWith('Enviar así')) ?? '',
+      store: { semanas: { '2026-10-19': { pedidos: 30, mensajes: 6, sesiones: 1 } } },
+    })
+    on('session.cwd', () => ({ value: '/proyecto' }))
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'agrega un botón de exportar a CSV en la tabla de pacientes')
+    // Pasan 6 min (en la API el caché dura 5): el siguiente sale frío y lo envías así.
+    await reloj.advance(6 * MIN)
+    await mensaje($, 't1', 'ahora agrega también el filtro por fecha')
+    expect(m.preguntas.filter(p => p.startsWith('Tu caché venció')).length).toBe(1)
+    await mensaje($, 't2', 'no, eso no es lo que pedí: el filtro va arriba')
+    await mensaje($, 't3', 'perfecto, y el botón de limpiar filtros')
+    // 34 pedidos (4 de más de 150k) → contexto 76; 10 mensajes, 1 corrección → claridad 60; 1 frío en 2 sesiones → caché 75.
+    const semana = ((await $.command.run({ command: 'toki-semana', args: '' } as never)) as { text: string }).text
+    expect(semana).toContain('Nota: B (71/100)')
+    expect(semana).toContain('el 12% de tus pedidos pasó de 150k de contexto')
+    expect(semana).toContain('1 corrección en 10 mensajes')
+    expect(semana).toContain('volviste una vez con el caché vencido y mucho contexto')
+    expect(semana).toContain('Mensajes por modelo:')
+    const guardada = ((await $.command.run({ command: 'toki-semana', args: 'md' } as never)) as { text: string }).text
+    expect(guardada).toBe('Toki: guardé la tarjeta en /proyecto/.claude/toki/semana-2026-10-19.md (Markdown).')
+    // El motor resuelve las rutas relativas: se busca por el final.
+    const escrito = (fin: string) => Object.entries(m.escritos).find(([r]) => r.endsWith(fin))?.[1]
+    const md = escrito('/.claude/toki/semana-2026-10-19.md') ?? ''
+    expect(md).toContain('# Toki · esta semana (19 oct – 25 oct)')
+    expect(md).toContain('| Claridad | 60 | 1 corrección en 10 mensajes |')
+    expect(escrito('/.claude/toki/.gitignore')).toBe('*\n')
+  })
+
   test('"Enviar completo" lo deja intacto; dos veces y se calla', async ($, on) => {
     mock.clock(on, { now: 50 * H })
     const m = mundo(on, { tokens: 20_000, respuesta: ls => ls.find(l => l === 'Enviar completo') ?? '' })

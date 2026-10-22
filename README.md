@@ -8,7 +8,7 @@
 
 Habla español e inglés. No agrega ni un token fijo a tu contexto.
 
-> Versión 0.15. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+> Versión 0.16. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
 ## Instalación
 
@@ -19,6 +19,22 @@ En una sesión de Claude Code:
 ```
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
+
+## Lo nuevo en 0.16
+
+- **Nota de la semana.** La tarjeta de `/toki-semana` trae ahora una nota de A a F con tres partes, cada una con su porqué. El consejo del final apunta a la parte más floja.
+  - **Contexto** (la mitad de la nota): cuántos pedidos pasaron de 150k de contexto.
+  - **Claridad**: cuántos de tus mensajes corregían lo anterior («no, eso no…»). Cuenta desde 10 mensajes.
+  - **Caché**: cuántas veces volviste con el caché vencido y mucho contexto.
+  - La nota aparece desde 20 pedidos y 5 mensajes tuyos en la semana.
+- **Más cifras en la tarjeta:**
+  - cuánto ahorró elegir modelo y esfuerzo por mensaje (a precio de API; con suscripción es límite que no gastas);
+  - cuántos de tus mensajes respondió cada modelo;
+  - las correcciones por pedido con y sin preguntas antes;
+  - cuántos consejos para pedir mejor te dio Toki.
+  - Si casi todo fue a Opus, el consejo sugiere `/toki-sonnet sí`.
+- **`/toki-semana md`** guarda la tarjeta en Markdown en `.claude/toki/semana-AAAA-MM-DD.md`, lista para pegar en un documento o mandar al equipo. La carpeta se ignora sola en git. Con la semana anterior: `/toki-semana pasada md`.
+- **El aviso del lunes** lleva la nota y dice cómo ver la tarjeta: `/toki-semana pasada`.
 
 ## Lo nuevo en 0.15
 
@@ -193,7 +209,7 @@ Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), lo que costó
 - **`/toki-entrevista`**: preguntas antes de pedidos grandes (`auto`, `preguntar`, `no`).
 - **`/toki-modelo`**: qué modelo y esfuerzo eligió para cada mensaje, y el modo (`preguntar`, `siempre`, `automatico`, `no`). `/toki-modelo deshacer` vuelve atrás el último cambio.
 - **`/toki-sonnet`** `sí` · `no`: Solo Sonnet hasta que haga falta; sin argumento, cómo va.
-- **`/toki-semana`** (o `/toki-semana pasada`): la tarjeta de la semana.
+- **`/toki-semana`** (o `/toki-semana pasada`): la tarjeta de la semana, con su nota de A a F. Agrega `md` para guardarla en Markdown.
 - **`/toki-presupuesto`** `$2` · `500k` · `quitar`: un tope para la tarea actual; sin argumentos, cómo va.
 - **`/toki-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
 - **`/output-style`** → `toki:conciso`: respuestas cortas desde ya.
@@ -269,6 +285,7 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **Weekly card and per-task budget (0.13).** On the first Monday of the week Toki tells you last week's card is ready: `/toki-semana` shows the current week and `/toki-semana last` the previous one. The card shows savings by type, the change against the week before, and one tip. `/toki-presupuesto $2` or `/toki-presupuesto 500k` caps the task at hand. Toki warns at 50% and 80%. Past the cap, it asks before your next message: go on in saving mode, raise the cap 50%, stop, or remove it.
 - **Questions before a big request (0.14).** When you start something new and broad ("build me an app that…") without naming files or what done looks like, Toki asks Claude to put 2–4 multiple-choice questions to you first (recommended answer first) and saves the summary to `.claude/toki/spec.md`. It costs ~1–2k tokens and saves rework. Type "no questions" to skip it. `/toki-entrevista auto|preguntar|no`. Toki also shows short tips for asking better, and after two corrections on the same thing it offers to start fresh.
 - **Sonnet first, Opus when needed (0.15).** Turn it on with `/toki-sonnet on` or in the settings. Toki works on Sonnet (half the price of Opus) and moves up to Opus only when you ask for deep thinking or something keeps failing, then comes back. It switches when the switch is free (at the start, or with a cold cache) or pays for itself; moving up asks first in `preguntar` mode. Picking a model with `/model` pauses it for the session. `/toki-modelo undo` reverts the last model or effort change, and Toki won't repeat it for that kind of message. Model savings now count every message that stays on the cheaper model, against what it would cost without Toki.
+- **Weekly grade and Markdown export (0.16).** The weekly card now has an A–F grade made of three parts, each with its reason: context (half the grade: requests past 150k), clarity (messages that correct the one before) and cache (coming back to an expired cache with a big context). The closing tip targets the weakest part. The card also shows what per-message model and effort choices saved, how many of your messages each model answered, corrections with and without questions first, and the tips Toki gave. `/toki-semana md` saves the card as Markdown under `.claude/toki/` (`/toki-semana last md` for last week). The Monday notice carries the grade and points to `/toki-semana last`.
 - Measured with `claude plugin eval` on Opus: a mechanical rename cost **54% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 
