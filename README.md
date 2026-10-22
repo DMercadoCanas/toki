@@ -224,18 +224,20 @@ En `/plugin`, elige Toki y abre su configuración. Puedes apagar cualquier pieza
 
 ## Resultados medidos (con y sin Toki)
 
-**Con `claude plugin eval` (0.13, Opus 5.5, 3 corridas por brazo, costo que informa Claude Code por corrida):**
+**Con `claude plugin eval` (0.16, Claude Code 2.1.308, Opus 5.5, 3 corridas por brazo; costo = mediana por corrida según Claude Code, sin el juez):**
 
-| Caso | Con Toki | Sin Toki | Ahorro | Nota (con / sin) |
+| Caso | Con Toki | Sin Toki | Diferencia | Nota (con / sin) |
 |---|---|---|---|---|
-| `ruta-trivial`: "Renombra la función sumar a add" | $0.039 | $0.086 | **−54 %** | 100 % / 100 % |
-| `ruta-compleja`: por qué falla un test de citas que se pisan | $0.074 | $0.074 | 0 % | 100 % / 100 % |
+| `ruta-trivial`: "Renombra la función sumar a add" | $0.038 | $0.085 | **−55 %** | 100 % / 100 % |
+| `ruta-compleja`: por qué falla un test de citas que se pisan | $0.074 | $0.073 | +1 % | 100 % / 100 % |
 | `lockfile-version`: qué versión hay en un `package-lock.json` de 200 KB | $0.066 | $0.066 | 0 % | 100 % / 100 % |
 
-En la tarea mecánica, Toki la mandó en Sonnet con esfuerzo bajo, sin perder la respuesta. En la que pide razonar, no bajó nada. En el lockfile, Opus fue directo a Grep, así que Toki no tuvo que frenar nada. Los casos con Bash (`test-con-fallo`, `tail-esconde-error`, `salida-enorme`, `busqueda-enorme`) necesitan el sandbox del sistema: se corren en macOS o Linux con bubblewrap:
+En la tarea mecánica, Toki la mandó en Sonnet con esfuerzo bajo en las tres corridas, sin perder la respuesta. En la que pide razonar, no tocó el modelo: en las trazas, el contexto que recibió Claude difirió en 8 tokens entre los dos brazos, y el +1 % (menos de $0.001) es una respuesta unas decenas de tokens más larga. En el lockfile, Opus fue directo a Grep, así que Toki no tuvo que frenar nada. Y Toki no agrega tokens fijos: el primer pedido mide lo mismo con y sin él (~15k tokens).
+
+Los casos con Bash (`test-con-fallo`, `tail-esconde-error`, `salida-enorme`, `busqueda-enorme`) necesitan el sandbox del sistema: se corren en macOS, o en Linux con bubblewrap y socat. Usa `-j 1`: el comienzo del prompt es igual en los dos brazos y queda en el caché, así que si varias corridas arrancan a la vez, el brazo que va primero paga la escritura del caché y sale más caro sin que Toki tenga que ver.
 
 ```bash
-claude plugin eval . --scaffold --trust-plugin --allow-tools Edit "Bash(npm *)" "Bash(grep *)" --runs 3 --json evals/results/r.json
+claude plugin eval . --scaffold --trust-plugin --allow-tools Edit "Bash(npm *)" "Bash(grep *)" --model claude-opus-5-5 --runs 3 -j 1 --json evals/results/r.json
 python3 evals/benchmark.py evals/results/r.json
 ```
 
@@ -286,7 +288,7 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **Questions before a big request (0.14).** When you start something new and broad ("build me an app that…") without naming files or what done looks like, Toki asks Claude to put 2–4 multiple-choice questions to you first (recommended answer first) and saves the summary to `.claude/toki/spec.md`. It costs ~1–2k tokens and saves rework. Type "no questions" to skip it. `/toki-entrevista auto|preguntar|no`. Toki also shows short tips for asking better, and after two corrections on the same thing it offers to start fresh.
 - **Sonnet first, Opus when needed (0.15).** Turn it on with `/toki-sonnet on` or in the settings. Toki works on Sonnet (half the price of Opus) and moves up to Opus only when you ask for deep thinking or something keeps failing, then comes back. It switches when the switch is free (at the start, or with a cold cache) or pays for itself; moving up asks first in `preguntar` mode. Picking a model with `/model` pauses it for the session. `/toki-modelo undo` reverts the last model or effort change, and Toki won't repeat it for that kind of message. Model savings now count every message that stays on the cheaper model, against what it would cost without Toki.
 - **Weekly grade and Markdown export (0.16).** The weekly card now has an A–F grade made of three parts, each with its reason: context (half the grade: requests past 150k), clarity (messages that correct the one before) and cache (coming back to an expired cache with a big context). The closing tip targets the weakest part. The card also shows what per-message model and effort choices saved, how many of your messages each model answered, corrections with and without questions first, and the tips Toki gave. `/toki-semana md` saves the card as Markdown under `.claude/toki/` (`/toki-semana last md` for last week). The Monday notice carries the grade and points to `/toki-semana last`.
-- Measured with `claude plugin eval` on Opus: a mechanical rename cost **54% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
+- Measured with `claude plugin eval` on Opus: a mechanical rename cost **55% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 
 ## Para desarrollar
