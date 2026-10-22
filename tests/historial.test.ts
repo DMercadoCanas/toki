@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { agregarLeccion, claveDia, filasGrafica, fusionarHistorial, leccionCambioModelo, logrosNuevos, racha, sumarAlDia, totalDesde } from '../hooks/historial'
+import { agregarAlRegistro, agregarLeccion, claveDia, filasGrafica, fusionarHistorial, leccionCambioModelo, logrosNuevos, racha, sumarAlDia, totalDesde } from '../hooks/historial'
 import { tokiSvg } from '../hooks/toki-svg'
 import { ANIMACIONES, cuadroSvg, cuadrosDe } from '../hooks/toki-pixel'
 
@@ -46,6 +46,16 @@ describe('historial', () => {
   test('la gráfica habla inglés', async () => {
     const filas = filasGrafica(sumarAlDia({}, HOY, 10), HOY, 1, 4, 'en')
     expect(filas[0]?.etiqueta.startsWith('Tue')).toBe(true)
+  })
+
+  test('el registro de diagnóstico sigue entre sesiones y se recorta', async () => {
+    let r = agregarAlRegistro('', 'inicio 0.16.1')
+    r = agregarAlRegistro(r, 'ruta: trivial')
+    expect(r).toBe('inicio 0.16.1\nruta: trivial\n')
+    // Un error con saltos de línea queda en una sola línea.
+    expect(agregarAlRegistro(r, 'falló:\n  at x\n  at y')).toBe('inicio 0.16.1\nruta: trivial\nfalló: at x at y\n')
+    for (let i = 0; i < 5; i++) r = agregarAlRegistro(r, `línea ${i}`, 3)
+    expect(r).toBe('línea 2\nlínea 3\nlínea 4\n')
   })
 })
 

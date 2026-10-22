@@ -3,8 +3,11 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import {
+  ahorroSinCache,
+  costoMedido,
   costoMensaje,
   costoSinToki,
+  daIgual,
   decidirInterfaz,
   deltaRuteo,
   etiquetas,
@@ -15,6 +18,7 @@ import {
   modeloSubagente,
   nivelHeuristico,
   proponer,
+  terminaEnPregunta,
   textosRuta,
 } from '../hooks/modelo'
 
@@ -53,6 +57,32 @@ describe('leer el mensaje', () => {
     expect(nivelHeuristico('sí, dale', 'complejo')).toEqual({ nivel: 'complejo', seguro: true, motivo: 'seguimiento' })
     expect(nivelHeuristico('Implementalo', 'profundo').nivel).toBe('profundo')
     expect(nivelHeuristico('ok').nivel).toBe('normal')
+  })
+
+  test('un "gracias" cierra; un "ok" cierra si Claude no preguntó nada, y si preguntó es un sí', () => {
+    for (const t of ['Perfecto, gracias.', 'gracias', 'Muchas gracias!', 'no, gracias', 'thanks', 'great, thanks!', 'listo']) {
+      expect(nivelHeuristico(t, 'profundo')).toEqual({ nivel: 'trivial', seguro: true, motivo: 'cierre' })
+    }
+    // Claude preguntó "¿lo implemento?": el "ok" es un sí, con el nivel de la tarea.
+    expect(nivelHeuristico('ok', 'complejo', true)).toEqual({ nivel: 'complejo', seguro: true, motivo: 'seguimiento' })
+    expect(nivelHeuristico('Perfecto, gracias.', 'profundo', true).motivo).toBe('seguimiento')
+    // "Gracias" solo nunca pide trabajo, aunque Claude haya preguntado.
+    expect(nivelHeuristico('gracias', 'profundo', true).motivo).toBe('cierre')
+    // "Sí, gracias" y "dale" siguen con la tarea.
+    expect(nivelHeuristico('sí, gracias', 'complejo')).toEqual({ nivel: 'complejo', seguro: true, motivo: 'seguimiento' })
+    expect(nivelHeuristico('dale', 'complejo').nivel).toBe('complejo')
+    // Un "gracias" con un pedido detrás es el pedido.
+    expect(nivelHeuristico('Perfecto, gracias. Ahora renombra la variable foo a bar en utils', 'profundo').nivel).toBe('trivial')
+    expect(nivelHeuristico('Perfecto, gracias. Ahora renombra la variable foo a bar en utils', 'profundo').motivo).toBe('tarea-mecanica')
+  })
+
+  test('sabe si Claude terminó preguntando', () => {
+    expect(terminaEnPregunta('Listo, cambié el nombre. ¿Quieres que también actualice los tests?')).toBe(true)
+    expect(terminaEnPregunta('¿Cuál prefieres?\n\n1. Opción A\n2. Opción B')).toBe(true)
+    expect(terminaEnPregunta('Want me to run the tests?')).toBe(true)
+    expect(terminaEnPregunta('Ya está corregido. No ejecuté los tests.')).toBe(false)
+    // Un ? dentro de código o de un enlace no es una pregunta.
+    expect(terminaEnPregunta('Mira https://x.com/a?b=1 y `a ?? b`.\n```ts\nconst c = d ?? e\n```\nListo.')).toBe(false)
   })
 
   test('si lo anterior no funcionó, sube un nivel', () => {
@@ -119,12 +149,17 @@ describe('modelos y costos', () => {
     expect(decidirInterfaz('preguntar', p, false)).toBe('auto')
   })
 
-  test('mensaje simple con contexto grande: no cambia de modelo, solo baja el esfuerzo', () => {
-    const p = proponer({ nivel: 'trivial', modelo: 'claude-opus-5-5', esfuerzo: 'medium', contexto: 400_000, ttl1h: true, permitirModelo: true })
+  test('mensaje simple con contexto grande: no cambia de modelo, solo baja el esfuerzo (de medio a bajo da igual)', () => {
+    const p = proponer({ nivel: 'trivial', modelo: 'claude-opus-5-5', esfuerzo: 'max', contexto: 400_000, ttl1h: true, permitirModelo: true })
     expect(p.recomendada).toMatchObject({ modelo: 'claude-opus-5-5', esfuerzo: 'low', reescribe: 0 })
     // Ahorra sin tocar el caché: se aplica solo y avisa.
     expect(decidirInterfaz('preguntar', p, false)).toBe('auto')
     expect(decidirInterfaz('siempre', p, false)).toBe('preguntar')
+    // Desde medio, lo simple cuesta lo mismo en bajo: no hay nada que hacer, ni siquiera en "siempre".
+    const medio = proponer({ nivel: 'trivial', modelo: 'claude-opus-5-5', esfuerzo: 'medium', contexto: 400_000, ttl1h: true, permitirModelo: true })
+    expect(medio.recomendada).toMatchObject({ modelo: 'claude-opus-5-5', esfuerzo: 'low' })
+    expect(decidirInterfaz('preguntar', medio, false)).toBe('nada')
+    expect(decidirInterfaz('siempre', medio, false)).toBe('nada')
   })
 
   test('con Fable u otro modelo solo mueve el esfuerzo', () => {
@@ -138,11 +173,52 @@ describe('modelos y costos', () => {
     expect(decidirInterfaz('siempre', p, false)).toBe('nada')
   })
 
+  test('en lo simple, bajo y medio responden lo mismo (medido): bajar de medio a bajo da igual', () => {
+    const simple = (esfuerzo: 'low' | 'medium' | 'high') => costoMensaje({ familia: 'opus', esfuerzo, contexto: 35_000, pedidos: 2, cambiaModelo: false, ttl1h: true, nivel: 'trivial' }).usd
+    expect(simple('low')).toBe(simple('medium'))
+    expect(simple('high')).toBeGreaterThan(simple('medium'))
+    // Fuera de lo simple, la tabla de siempre.
+    const normal = costoMensaje({ familia: 'opus', esfuerzo: 'medium', contexto: 35_000, pedidos: 2, cambiaModelo: false, ttl1h: true, nivel: 'normal' })
+    expect(normal.usd).toBe(costoMensaje({ familia: 'opus', esfuerzo: 'medium', contexto: 35_000, pedidos: 2, cambiaModelo: false, ttl1h: true }).usd)
+    const p = proponer({ nivel: 'trivial', modelo: 'claude-opus-5-5', esfuerzo: 'medium', contexto: 35_000, ttl1h: true, permitirModelo: false })
+    const bajo = p.opciones.find(o => o.esfuerzo === 'low')
+    expect(bajo !== undefined && daIgual(bajo, p.actual)).toBe(true)
+    // Otro modelo nunca da igual: cambiar reescribe el caché.
+    expect(daIgual({ modelo: 'claude-sonnet-5-5', usd: p.actual.usd }, p.actual)).toBe(false)
+    // En lo normal, de medio a bajo sí ahorra.
+    const n = proponer({ nivel: 'normal', modelo: 'claude-opus-5-5', esfuerzo: 'medium', contexto: 35_000, ttl1h: true, permitirModelo: false })
+    const ahorro = n.opciones.find(o => o.tipo === 'ahorro')
+    expect(ahorro).toMatchObject({ modelo: 'claude-opus-5-5', esfuerzo: 'low' })
+    expect(ahorro !== undefined && daIgual(ahorro, n.actual)).toBe(false)
+  })
+
+  test('lo medido: cada pedido a precio de API, con las cifras que devolvió el modelo', () => {
+    // Dos pedidos del mundo de prueba en Opus: 4 de entrada, 58k leídos del caché, 1996 escritos, 400 de salida.
+    const u = { entrada: 4, leido: 58_000, escrito: 1_996, salida: 400 }
+    expect(Math.abs(costoMedido('opus', u, true) - 0.035584) < 1e-9).toBe(true)
+    // Con el caché de 5 min, escribir cuesta menos.
+    expect(Math.abs(costoMedido('opus', u, false) - 0.029596) < 1e-9).toBe(true)
+    expect(costoMedido('sonnet', u, true)).toBeLessThan(costoMedido('opus', u, true))
+  })
+
   test('callado: solo lo que ahorra sin tocar el caché', () => {
     const caro = proponer({ nivel: 'profundo', modelo: 'claude-opus-5-5', esfuerzo: 'medium', contexto: 40_000, ttl1h: true, permitirModelo: true })
     expect(decidirInterfaz('preguntar', caro, true)).toBe('nada')
-    const barato = proponer({ nivel: 'trivial', modelo: 'claude-opus-5-5', esfuerzo: 'medium', contexto: 400_000, ttl1h: true, permitirModelo: true })
+    const barato = proponer({ nivel: 'trivial', modelo: 'claude-opus-5-5', esfuerzo: 'max', contexto: 400_000, ttl1h: true, permitirModelo: true })
     expect(decidirInterfaz('preguntar', barato, true)).toBe('auto')
+    // Lo recomendado pasa a Sonnet y reescribe el caché: callado, al menos baja el esfuerzo en Opus.
+    const simple = proponer({ nivel: 'trivial', modelo: 'claude-opus-5-5', esfuerzo: 'high', contexto: 30_000, ttl1h: true, permitirModelo: true })
+    expect(simple.recomendada).toMatchObject({ modelo: 'claude-sonnet-5-5', reescribe: 30_000 })
+    expect(decidirInterfaz('preguntar', simple, true)).toBe('nada')
+    // Medio y bajo cuestan lo mismo en lo simple: a igual costo, el esfuerzo más bajo.
+    expect(ahorroSinCache(simple)).toMatchObject({ modelo: 'claude-opus-5-5', esfuerzo: 'low', reescribe: 0 })
+    // Desde medio no hay nada que bajar que ahorre.
+    const desdeMedio = proponer({ nivel: 'trivial', modelo: 'claude-opus-5-5', esfuerzo: 'medium', contexto: 30_000, ttl1h: true, permitirModelo: true })
+    expect(desdeMedio.recomendada.modelo).toBe('claude-sonnet-5-5')
+    expect(ahorroSinCache(desdeMedio)).toBe(undefined)
+    // Lo que cuesta más, o ya va en tu modelo, no tiene versión sin caché.
+    expect(ahorroSinCache(caro)).toBe(undefined)
+    expect(ahorroSinCache(barato)).toBe(undefined)
   })
 
   test('las etiquetas dicen el costo y la diferencia; la recomendada lleva ★', () => {
@@ -176,15 +252,28 @@ describe('modelos y costos', () => {
 
 type Visto = { turnId: string; model: string; effort?: string }
 
-function mundo(on: On, opciones: { respondeCon?: string; preguntas?: string[]; respuesta?: (etiquetas: string[]) => string } = {}): { vistos: Visto[]; toasts: string[] } {
+function mundo(
+  on: On,
+  opciones: { respondeCon?: string; preguntas?: string[]; respuesta?: (etiquetas: string[]) => string; archivos?: Map<string, string> } = {},
+): { vistos: Visto[]; toasts: string[] } {
   const vistos: Visto[] = []
   const toasts: string[] = []
+  // Sin `archivos`, la carpeta del proyecto está vacía y lo que se escribe se pierde.
+  // Las rutas llegan absolutas: `.claude/toki/…` se guarda con esa clave corta.
+  const archivos = opciones.archivos
+  const clave = (ruta: string) => (ruta.includes('/.claude/toki/') ? ruta.slice(ruta.indexOf('/.claude/toki/') + 1) : ruta)
   mock.store(on)
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
-  on('fs.exists', () => ({ value: false }))
-  on('fs.write', () => ({ value: undefined }))
-  on('fs.read', () => ({ deny: 'no existe' }))
+  on('fs.exists', ($, e) => ({ value: archivos?.has(clave(e.path)) ?? false }))
+  on('fs.write', ($, e) => {
+    archivos?.set(clave(e.path), e.text)
+    return { value: undefined }
+  })
+  on('fs.read', ($, e) => {
+    const t = archivos?.get(clave(e.path))
+    return t === undefined ? { deny: 'no existe' } : { value: t }
+  })
   on('fs.stat', () => ({ deny: 'no existe' }))
   on('fs.list', () => ({ value: [] }))
   on('ui.toast', ($, e) => {
@@ -231,22 +320,22 @@ function mundo(on: On, opciones: { respondeCon?: string; preguntas?: string[]; r
 
 type Motor = Parameters<TestBody>[0]
 
-async function mensaje($: Motor, turnId: string, texto: string, pedidos = 2): Promise<void> {
+async function mensaje($: Motor, turnId: string, texto: string, pedidos = 2, respuesta = 'Listo.', esfuerzo = 'medium'): Promise<void> {
   await $.prompt.submit({ text: texto, wait: false, origin: { kind: 'composer' } } as never)
-  await correr($, turnId, texto, pedidos)
+  await correr($, turnId, texto, pedidos, respuesta, esfuerzo)
 }
 
-/** El turno de un mensaje ya enviado: sus pedidos al modelo y el final. */
-async function correr($: Motor, turnId: string, texto: string, pedidos = 2): Promise<void> {
+/** El turno de un mensaje ya enviado: sus pedidos al modelo (con el esfuerzo de la sesión) y el final. */
+async function correr($: Motor, turnId: string, texto: string, pedidos = 2, respuesta = 'Listo.', esfuerzo = 'medium'): Promise<void> {
   await $.turn.start({ text: texto, turnId })
   for (let i = 0; i < pedidos; i++) {
-    const stream = $.turn.step({ turnId, index: i, model: 'claude-opus-5-5', effort: 'medium', messageCount: 10 + i })
+    const stream = $.turn.step({ turnId, index: i, model: 'claude-opus-5-5', effort: esfuerzo, messageCount: 10 + i } as never)
     for await (const _ of stream) {
       // Sin trozos.
     }
     await stream.result
   }
-  await $.turn.complete({ answer: 'Listo.', durationMs: 1000, isAborted: false, turnId, reason: 'answer' as const })
+  await $.turn.complete({ answer: respuesta, durationMs: 1000, isAborted: false, turnId, reason: 'answer' as const })
 }
 
 describe('modelo y esfuerzo con el motor', () => {
@@ -332,10 +421,57 @@ describe('modelo y esfuerzo con el motor', () => {
     const preguntas: string[] = []
     const { vistos } = mundo(on, { preguntas })
     await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    // La sesión va en alto: desde ahí, bajar el esfuerzo en lo simple sí ahorra.
+    await mensaje($, 't0', 'agrega un botón de exportar a CSV en la tabla de pacientes', 1, 'Listo.', 'high')
+    await mensaje($, 't1', 'ultrathink: diseña la arquitectura de la sincronización offline', 1, 'Listo.', 'high')
+    expect(preguntas.length).toBe(0)
+    expect(vistos.find(v => v.turnId === 't1')?.effort).toBe('high')
+    // Un "gracias" después de pensar a fondo no hereda lo profundo: es un cierre.
+    await mensaje($, 't2', 'Perfecto, gracias.', 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't2')).toEqual({ turnId: 't2', model: 'claude-opus-5-5', effort: 'low' })
+    // Lo simple pasaría a Sonnet, pero eso reescribe el caché: sin preguntar, solo baja el esfuerzo.
+    await mensaje($, 't3', 'renombra la variable foo a bar en utils', 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't3')).toEqual({ turnId: 't3', model: 'claude-opus-5-5', effort: 'low' })
+    const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
+    expect(estado.text).toContain('Último mensaje: simple (tarea mecánica) · Opus · alto → Opus · bajo')
+    expect(estado.text).toContain('· aplicado')
+    expect(preguntas.length).toBe(0)
+  })
+
+  test('un "gracias" no es una tarea: no hereda lo profundo ni cambia de modelo, y el "dale" de después sigue con la tarea', { options: { recomendarModelo: 'automatico' } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const { vistos } = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
     await mensaje($, 't0', 'agrega un botón de exportar a CSV en la tabla de pacientes', 1)
     await mensaje($, 't1', 'ultrathink: diseña la arquitectura de la sincronización offline', 1)
+    expect(vistos.find(v => v.turnId === 't1')?.effort).toBe('max')
+    // En automático, lo simple pasaría a Sonnet; un cierre no, porque no se sabe qué viene.
+    // Y de medio a bajo cuesta lo mismo: se queda como va.
+    await mensaje($, 't2', 'Perfecto, gracias.', 1)
+    expect(vistos.find(v => v.turnId === 't2')).toEqual({ turnId: 't2', model: 'claude-opus-5-5', effort: 'medium' })
+    await mensaje($, 't3', 'dale', 1)
+    expect(vistos.find(v => v.turnId === 't3')).toEqual({ turnId: 't3', model: 'claude-opus-5-5', effort: 'max' })
+    // Si Claude preguntó algo, el "ok" es un sí: sigue la tarea con su nivel.
+    await mensaje($, 't4', 'piensa a fondo cómo migrar la base de datos sin downtime', 1, 'Este es el plan, en cinco pasos. ¿Lo implemento?')
+    await mensaje($, 't5', 'ok', 1)
+    expect(vistos.find(v => v.turnId === 't5')?.effort).toBe('max')
+  })
+
+  test('lo que casi no cambia el costo no se toca ni se cuenta como ahorro', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const preguntas: string[] = []
+    const { vistos, toasts } = mundo(on, { preguntas })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'agrega un botón de exportar a CSV en la tabla de pacientes', 1)
+    await mensaje($, 't1', 'Perfecto, gracias.', 1)
+    expect(vistos.find(v => v.turnId === 't1')).toEqual({ turnId: 't1', model: 'claude-opus-5-5', effort: 'medium' })
     expect(preguntas.length).toBe(0)
-    expect(vistos.find(v => v.turnId === 't1')?.effort).toBe('medium')
+    expect(toasts.some(t => t.includes('Opus · bajo'))).toBe(false)
+    const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
+    expect(estado.text).toContain('· sin cambio (casi no cambia el costo)')
+    expect(estado.text.includes('Ahorro por mandar')).toBe(false)
+    const en = textosRuta.en.decision['da-igual']
+    expect(en).toBe('no change (it barely changes the cost)')
   })
 
   test('/toki-modelo no apaga todo; /toki-modelo automatico lo vuelve a prender', async ($, on) => {
@@ -524,6 +660,36 @@ describe('solo Sonnet hasta que haga falta', () => {
     expect(otra.text).toContain('cuando el mensaje sea simple')
     const ya = (await $.command.run({ command: 'toki-modelo', args: 'deshacer' } as never)) as { text: string }
     expect(ya.text).toContain('no hay ningún cambio')
+  })
+
+  test('el diagnóstico sigue entre sesiones: cada decisión, lo deshecho y las correcciones, sin tu texto', { options: { sonnetPrimero: true } }, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const DIAG = '.claude/toki/diagnostico.txt'
+    const archivos = new Map([[DIAG, '2026-10-21T10:00:00.000Z inicio 0.16.1: de la sesión de ayer\n']])
+    const { vistos } = mundo(on, { archivos })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1)
+    expect(vistos.find(v => v.turnId === 't0')?.model).toBe(SONNET)
+    await $.command.run({ command: 'toki-modelo', args: 'deshacer' } as never)
+    await mensaje($, 't1', 'no funcionó, sigue igual', 1)
+    // Las escrituras van en fila: se espera a que terminen.
+    await reloj.settle()
+    const diag = archivos.get(DIAG) ?? ''
+    expect(diag.startsWith('2026-10-21T10:00:00.000Z inicio 0.16.1: de la sesión de ayer\n')).toBe(true)
+    expect(diag).toMatch(/Z inicio \d+\.\d+\.\d+: superficie=/)
+    expect(diag).toMatch(/ruta: normal \(.+\) claude-opus-5-5\/medium → claude-sonnet-5-5\//)
+    expect(diag).toMatch(/ruta deshecha: claude-sonnet-5-5\/\w+ → claude-opus-5-5\/medium \(normal\)/)
+    expect(diag).toMatch(/ruta: .+ · corrige el anterior\n/)
+    // Lo que de verdad usó cada mensaje, junto a lo que Toki estimó: solo cifras.
+    // En la API (sin límites de suscripción) el caché dura 5 min; el primer mensaje lo encuentra frío.
+    expect(diag).toContain(' uso: normal claude-sonnet-5-5/medium · 1 pedido · entrada 2 · salida 200 · caché escrito 998 · leído 29000 · $0.0074 · Toki estimó $0.0680 (4 pedidos, contexto 35k, caché 5 min, frío)\n')
+    // Lo complejo va en Opus. Lo estimado (9 pedidos) contra lo real (1) es lo que sirve para calibrar.
+    expect(diag).toContain(' uso: complejo claude-opus-5-5/xhigh · 1 pedido · entrada 2 · salida 200 · caché escrito 998 · leído 29000 · $0.0148 · Toki estimó $0.5580 (9 pedidos, contexto 35k, caché 5 min)\n')
+    expect((diag.match(/ uso: /g) ?? []).length).toBe(2)
+    // La ventana se recalcula en cada mensaje mientras no hay datos: al registro llega una vez.
+    expect((diag.match(/ ventana: /g) ?? []).length <= 1).toBe(true)
+    expect(diag).not.toContain('exportar a CSV')
+    expect(diag).not.toContain('sigue igual')
   })
 
   test('deshacer antes de que empiece el mensaje: va con tu modelo y su cuenta vuelve atrás', { options: { sonnetPrimero: true } }, async ($, on) => {

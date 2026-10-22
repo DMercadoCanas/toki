@@ -8,7 +8,7 @@
 
 Habla español e inglés. No agrega ni un token fijo a tu contexto.
 
-> Versión 0.16.1. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+> Versión 0.16.2. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
 ## Instalación
 
@@ -36,6 +36,8 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 - **`/toki-semana md`** guarda la tarjeta en Markdown en `.claude/toki/semana-AAAA-MM-DD.md`, lista para pegar en un documento o mandar al equipo. La carpeta se ignora sola en git. Con la semana anterior: `/toki-semana pasada md`.
 - **El aviso del lunes** lleva la nota y dice cómo ver la tarjeta: `/toki-semana pasada`.
 - **0.16.1: palabras con tilde y ñ.** Toki leía mal algunas: «no funcionó» no contaba como que seguías atascado (y el mensaje podía ir a un modelo más barato justo ahí), «área» contaba como pedir que pensara a fondo y «un pequeño sistema» no contaba como proyecto nuevo. Ahora reconoce cualquier letra. Y `/toki-sonnet actívalo` o `apágalo`, como dice su ayuda, ya funcionan.
+- **0.16.2: un registro para afinar a Toki.** `.claude/toki/diagnostico.txt` ahora sigue entre sesiones (las últimas 1000 líneas, varios días de uso). Anota cada decisión de modelo y esfuerzo, lo que deshiciste, qué mensajes corregían el anterior y, de cada mensaje, lo que gastó de verdad junto a lo que Toki estimó. Nunca guarda el texto de tus mensajes: solo el tipo de mensaje, el porqué, el cambio y las cifras. Sirve para ajustar los umbrales con uso real. Queda en la carpeta del proyecto, que git ignora sola.
+- **0.16.2: lo que se midió en una sesión real.** En un mensaje simple, bajar el esfuerzo de medio a bajo no ahorra: la respuesta sale del mismo tamaño. Toki ya no lo cambia ni lo cuenta como ahorro; `/toki-modelo` dice «sin cambio (casi no cambia el costo)». Lo que más pesa es cuántas veces se relee el contexto: cada vez que Claude usa una herramienta. Además, un «gracias» después de pensar a fondo ya no hereda lo profundo ni cambia de modelo. Y cuando Toki no puede preguntar (`claude -p`, o porque lo callaste) y lo recomendado reescribiría el caché, al menos baja el esfuerzo en tu modelo, si eso ahorra.
 
 ## Lo nuevo en 0.15
 
@@ -110,9 +112,9 @@ Se apaga con la opción "Textos pegados enormes". En `claude -p` no pregunta ni 
 - **Cuándo pregunta y cuándo cambia solo.** Por defecto pregunta solo si la opción cuesta más o si cambiar el modelo reescribiría más de 30k tokens de caché. Si la opción ahorra, la aplica sola.
 - **Te avisa cuando cambia algo.** Si Toki cambia algo, la barra parpadea, suena una campanita y aparece "⚡ Este mensaje va con Sonnet · esfuerzo bajo". El botón **Deshacer** vuelve a lo de antes.
 - **Respeta tus decisiones.** Si eliges "Dejar como está", Toki recuerda tu elección para ese tipo de mensaje. Si la eliges 3 veces, deja de preguntar en esa sesión.
-- **Cambia entre Opus y Sonnet solo cuando conviene.** Cambiar de modelo obliga a reescribir el caché una vez. Toki solo cambia cuando la conversación es chica o el caché ya está frío (sesión nueva, después de `/clear` o de compactar, o caché vencido). Cambiar el esfuerzo no toca el caché, así que eso lo ajusta siempre.
+- **Cambia entre Opus y Sonnet solo cuando conviene.** Cambiar de modelo obliga a reescribir el caché una vez. Toki solo cambia cuando la conversación es chica o el caché ya está frío (sesión nueva, después de `/clear` o de compactar, o caché vencido). Cambiar el esfuerzo no toca el caché, así que eso lo ajusta siempre que cambie el costo.
 - **Subagentes con Sonnet.** Si trabajas con Opus, los subagentes de propósito general con encargos sencillos van con Sonnet. Los que tienen su propio modelo (Explore suele usar Haiku) no se tocan.
-- **Para comprobar que funciona:** después de cualquier mensaje, `/toki-modelo` muestra la línea «Último mensaje: complejo (…) · Opus · máximo → Opus · alto (−40%) · aplicado», aunque no haya cambiado nada. Mientras un mensaje va con otro modelo o esfuerzo, la barra lo dice: «Opus · alto · por Toki». Y `.claude/toki/diagnostico.txt` guarda una línea `ruta:` por mensaje.
+- **Para comprobar que funciona:** después de cualquier mensaje, `/toki-modelo` muestra la línea «Último mensaje: complejo (…) · Opus · máximo → Opus · alto (−40%) · aplicado», aunque no haya cambiado nada. Mientras un mensaje va con otro modelo o esfuerzo, la barra lo dice: «Opus · alto · por Toki». Y `.claude/toki/diagnostico.txt` guarda por mensaje una línea `ruta:` (lo que decidió) y otra `uso:` (lo que gastó).
 - **`/toki-modelo`** muestra lo que decidió en la sesión y cambia el modo:
   - `preguntar`: el de siempre.
   - `siempre`: pregunta cada vez.
@@ -120,7 +122,7 @@ Se apaga con la opción "Textos pegados enormes". En `claude -p` no pregunta ni 
   - `no`: apagado.
 
   También se cambia en la configuración, en **Modelo y esfuerzo por mensaje**.
-- **Seguro si algo no calza.** Si tu cuenta no tiene acceso al modelo que Toki eligió y la API responde con otro, Toki lo nota, deja de cambiar el modelo y te avisa. En `claude -p` no puede preguntar: solo aplica los cambios que ahorran.
+- **Seguro si algo no calza.** Si tu cuenta no tiene acceso al modelo que Toki eligió y la API responde con otro, Toki lo nota, deja de cambiar el modelo y te avisa. En `claude -p` no puede preguntar: solo aplica lo que no cuesta más ni reescribe el caché. Si lo recomendado lo reescribiría, al menos baja el esfuerzo en tu modelo, si eso ahorra.
 
 Medido con `claude -p` y Opus 5.5 de modelo:
 
@@ -290,6 +292,8 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **Sonnet first, Opus when needed (0.15).** Turn it on with `/toki-sonnet on` or in the settings. Toki works on Sonnet (half the price of Opus) and moves up to Opus only when you ask for deep thinking or something keeps failing, then comes back. It switches when the switch is free (at the start, or with a cold cache) or pays for itself; moving up asks first in `preguntar` mode. Picking a model with `/model` pauses it for the session. `/toki-modelo undo` reverts the last model or effort change, and Toki won't repeat it for that kind of message. Model savings now count every message that stays on the cheaper model, against what it would cost without Toki.
 - **Weekly grade and Markdown export (0.16).** The weekly card now has an A–F grade made of three parts, each with its reason: context (half the grade: requests past 150k), clarity (messages that correct the one before) and cache (coming back to an expired cache with a big context). The closing tip targets the weakest part. The card also shows what per-message model and effort choices saved, how many of your messages each model answered, corrections with and without questions first, and the tips Toki gave. `/toki-semana md` saves the card as Markdown under `.claude/toki/` (`/toki-semana last md` for last week). The Monday notice carries the grade and points to `/toki-semana last`.
 - **Accented words (0.16.1).** Toki misread some Spanish words with accents or ñ: «no funcionó» (it didn't work) didn't count as being stuck, so the message could go to a cheaper model right then; «área» counted as asking to think hard; and «un pequeño sistema» didn't count as a new project. It now handles any letter. `/toki-sonnet actívalo` and `apágalo`, as its help says, now work too.
+- **Decision log (0.16.2).** `.claude/toki/diagnostico.txt` now carries over between sessions (the last 1,000 lines, a few days of use). It records each model and effort decision, what you undid, which messages corrected the one before, and what each message really used next to what Toki estimated. It never stores what you wrote: only the kind of message, the reason, the change and the numbers. It's there to tune Toki's thresholds with real use. It stays in the project folder, which git ignores on its own.
+- **Measured in a real session (0.16.2).** On a simple message, going from medium to low effort saves nothing: the answer comes out the same size. Toki no longer changes it or counts it as savings; `/toki-modelo` says "no change (it barely changes the cost)". What weighs most is how often the context is reread: every time Claude uses a tool. A "thanks" after deep thinking no longer inherits the deep level or switches models. And when Toki can't ask (`claude -p`, or you silenced it) and the pick would rewrite the cache, it at least lowers the effort on your model, if that saves.
 - Measured with `claude plugin eval` on Opus: a mechanical rename cost **55% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 

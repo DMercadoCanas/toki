@@ -55,13 +55,19 @@ const COMPLEJO =
   conAcentos(/\b(arquitectura|architect\w*|diseñ[aeo]\w*|design\w*|refactori[zc]\w*|refactor\w*|migra(r|ción|cion|te|tion)\w*|causa ra[ií]z|root cause|por qu[eé] (falla|no funciona|se rompe|pasa)|why (does|is|doesn'?t|isn'?t)|investig\w*|debug\w*|depur\w*|seguridad|security|vulnerab\w*|trade-?offs?|compar[ae]\w*|optimi[zs]\w*|rendimiento|performance|concurren\w*|race condition|en todo el (proyecto|repo|c[oó]digo|sistema)|across the (codebase|repo|project)|end[- ]to[- ]end|estrategia|strategy|planifica\w*|integraci[oó]n|integrat\w*|escalab\w*|recom(ie|e)nd\w*|flujo|workflow|automati[zc]\w*|mejor (manera|forma|pr[aá]ctica|opci[oó]n)|best (way|practice|option|approach)|c[oó]mo (deber[ií]a|conviene|se debe)|how should)\b/i)
 const TRIVIAL =
   conAcentos(/\b(renombra\w*|rename\w*|typo|errata|formatea\w*|reformat\w*|corre (los |las )?(tests?|pruebas)|run (the )?tests|git (status|add|commit|push|pull|log|diff|stash)|haz (el |un )?commit|commitea|haz push|lint\w*|instala\w*|install\w*|bump|cambia (el|la|este|esta) (texto|nombre|color|t[ií]tulo|label|etiqueta)|qu[eé] hora|lista (los )?archivos|list (the )?files|traduce|translate|corrige (la )?ortograf[ií]a|fix (the )?typo)\b/i)
+/** "Sí", "dale", "sigue": la tarea de antes, con el nivel de antes. */
 const SEGUIMIENTO =
-  conAcentos(/^(s[ií]|si,?|no|ok(ay)?|vale|dale|listo|gracias|perfecto|bien|genial|sigue|contin[uú]a|adelante|hazlo|h[aá]galo|implem[eé]ntalo|procede|go( ahead)?|yes|yep|sure|thanks|lgtm|ship it|do it|continue|proceed|next)\b[\s.!,]*(por favor|please|gracias)?[\s.!]*$/i)
+  conAcentos(/^(s[ií]|si,?|no|dale|sigue|contin[uú]a|adelante|hazlo|h[aá]galo|implem[eé]ntalo|procede|go( ahead)?|yes|yep|sure|ship it|do it|continue|proceed|next)\b[\s.!,]*(por favor|please|gracias|thanks)?[\s.!]*$/i)
+/** "Gracias", "no, gracias": cierra, no pide nada. */
+const GRACIAS = conAcentos(/^(no[\s,.!]+)?(muchas |mil )?(gracias|thanks|thank you|thx|ty)( (por todo|so much|a lot))?[\s.!]*$/i)
+/** "Ok", "perfecto": un sí si Claude te preguntó algo; si no, un cierre. */
+const ACUSE =
+  conAcentos(/^(ok(ay)?|vale|listo|perfecto|bien|muy bien|genial|excelente|entendido|de acuerdo|great|perfect|nice|cool|awesome|got it|understood|lgtm|looks good)\b[\s.!,]*((muchas |mil )?gracias|thanks|thank you)?[\s.!]*$/i)
 const ATASCO =
   conAcentos(/\b((sigue|todav[ií]a|a[uú]n) (falla\w*|sin funcionar|no funciona|roto|igual)|otra vez (falla|el mismo error|lo mismo)|no (sirvi[oó]|funcion[oó]|arregl[oó])|still (fail\w*|broken|not working|the same)|didn'?t (work|fix)|same error)\b/i)
 
 export type Lectura = { nivel: Nivel; seguro: boolean; motivo: Motivo }
-export type Motivo = 'pide-pensar' | 'tarea-compleja' | 'mensaje-largo' | 'tarea-mecanica' | 'mensaje-corto' | 'seguimiento' | 'atascado' | 'tarea-normal' | 'clasificador'
+export type Motivo = 'pide-pensar' | 'tarea-compleja' | 'mensaje-largo' | 'tarea-mecanica' | 'mensaje-corto' | 'seguimiento' | 'cierre' | 'atascado' | 'tarea-normal' | 'clasificador'
 
 function subir(n: Nivel): Nivel {
   return NIVELES[Math.min(NIVELES.length - 1, NIVELES.indexOf(n) + 1)] ?? n
@@ -73,13 +79,16 @@ function mayor(a: Nivel, b: Nivel): Nivel {
 
 /**
  * Lo que el mensaje pide, sin gastar un token. `seguro: false` es la zona
- * dudosa: ahí vale preguntarle a Haiku.
+ * dudosa: ahí vale preguntarle a Haiku. `previo`: el nivel de la tarea en curso.
+ * `preguntoAntes`: la respuesta anterior de Claude terminaba con una pregunta.
  */
-export function nivelHeuristico(textoCrudo: string, previo?: Nivel): Lectura {
+export function nivelHeuristico(textoCrudo: string, previo?: Nivel, preguntoAntes = false): Lectura {
   const texto = limpiarPrompt(textoCrudo)
   const palabras = texto === '' ? 0 : texto.split(' ').length
-  // "sí", "dale", "sigue": es la tarea de antes, con el nivel de antes.
-  if (SEGUIMIENTO.test(texto) || (palabras > 0 && palabras <= 3 && !texto.includes('?') && !COMPLEJO.test(texto) && !PROFUNDO.test(texto) && !TRIVIAL.test(texto) && !ATASCO.test(texto))) {
+  // "Gracias", o un "perfecto" cuando Claude no preguntó nada: cierra, no pide trabajo.
+  if (GRACIAS.test(texto) || (ACUSE.test(texto) && previo !== undefined && !preguntoAntes)) return { nivel: 'trivial', seguro: true, motivo: 'cierre' }
+  // "sí", "dale", "sigue", o un "ok" a lo que Claude preguntó: es la tarea de antes, con el nivel de antes.
+  if (SEGUIMIENTO.test(texto) || ACUSE.test(texto) || (palabras > 0 && palabras <= 3 && !texto.includes('?') && !COMPLEJO.test(texto) && !PROFUNDO.test(texto) && !TRIVIAL.test(texto) && !ATASCO.test(texto))) {
     return { nivel: previo ?? 'normal', seguro: true, motivo: 'seguimiento' }
   }
   if (ATASCO.test(texto)) return { nivel: subir(mayor(previo ?? 'normal', 'normal')), seguro: true, motivo: 'atascado' }
@@ -97,6 +106,17 @@ export function nivelHeuristico(textoCrudo: string, previo?: Nivel): Lectura {
   if (puntos === -1) return { nivel: 'trivial', seguro: false, motivo: 'mensaje-corto' }
   if (puntos === 2) return { nivel: 'complejo', seguro: false, motivo: 'tarea-compleja' }
   return { nivel: 'normal', seguro: palabras >= 6 && palabras <= 120, motivo: 'tarea-normal' }
+}
+
+/** ¿La respuesta termina preguntándote algo? Entonces un "ok" responde a eso: no es un cierre. */
+export function terminaEnPregunta(respuesta: string): boolean {
+  const final = respuesta
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .trimEnd()
+    .slice(-500)
+  return /[?¿]/.test(final)
 }
 
 /** Las etiquetas que se le dan a Haiku (en inglés lo entiende mejor) y su nivel. */
@@ -139,6 +159,13 @@ export function precio(f: Familia, contexto: number): Precio {
 
 /** Tokens de salida (respuesta + razonamiento) por pedido, según el esfuerzo. Aproximado. */
 export const SALIDA_POR_PEDIDO: Record<Esfuerzo, number> = { low: 250, medium: 600, high: 1_200, xhigh: 2_000, max: 3_200 }
+/**
+ * Lo mismo en un mensaje simple. Medido en una sesión real (octubre 2026): en
+ * tareas mecánicas, bajo y medio responden lo mismo (~150 por pedido), así que
+ * bajar de medio a bajo no ahorra nada. De alto para arriba no está medido: un
+ * cuarto de la tabla de arriba.
+ */
+export const SALIDA_SIMPLE: Record<Esfuerzo, number> = { low: 150, medium: 150, high: 300, xhigh: 500, max: 800 }
 /** Pedidos al modelo por mensaje (cada herramienta es otro pedido). Aproximado. */
 export const PEDIDOS_POR_NIVEL: Record<Nivel, number> = { trivial: 2, normal: 4, complejo: 9, profundo: 12 }
 /** Lo que crece la conversación por pedido (resultados de herramientas, respuestas). */
@@ -146,15 +173,25 @@ const CRECE_POR_PEDIDO = 3_000
 
 export type Costo = { usd: number; reescribe: number }
 
-/** Lo que costaría el mensaje: releer la conversación en cada pedido, escribir lo nuevo, responder, y reescribir el caché si cambia el modelo. */
-export function costoMensaje(a: { familia: Familia; esfuerzo: Esfuerzo; contexto: number; pedidos: number; cambiaModelo: boolean; ttl1h: boolean }): Costo {
+/**
+ * Lo que costaría el mensaje: releer la conversación en cada pedido, escribir lo
+ * nuevo, responder, y reescribir el caché si cambia el modelo. Con `nivel`, un
+ * mensaje simple usa lo medido para mensajes simples.
+ */
+export function costoMensaje(a: { familia: Familia; esfuerzo: Esfuerzo; contexto: number; pedidos: number; cambiaModelo: boolean; ttl1h: boolean; nivel?: Nivel }): Costo {
   const p = precio(a.familia, a.contexto)
   const escritura = a.ttl1h ? p.escritura1h : p.escritura5m
   const relectura = a.pedidos * a.contexto * p.lectura
   const nuevo = a.pedidos * CRECE_POR_PEDIDO * escritura
-  const salida = a.pedidos * SALIDA_POR_PEDIDO[a.esfuerzo] * p.salida
+  const salida = a.pedidos * (a.nivel === 'trivial' ? SALIDA_SIMPLE : SALIDA_POR_PEDIDO)[a.esfuerzo] * p.salida
   const reescribe = a.cambiaModelo ? a.contexto : 0
   return { usd: (relectura + nuevo + salida + reescribe * escritura) / 1_000_000, reescribe }
+}
+
+/** Lo que costó de verdad un pedido a precio de API, con las cifras que devolvió el modelo. */
+export function costoMedido(familia: Familia, u: { entrada: number; leido: number; escrito: number; salida: number }, ttl1h: boolean): number {
+  const p = precio(familia, u.entrada + u.leido + u.escrito)
+  return (u.entrada * p.entrada + u.leido * p.lectura + u.escrito * (ttl1h ? p.escritura1h : p.escritura5m) + u.salida * p.salida) / 1_000_000
 }
 
 // ---------- Opciones ----------
@@ -220,7 +257,7 @@ export function proponer(a: {
   const bajo = puedeCambiar ? (hermano(a.modelo, 'sonnet') as string) : a.modelo
   const opcion = (tipo: TipoOpcion, modelo: string, esfuerzo: Esfuerzo): Opcion => {
     const familia = familiaDe(modelo) ?? fam ?? 'opus'
-    const base = { familia, esfuerzo, contexto: a.contexto, pedidos, ttl1h: a.ttl1h }
+    const base = { familia, esfuerzo, contexto: a.contexto, pedidos, ttl1h: a.ttl1h, nivel: a.nivel }
     const ya = costoMensaje({ ...base, cambiaModelo: false })
     const con = modelo !== a.modelo && a.cacheFrio !== true ? costoMensaje({ ...base, cambiaModelo: true }) : ya
     return { tipo, modelo, esfuerzo, usd: ya.usd, cambio: con.usd - ya.usd, reescribe: con.reescribe }
@@ -254,8 +291,19 @@ export function igual(a: Pick<Opcion, 'modelo' | 'esfuerzo'>, b: Pick<Opcion, 'm
 }
 
 /** Cuánto más (o menos) que como va ahora, en %. */
-export function diferencia(o: Opcion, actual: Opcion): number {
+export function diferencia(o: Pick<Opcion, 'usd'>, actual: Pick<Opcion, 'usd'>): number {
   return actual.usd > 0 ? Math.round((o.usd / actual.usd - 1) * 100) : 0
+}
+
+/** Menos que esto (en %) es "igual": la estimación no da para tanto. */
+export const DIFERENCIA_QUE_IMPORTA = 5
+
+/**
+ * En el mismo modelo, cambiar el esfuerzo casi no mueve el costo (bajar de medio
+ * a bajo en un mensaje simple, por ejemplo): Toki no lo toca ni lo cuenta como ahorro.
+ */
+export function daIgual(o: Pick<Opcion, 'modelo' | 'usd'>, actual: Pick<Opcion, 'modelo' | 'usd'>): boolean {
+  return o.modelo === actual.modelo && Math.abs(diferencia(o, actual)) < DIFERENCIA_QUE_IMPORTA
 }
 
 /**
@@ -273,7 +321,7 @@ export function deltaRuteo(elegida: Pick<Opcion, 'usd' | 'cambio'>, actual: Pick
  * también en los que siguen en el modelo que eligió.
  */
 export function costoSinToki(a: { nivel: Nivel; modelo: string; esfuerzo: Esfuerzo; contexto: number; ttl1h: boolean }): Pick<Opcion, 'usd'> {
-  return costoMensaje({ familia: familiaDe(a.modelo) ?? 'opus', esfuerzo: a.esfuerzo, contexto: a.contexto, pedidos: PEDIDOS_POR_NIVEL[a.nivel], cambiaModelo: false, ttl1h: a.ttl1h })
+  return costoMensaje({ familia: familiaDe(a.modelo) ?? 'opus', esfuerzo: a.esfuerzo, contexto: a.contexto, pedidos: PEDIDOS_POR_NIVEL[a.nivel], cambiaModelo: false, ttl1h: a.ttl1h, nivel: a.nivel })
 }
 
 /** Reescribir más que esto ya se nota: Toki pregunta antes. */
@@ -284,7 +332,7 @@ export const REESCRITURA_QUE_PREGUNTA = 30_000
  * `preguntar`: pregunta cuando la recomendada cuesta más o reescribe el caché; si ahorra, la aplica y avisa.
  */
 export function decidirInterfaz(modo: ModoRuta, p: Propuesta, silenciado: boolean, base?: string): 'nada' | 'auto' | 'preguntar' {
-  if (modo === 'no' || igual(p.recomendada, p.actual)) return 'nada'
+  if (modo === 'no' || igual(p.recomendada, p.actual) || daIgual(p.recomendada, p.actual)) return 'nada'
   const masCara = p.recomendada.usd > p.actual.usd * 1.15
   const reescribe = p.recomendada.reescribe >= REESCRITURA_QUE_PREGUNTA
   if (modo === 'automatico') return 'auto'
@@ -295,6 +343,19 @@ export function decidirInterfaz(modo: ModoRuta, p: Propuesta, silenciado: boolea
   if (silenciado) return !masCara && !reescribe ? 'auto' : 'nada'
   if (modo === 'siempre') return 'preguntar'
   return masCara || reescribe ? 'preguntar' : 'auto'
+}
+
+/**
+ * Callado o sin nadie a quien preguntar: si lo recomendado ahorra pero cambia de
+ * modelo (y reescribe el caché), lo más barato en el modelo de ahora, que solo
+ * baja el esfuerzo. `undefined` si no hay nada así que ahorre (o si ahorra tan
+ * poco que da igual). A igual costo, el esfuerzo más bajo.
+ */
+export function ahorroSinCache(p: Propuesta): Opcion | undefined {
+  if (p.recomendada.modelo === p.actual.modelo || p.recomendada.usd >= p.actual.usd) return undefined
+  return p.opciones
+    .filter(o => o.modelo === p.actual.modelo && o.usd < p.actual.usd && !daIgual(o, p.actual))
+    .sort((a, b) => a.usd - b.usd || ESFUERZOS.indexOf(a.esfuerzo) - ESFUERZOS.indexOf(b.esfuerzo))[0]
 }
 
 /**
@@ -357,7 +418,7 @@ export type TextosRuta = {
 }
 
 /** Lo que Toki hizo con el último mensaje (se ve en /toki-modelo). */
-export type Decision = 'ya-va-asi' | 'callado' | 'deshecho' | 'auto' | 'preguntar'
+export type Decision = 'ya-va-asi' | 'da-igual' | 'callado' | 'deshecho' | 'auto' | 'preguntar'
 
 export type TextosSonnet = {
   titulo: string
@@ -385,6 +446,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
       'tarea-mecanica': 'tarea mecánica',
       'mensaje-corto': 'mensaje corto',
       seguimiento: 'sigue la tarea anterior',
+      cierre: 'cierras o agradeces',
       atascado: 'lo anterior no funcionó',
       'tarea-normal': 'tarea normal',
       clasificador: 'según Haiku',
@@ -421,7 +483,14 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     porModelo: 'por modelo',
     balance: (a, e, s) =>
       `Ahorro por mandar mensajes a algo más barato: ${aprox(a)} estimado a precio de API${s ? ' (con suscripción no es dinero: es límite que no gastas)' : ''}${e ? ` · gasto extra que aprobaste: ${aprox(e)}` : ''}`,
-    decision: { 'ya-va-asi': 'ya iba así', callado: 'sin cambio (no lo aplico sin preguntar)', deshecho: 'sin cambio (lo deshiciste antes)', auto: 'aplicado', preguntar: 'te pregunté' },
+    decision: {
+      'ya-va-asi': 'ya iba así',
+      'da-igual': 'sin cambio (casi no cambia el costo)',
+      callado: 'sin cambio (no lo aplico sin preguntar)',
+      deshecho: 'sin cambio (lo deshiciste antes)',
+      auto: 'aplicado',
+      preguntar: 'te pregunté',
+    },
     deshacerHecho: (m, e, n) => `Toki: deshecho. Vuelves a ${m} · ${e}, y no lo repito en esta sesión cuando el mensaje sea ${n}.`,
     nadaQueDeshacer: 'Toki: no hay ningún cambio de modelo o esfuerzo que deshacer.',
     sonnet: {
@@ -450,6 +519,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
       'tarea-mecanica': 'mechanical task',
       'mensaje-corto': 'short message',
       seguimiento: 'continues the previous task',
+      cierre: 'a thank-you or wrap-up',
       atascado: 'the last attempt did not work',
       'tarea-normal': 'routine task',
       clasificador: 'per Haiku',
@@ -486,7 +556,14 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     porModelo: 'by model',
     balance: (a, e, s) =>
       `Saved by sending messages to something cheaper: ${aprox(a)} estimated at API prices${s ? ' (on a subscription it is not money: it is limit you keep)' : ''}${e ? ` · extra cost you approved: ${aprox(e)}` : ''}`,
-    decision: { 'ya-va-asi': 'already on it', callado: 'no change (not applied without asking)', deshecho: 'no change (you undid it before)', auto: 'applied', preguntar: 'asked you' },
+    decision: {
+      'ya-va-asi': 'already on it',
+      'da-igual': 'no change (it barely changes the cost)',
+      callado: 'no change (not applied without asking)',
+      deshecho: 'no change (you undid it before)',
+      auto: 'applied',
+      preguntar: 'asked you',
+    },
     deshacerHecho: (m, e, n) => `Toki: undone. Back to ${m} · ${e}, and I won't repeat it this session for messages like this one (${n}).`,
     nadaQueDeshacer: 'Toki: there is no model or effort change to undo.',
     sonnet: {
@@ -517,7 +594,7 @@ export function aprox(monto: string): string {
 }
 
 export function textoDiferencia(dif: number, x: TextosRuta): string {
-  if (Math.abs(dif) < 5) return x.igual
+  if (Math.abs(dif) < DIFERENCIA_QUE_IMPORTA) return x.igual
   return dif > 0 ? `+${dif}%` : `−${Math.abs(dif)}%`
 }
 

@@ -116,6 +116,16 @@ export function logrosNuevos(ya: readonly string[], c: Cifras): Logro[] {
   return LOGROS.filter(l => cumple[l] && !ya.includes(l))
 }
 
+/** Líneas que guarda `.claude/toki/diagnostico.txt` entre sesiones: varios días de decisiones, para revisar y calibrar a Toki. */
+export const LINEAS_DIAGNOSTICO = 1000
+
+/** Agrega una línea al registro (siempre en una sola línea) y deja solo las últimas `max`. */
+export function agregarAlRegistro(previo: string, linea: string, max = LINEAS_DIAGNOSTICO): string {
+  const lineas = previo.split('\n').filter(l => l.trim() !== '')
+  lineas.push(linea.replace(/\s*[\r\n]+\s*/g, ' ').trim())
+  return `${lineas.slice(-max).join('\n')}\n`
+}
+
 export function nombreModelo(id: string): string {
   const m = id.toLowerCase()
   if (m.includes('opus')) return 'Opus'

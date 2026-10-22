@@ -28,7 +28,7 @@ import {
   tokensAprox,
 } from './compresor'
 import type { Compactado } from './compresor'
-import { agregarLeccion, filasGrafica, fusionarHistorial, leccionCambioModelo, LOGROS, logrosNuevos, nombreModelo, racha, sumarAlDia, totalDesde } from './historial'
+import { agregarAlRegistro, agregarLeccion, filasGrafica, fusionarHistorial, leccionCambioModelo, LOGROS, logrosNuevos, nombreModelo, racha, sumarAlDia, totalDesde } from './historial'
 import type { Historial, Leccion, Logro } from './historial'
 import { detectarIdioma, idiomaDeTexto, quitarEtiquetasDeSistema, t } from './idioma'
 import type { Idioma, Textos } from './idioma'
@@ -39,8 +39,11 @@ import type { Actividad } from './mascota'
 import { estaVacia, extraerDecisiones, instruccionesDeCompactacion, LIMITES_MEMORIA, motivo, notaPostCompactacion, primerError, recordar, registrarDecision, resumenCorto, vacio } from './memoria'
 import type { Decision, Motivo, PuntoDeControl } from './memoria'
 import {
+  ahorroSinCache,
   aprox,
+  costoMedido,
   costoSinToki,
+  daIgual,
   decidirInterfaz,
   deltaRuteo,
   diferencia,
@@ -55,8 +58,10 @@ import {
   modeloSubagente,
   nivelHeuristico,
   nombreCorto,
+  PEDIDOS_POR_NIVEL,
   proponer,
   REESCRITURA_QUE_PREGUNTA,
+  terminaEnPregunta,
   textoDiferencia,
   textosRuta,
   usd as usdTexto,
@@ -97,7 +102,7 @@ import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, o
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.16.1'
+export const VERSION = '0.16.2'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -788,6 +793,14 @@ async function alPedido($: $, subagente: boolean, u: UsoPedido): Promise<void> {
   await sumarRelecturas($, c.evitadas + tt.evitadas)
 }
 
+/** La ventana se recalcula en varios momentos: al registro solo llega cuando cambia. */
+let ultimaVentana = ''
+function anotarVentana($: $, linea: string): void {
+  if (linea === ultimaVentana) return
+  ultimaVentana = linea
+  void anotarDiagnostico($, linea)
+}
+
 /**
  * Con Opus o Sonnet de 1M, Claude Code no compacta hasta ~500k-967k, y cada
  * mensaje relee todo eso. Toki baja la ventana (CLAUDE_CODE_AUTO_COMPACT_WINDOW)
@@ -825,7 +838,7 @@ async function ajustarVentana($: $, avisar: boolean): Promise<void> {
         vivo.ventanaNativa = nativa ?? vivo.ventana
         vivo.ventanaFuente = decision.motivo === 'tuya' ? 'tuya' : esDeToki ? 'toki' : 'nativa'
       }
-      void anotarDiagnostico($, `ventana: ${decision.motivo}, compacta a ${vivo.ventana} (nativa ${vivo.ventanaNativa})`)
+      anotarVentana($, `ventana: ${decision.motivo}, compacta a ${vivo.ventana} (nativa ${vivo.ventanaNativa})`)
       return
     }
     const r = await $.env.set('CLAUDE_CODE_AUTO_COMPACT_WINDOW', String(decision.poner))
@@ -833,7 +846,7 @@ async function ajustarVentana($: $, avisar: boolean): Promise<void> {
       vivo.ventana = b?.rawMaxTokens ?? ctx.window
       vivo.ventanaNativa = vivo.ventana
       vivo.ventanaFuente = 'nativa'
-      void anotarDiagnostico($, `ventana: no se pudo poner (${r.deny})`)
+      anotarVentana($, `ventana: no se pudo poner (${r.deny})`)
       return
     }
     await $.store.set(CLAVE_VENTANA, String(decision.poner))
@@ -843,7 +856,7 @@ async function ajustarVentana($: $, avisar: boolean): Promise<void> {
     vivo.ventana = efectiva
     vivo.ventanaNativa = nativa ?? efectiva
     vivo.ventanaFuente = efectiva === decision.poner && (nativa ?? 0) > efectiva ? 'toki' : 'nativa'
-    void anotarDiagnostico($, `ventana: compacta a ${efectiva} (Claude Code: ${nativa ?? '?'})`)
+    anotarVentana($, `ventana: compacta a ${efectiva} (Claude Code: ${nativa ?? '?'})`)
     // El aviso, una sola vez por valor: no en cada sesión.
     const claveAviso = `ventanaAvisada:${efectiva}`
     if (avisar && !esDeToki && vivo.ventanaFuente === 'toki' && (await $.store.get(claveAviso)) !== true) {
@@ -851,7 +864,7 @@ async function ajustarVentana($: $, avisar: boolean): Promise<void> {
       $.ui.toast(tx().toastVentana(formatearTokens(efectiva), formatearTokens(vivo.ventanaNativa)), { timeoutMs: 9000 })
     }
   } catch (err) {
-    void anotarDiagnostico($, `ventana: sin cambios (${String(err)})`)
+    anotarVentana($, `ventana: sin cambios (${String(err)})`)
   }
 }
 
@@ -1158,16 +1171,26 @@ async function abrirPanelSiNoHayFranja($: $): Promise<void> {
   }
 }
 
-/** Un registro corto de lo que la superficie hace con Toki: sirve para saber por qué no se ve. */
-const diagnostico: string[] = []
+/**
+ * Un registro de lo que hace Toki: qué dibuja la superficie y qué decidió con cada
+ * mensaje (nunca su texto). Sigue entre sesiones, hasta LINEAS_DIAGNOSTICO líneas:
+ * sirve para saber por qué no se ve y para calibrar las decisiones con uso real.
+ * Las escrituras van en fila para que dos avisos seguidos no se pisen.
+ */
+let filaDiagnostico: Promise<void> = Promise.resolve()
 async function anotarDiagnostico($: $, linea: string): Promise<void> {
-  try {
-    diagnostico.push(`${new Date(await $.clock.now()).toISOString()} ${linea}`)
-    await asegurarCarpeta($)
-    await $.fs.write(`${CARPETA}/diagnostico.txt`, `${diagnostico.slice(-20).join('\n')}\n`)
-  } catch {
-    // Sin diagnóstico no pasa nada.
-  }
+  filaDiagnostico = filaDiagnostico.then(async () => {
+    try {
+      const nueva = `${new Date(await $.clock.now()).toISOString()} ${linea}`
+      await asegurarCarpeta($)
+      const archivo = `${CARPETA}/diagnostico.txt`
+      const previo = (await $.fs.exists(archivo)) ? await $.fs.read(archivo) : ''
+      await $.fs.write(archivo, agregarAlRegistro(previo, nueva))
+    } catch {
+      // Sin diagnóstico no pasa nada.
+    }
+  })
+  return filaDiagnostico
 }
 
 async function vigilar($: $): Promise<void> {
@@ -1608,6 +1631,34 @@ const ESPERA_CLASIFICADOR = 2_000
 /** Por debajo de esto el contexto real (sistema + herramientas) aún no se midió: se usa este piso. */
 const CONTEXTO_BASE = 35_000
 
+/**
+ * Un mensaje tuyo: lo que Toki estimó al planearlo y lo que de verdad usó, pedido
+ * por pedido. Al terminar va al diagnóstico (solo cifras, nunca tu texto), para
+ * calibrar las estimaciones con sesiones reales.
+ */
+type Medicion = {
+  nivel: Nivel
+  /** Con qué lo planeó Toki. */
+  modelo: string
+  esfuerzo: Esfuerzo
+  estimado: number
+  pedidosEstimados: number
+  contexto: number
+  ttl1h: boolean
+  frio: boolean
+  /** El turno que lo mide: se reclama en `turn.start`. */
+  turno?: string
+  /** Con qué respondió de verdad (el primer pedido). */
+  modeloReal?: string
+  esfuerzoReal?: string
+  pedidos: number
+  entrada: number
+  leido: number
+  escrito: number
+  salida: number
+  usd: number
+}
+
 const ruta: {
   modo: ModoRuta
   /** El modo de /plugin; /toki-modelo lo cambia y se guarda aparte. */
@@ -1644,10 +1695,13 @@ const ruta: {
   sonnetPausado: boolean
   /** El mensaje anterior decía que algo no funcionó: un "dale" sigue con esa tarea. */
   atascadoPrevio: boolean
+  /** La última respuesta de Claude terminaba con una pregunta: un "ok" es un sí, no un cierre. */
+  preguntoAntes: boolean
   /** Lo que deshiciste, por nivel: no se vuelve a aplicar solo en esta sesión. */
   deshechos: Partial<Record<Nivel, Eleccion>>
   /** En qué modelo fue cada mensaje de esta sesión. */
   mensajesEn: Partial<Record<Familia, number>>
+  medicion?: Medicion
 } = {
   modo: 'preguntar',
   modoConfig: 'preguntar',
@@ -1664,6 +1718,7 @@ const ruta: {
   sonnetPrimero: false,
   sonnetPausado: false,
   atascadoPrevio: false,
+  preguntoAntes: false,
   deshechos: {},
   mensajesEn: {},
 }
@@ -1686,9 +1741,29 @@ function reiniciarRuta(): void {
   ruta.esfuerzo = undefined
   ruta.nivelPrevio = undefined
   ruta.atascadoPrevio = false
+  ruta.preguntoAntes = false
   ruta.aviso = undefined
   ruta.cacheFrio = true
   ruta.mensajesEn = {}
+  ruta.medicion = undefined
+}
+
+/** La línea del diagnóstico para un mensaje medido. */
+function lineaUso(m: Medicion, interrumpido: boolean): string {
+  const modelo = m.modeloReal ?? m.modelo
+  const esfuerzo = m.esfuerzoReal ?? m.esfuerzo
+  const otroPlan = modelo !== m.modelo || esfuerzo !== m.esfuerzo ? `, para ${m.modelo}/${m.esfuerzo}` : ''
+  const estimacion = `${m.pedidosEstimados} pedidos, contexto ${Math.round(m.contexto / 1000)}k, caché ${m.ttl1h ? '1 h' : '5 min'}${m.frio ? ', frío' : ''}${otroPlan}`
+  return [
+    `uso: ${m.nivel} ${modelo}/${esfuerzo}`,
+    `${m.pedidos} ${m.pedidos === 1 ? 'pedido' : 'pedidos'}`,
+    `entrada ${m.entrada}`,
+    `salida ${m.salida}`,
+    `caché escrito ${m.escrito}`,
+    `leído ${m.leido}`,
+    `$${m.usd.toFixed(4)}`,
+    `Toki estimó $${m.estimado.toFixed(4)} (${estimacion})${interrumpido ? ' · interrumpido' : ''}`,
+  ].join(' · ')
 }
 
 /** Sonnet primero, si está prendido y no lo pausaste con /model. */
@@ -1697,7 +1772,7 @@ function sonnetActivo(): boolean {
 }
 
 async function leerNivel($: $, texto: string): Promise<{ nivel: Nivel; motivo: MotivoRuta }> {
-  const l = nivelHeuristico(texto, ruta.nivelPrevio)
+  const l = nivelHeuristico(texto, ruta.nivelPrevio, ruta.preguntoAntes)
   if (l.seguro || limpiarPrompt(texto).length < 40) return l
   // Zona dudosa: una pregunta corta a Haiku, con tiempo límite. Si tarda, gana la heurística.
   try {
@@ -1725,22 +1800,26 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   // Haiku no tiene esfuerzo, y no hay nada más barato a qué bajar.
   if (actual === undefined || familiaDe(actual.modelo) === 'haiku') return
   const { nivel, motivo } = await leerNivel($, texto)
-  ruta.nivelPrevio = nivel
+  // Un "gracias" no es una tarea: el "dale" que venga después sigue con la de antes.
+  const cierre = motivo === 'cierre'
+  if (!cierre) ruta.nivelPrevio = nivel
   // "Dale", "sigue": si lo anterior no funcionaba, esto sigue con lo mismo.
   const atascado = motivo === 'atascado' || (motivo === 'seguimiento' && ruta.atascadoPrevio)
-  ruta.atascadoPrevio = atascado
+  if (!cierre) ruta.atascadoPrevio = atascado
   const tuFamilia = familiaDe(tuModelo)
   const base = sonnetActivo() && (tuFamilia === 'opus' || tuFamilia === 'sonnet') ? hermano(tuModelo, 'sonnet') : undefined
   const contexto = Math.max(CONTEXTO_BASE, vivo.contextoPedido ?? vivo.tokensUltimoTurno)
   const ttl1h = vivo.usoCache?.esSuscripcion ?? true
+  const cacheFrio = ruta.cacheFrio || (vivo.ultimoUsoCache > 0 && (await $.clock.now()) - vivo.ultimoUsoCache > ttlMinutos() * 60_000)
   const p = proponer({
     nivel,
     modelo: actual.modelo,
     esfuerzo: actual.esfuerzo,
     contexto,
     ttl1h,
-    permitirModelo: !ruta.modeloRoto,
-    cacheFrio: ruta.cacheFrio || (vivo.ultimoUsoCache > 0 && (await $.clock.now()) - vivo.ultimoUsoCache > ttlMinutos() * 60_000),
+    // Tras un cierre no se sabe qué viene: cambiar de modelo por un mensaje no se paga.
+    permitirModelo: !ruta.modeloRoto && !cierre,
+    cacheFrio,
     sonnetPrimero: base !== undefined,
     atascado,
   })
@@ -1750,7 +1829,7 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   // Modo ahorro por límite (lo elegiste al 90 %): la opción barata, sin preguntar, hasta que se renueve.
   const enAhorro = guardia.ahorroHasta > (await $.clock.now()) || tarea.p?.ahorro === true
   const ahorro = enAhorro ? p.opciones.find(o => o.tipo === 'ahorro') : undefined
-  if (enAhorro) modo = ahorro !== undefined && !igual(ahorro, p.actual) && ahorro.usd <= p.actual.usd ? 'auto' : 'nada'
+  if (enAhorro) modo = ahorro !== undefined && !igual(ahorro, p.actual) && !daIgual(ahorro, p.actual) && ahorro.usd <= p.actual.usd ? 'auto' : 'nada'
   // Lo que elegiste antes para este nivel se repite solo, si no reescribe el caché.
   const recordada = ruta.preferencias[nivel]
   let elegida: Opcion = ahorro ?? p.recomendada
@@ -1765,20 +1844,58 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   }
   // Sin nadie que responda (claude -p, un mensaje del SDK): solo lo que ahorra.
   if (modo === 'preguntar' && !ruta.interactivo) modo = decidirInterfaz('preguntar', p, true, base)
+  // Callado o sin nadie que responda: si lo recomendado reescribe el caché, al menos baja el esfuerzo en tu modelo.
+  const sinCache = modo === 'nada' && !enAhorro && (ruta.silenciado || silenciar || !ruta.interactivo) ? ahorroSinCache(p) : undefined
+  if (sinCache !== undefined) {
+    elegida = sinCache
+    modo = 'auto'
+  }
   // Lo que deshiciste para este nivel no vuelve solo (si te pregunta, decides tú).
   const deshecha = ruta.deshechos[nivel]
   const yaLoDeshiciste = modo === 'auto' && como === 'auto' && !enAhorro && deshecha !== undefined && igual(elegida, deshecha)
   if (yaLoDeshiciste) modo = 'nada'
+  // Bajar el esfuerzo sin que cambie el costo (lo simple, de medio a bajo) no se toca: da igual.
   const decision: DecisionMensaje =
-    modo === 'nada' ? (igual(p.recomendada, p.actual) ? 'ya-va-asi' : yaLoDeshiciste ? 'deshecho' : 'callado') : modo === 'preguntar' ? 'preguntar' : igual(elegida, p.actual) ? 'callado' : 'auto'
-  ruta.ultima = { nivel, motivo, actual: p.actual, recomendada: p.recomendada, decision }
+    modo === 'nada'
+      ? igual(elegida, p.actual)
+        ? 'ya-va-asi'
+        : daIgual(elegida, p.actual)
+          ? 'da-igual'
+          : yaLoDeshiciste
+            ? 'deshecho'
+            : 'callado'
+      : modo === 'preguntar'
+        ? 'preguntar'
+        : igual(elegida, p.actual)
+          ? 'callado'
+          : 'auto'
+  // En /toki-modelo, lo que de verdad se aplicó (o se habría aplicado).
+  ruta.ultima = { nivel, motivo, actual: p.actual, recomendada: elegida, decision }
+  const soloEsfuerzo = sinCache !== undefined ? `, sin tocar el caché: ${sinCache.esfuerzo} ${textoDiferencia(diferencia(sinCache, p.actual), xr())}` : ''
   void anotarDiagnostico(
     $,
-    `ruta: ${nivel} (${motivo}${atascado && motivo !== 'atascado' ? ', atascado' : ''}) ${actual.modelo}/${actual.esfuerzo} → ${p.recomendada.modelo}/${p.recomendada.esfuerzo} ${textoDiferencia(diferencia(p.recomendada, p.actual), xr())} [${decision}${base !== undefined ? ', sonnet primero' : ''}]`,
+    `ruta: ${nivel} (${motivo}${atascado && motivo !== 'atascado' ? ', atascado' : ''}) ${actual.modelo}/${actual.esfuerzo} → ${p.recomendada.modelo}/${p.recomendada.esfuerzo} ${textoDiferencia(diferencia(p.recomendada, p.actual), xr())} [${decision}${soloEsfuerzo}${base !== undefined ? ', sonnet primero' : ''}]${esCorreccion(texto) ? ' · corrige el anterior' : ''}`,
   )
   let usada: Opcion = modo === 'nada' ? p.actual : elegida
   if (modo === 'preguntar') usada = await preguntarRuta($, p, nivel, motivo)
   if (modo === 'preguntar' && !igual(usada, p.actual)) como = 'elegido'
+  // Para calibrar: lo que Toki estima de este mensaje; sus pedidos dirán lo que de verdad usó.
+  ruta.medicion = {
+    nivel,
+    modelo: usada.modelo,
+    esfuerzo: usada.esfuerzo,
+    estimado: usada.usd + usada.cambio,
+    pedidosEstimados: PEDIDOS_POR_NIVEL[nivel],
+    contexto,
+    ttl1h,
+    frio: cacheFrio,
+    pedidos: 0,
+    entrada: 0,
+    leido: 0,
+    escrito: 0,
+    salida: 0,
+    usd: 0,
+  }
   // Cada mensaje cuenta: también los que siguen en el modelo que Toki eligió antes.
   const familia = familiaDe(usada.modelo)
   if (familia !== undefined) ruta.mensajesEn[familia] = (ruta.mensajesEn[familia] ?? 0) + 1
@@ -1879,6 +1996,7 @@ async function deshacerEleccion($: $): Promise<Eleccion | undefined> {
   ruta.preferencias[ultima.nivel] = 'actual'
   ruta.deshechos[ultima.nivel] = ultima.despues
   ruta.aviso = undefined
+  void anotarDiagnostico($, `ruta deshecha: ${ultima.despues.modelo}/${ultima.despues.esfuerzo} → ${ultima.antes.modelo}/${ultima.antes.esfuerzo} (${ultima.nivel})`)
   $.ui.invalidate('ui.render')
   return ultima.antes
 }
@@ -2326,7 +2444,7 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
     }
   }
   const x = xe()
-  const lectura = nivelHeuristico(texto, ruta.nivelPrevio)
+  const lectura = nivelHeuristico(texto, ruta.nivelPrevio, ruta.preguntoAntes)
   const contexto = vivo.usoCache?.tokens ?? vivo.tokensUltimoTurno
   // Si el aviso de caché vencido ya preguntó por este periodo, no se pregunta dos veces.
   const yaPregunto = vivo.ultimoUsoCache > 0 && guardia.frioVisto === vivo.ultimoUsoCache
@@ -2479,6 +2597,7 @@ export const register: Register = (on, options) => {
       // Sin modelo aún.
     }
     // Claude Code lee la ventana de compactación al empezar: puesta a mitad de un turno no cuenta.
+    ultimaVentana = ''
     await ajustarVentana($, e.isInteractive === true)
     // Sesión reanudada: recupera el último punto de control si es reciente.
     if (config.memoria) {
@@ -2593,6 +2712,10 @@ export const register: Register = (on, options) => {
       ruta.turno = ruta.pendiente !== undefined ? e.turnId : undefined
       ruta.esfuerzo = ruta.pendiente?.esfuerzo
       ruta.pendiente = undefined
+      // La medición del mensaje que se acaba de planear es de este turno; una vieja sin terminar se descarta.
+      const medicion = ruta.medicion
+      if (medicion !== undefined && medicion.turno === undefined) medicion.turno = e.turnId
+      else ruta.medicion = undefined
       vivo.enTurno = true
       vivo.actividad = 'pensando'
       vivo.ultimoAhorro = undefined
@@ -2646,6 +2769,22 @@ export const register: Register = (on, options) => {
       ruta.cacheFrio = false
       // Cada pedido lee o escribe el caché: desde aquí corre su vida (1 h o 5 min).
       vivo.ultimoUsoCache = await $.clock.now()
+      const m = ruta.medicion
+      if (m !== undefined && m.turno === e.turnId) {
+        const u = respuesta.usage
+        const modeloReal = u.model ?? pedido.model
+        const uso = { entrada: u.input_tokens, leido: u.cache_read_input_tokens, escrito: u.cache_creation_input_tokens, salida: u.output_tokens }
+        m.pedidos += 1
+        m.entrada += uso.entrada
+        m.leido += uso.leido
+        m.escrito += uso.escrito
+        m.salida += uso.salida
+        m.usd += costoMedido(familiaDe(modeloReal) ?? familiaDe(m.modelo) ?? 'opus', uso, m.ttl1h)
+        if (m.modeloReal === undefined) {
+          m.modeloReal = modeloReal
+          m.esfuerzoReal = String(pedido.effort)
+        }
+      }
     }
     // ¿Respondió el modelo que Toki pidió? Si no, se deja de cambiar el modelo (el esfuerzo sigue).
     if (pedido.model !== e.model && respuesta.usage !== null && familiaDe(respuesta.usage.model) !== familiaDe(pedido.model)) {
@@ -2678,6 +2817,12 @@ export const register: Register = (on, options) => {
       }
       if (vivo.ultimoAhorro !== undefined) sonar($, 'listo')
       for (const d of extraerDecisiones(e.answer)) vivo.memoria.decisiones = recordar(vivo.memoria.decisiones, d, LIMITES_MEMORIA.decisiones)
+      ruta.preguntoAntes = terminaEnPregunta(e.answer)
+      const medicion = ruta.medicion
+      if (medicion !== undefined && medicion.turno === e.turnId) {
+        ruta.medicion = undefined
+        void anotarDiagnostico($, lineaUso(medicion, e.isAborted))
+      }
       if (config.memoria) await guardarMemoria($)
       await refrescarUso($, true)
       const uso = vivo.usoCache
