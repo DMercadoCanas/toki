@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { claveDia } from '../hooks/historial'
-import { ahorroDe, avisoSemana, consejoDe, leerSemanas, letraDe, lunesDe, notaDe, semanaAnterior, SEMANA_VACIA, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from '../hooks/semana'
+import { ahorroDe, ahorroUsdDe, avisoSemana, consejoDe, leerSemanas, letraDe, lunesDe, notaDe, semanaAnterior, SEMANA_VACIA, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from '../hooks/semana'
 import type { ResumenSemana, Semanas } from '../hooks/semana'
 
 // Miércoles 21 de octubre de 2026, mediodía local.
@@ -139,7 +139,10 @@ describe('tarjeta semanal (puro)', () => {
     expect(t).toContain('Pedidos grandes: 2 con preguntas antes (0.5 correcciones por pedido) · 3 sin preguntas (2.0 por pedido) · 1 consejo para pedir mejor')
     // Lo más flojo es la claridad (60): el consejo va ahí.
     expect(t).toContain('Consejo: el 10% de tus mensajes corregía lo anterior')
-    expect(tarjetaSemana(s, '2026-10-19', MIE + 7 * DIA, {}, { suscripcion: true })).toContain('a precio de API (con suscripción: límite que no gastas)')
+    // Con suscripción, la nota va debajo de la cifra en dólares y no se repite en la línea del modelo.
+    const suscrita = tarjetaSemana(s, '2026-10-19', MIE + 7 * DIA, {}, { suscripcion: true })
+    expect(suscrita).toContain('Te ahorré ~$0.32 a precio de API\nCon suscripción no lo pagas aparte: es uso de tus límites que te queda libre.\nRecorté ~5.0k tokens:')
+    expect(suscrita).not.toContain('límite que no gastas')
     const en = tarjetaSemana(s, '2026-10-19', MIE + 7 * DIA, {}, { idioma: 'en' })
     expect(en).toContain('Grade: B (71/100)')
     expect(en).toContain('Picking model and effort per message saved ~$0.42 at API prices · ~$0.10 extra you approved')
@@ -183,7 +186,7 @@ describe('tarjeta semanal (puro)', () => {
     expect(md.startsWith('# Toki · semana (19 oct – 25 oct)\n\n**Nota: B (71/100)**\n\n| | Puntos | Por qué |\n|---|---:|---|\n')).toBe(true)
     expect(md).toContain('| Contexto | 76 | el 12% de tus pedidos pasó de 150k de contexto |')
     expect(md).toContain('| Claridad | 60 | 1 corrección en 10 mensajes |')
-    expect(md).toContain('## Ahorro\n\nTe ahorré ~7.0k tokens\n\n| Tipo | Tokens |\n|---|---:|\n| salidas de terminal | ~5.0k |\n| búsquedas enormes | ~2.0k |')
+    expect(md).toContain('## Ahorro\n\nTe ahorré ~\\$0.42 a precio de API\n\nRecorté ~7.0k tokens:\n\n| Tipo | Tokens |\n|---|---:|\n| salidas de terminal | ~5.0k |\n| búsquedas enormes | ~2.0k |')
     expect(md).toContain('- Elegir modelo y esfuerzo por mensaje ahorró ~\\$0.42 a precio de API')
     expect(md).toContain('~\\$2.50')
     expect(md).toContain('## Consejo\n\nEl 10% de tus mensajes corregía lo anterior')
@@ -208,5 +211,48 @@ describe('tarjeta semanal (puro)', () => {
     expect(avisoSemana(s, '2026-10-19', 'en')).toContain('· grade B. Type /toki-semana last to see the card.')
     expect(tarjetaGuardada('/p/.claude/toki/semana-2026-10-19.md')).toBe('Toki: guardé la tarjeta en /p/.claude/toki/semana-2026-10-19.md (Markdown).')
     expect(tarjetaNoGuardada('sin permiso', 'en')).toBe("Toki: couldn't save the card (sin permiso).")
+  })
+
+  test('la cifra de la semana va en dólares: neto, cuánto menos que sin Toki y contra la anterior', () => {
+    const semanas: Semanas = {
+      '2026-10-12': { ...SEMANA_VACIA, ahorroUsd: 1, pedidos: 10 },
+      '2026-10-19': { ...SEMANA_VACIA, ...HABITOS, porTipo: { salida: 30_000 }, ahorroUsd: 0.9, ruteo: 0.5, ruteoExtra: 0.2, gastoUsd: 4.8 },
+    }
+    // Recortes y relecturas (0.90) + modelo (0.50) − lo de más (0.20).
+    expect(Math.round(ahorroUsdDe(semanas['2026-10-19']) * 100)).toBe(120)
+    expect(ahorroUsdDe(undefined)).toBe(0)
+    const t = tarjetaSemana(semanas, '2026-10-19', MIE + 7 * DIA, {})
+    expect(t).toContain('Te ahorré ~$1.20 a precio de API, un 20 % menos que sin Toki  (▲ 20% vs. la semana anterior)\nRecorté ~30.0k tokens:\n  salidas de terminal')
+    expect(t).toContain('Elegir modelo y esfuerzo por mensaje ahorró ~$0.50 a precio de API · ~$0.20 de más que aprobaste')
+    // La semana en curso no se compara todavía.
+    expect(tarjetaSemana(semanas, '2026-10-19', MIE, {})).toContain('Te ahorré ~$1.20 a precio de API, un 20 % menos que sin Toki\n')
+    expect(tarjetaSemana(semanas, '2026-10-19', MIE + 7 * DIA, {}, { idioma: 'en' })).toContain('I saved you ~$1.20 at API prices, 20% less than without Toki  (▲ 20% vs. the week before)\nTrimmed ~30.0k tokens:')
+    expect(avisoSemana(semanas, '2026-10-19')).toBe(
+      'Toki: la semana pasada te ahorré ~$1.20 a precio de API, un 20 % menos que sin Toki (▲ 20% vs. la semana anterior) · nota B. Escribe /toki-semana pasada para ver la tarjeta.',
+    )
+    expect(avisoSemana(semanas, '2026-10-19', 'en')).toBe(
+      'Toki: last week I saved you ~$1.20 at API prices, 20% less than without Toki (▲ 20% vs. the week before) · grade B. Type /toki-semana last to see the card.',
+    )
+    // En Markdown, el $ va escapado.
+    expect(tarjetaSemana(semanas, '2026-10-19', MIE + 7 * DIA, {}, { formato: 'md' })).toContain('## Ahorro\n\nTe ahorré ~\\$1.20 a precio de API, un 20 % menos que sin Toki (▲ 20% vs. la semana anterior)\n\nRecorté ~30.0k tokens:')
+    // Solo modelo, sin gasto medido: sin porcentaje ni línea de tokens.
+    const soloModelo = semana({ pedidos: 4, ruteo: 0.3 })
+    expect(tarjetaSemana(soloModelo, '2026-10-19', MIE, {})).toContain('Te ahorré ~$0.30 a precio de API\n')
+    expect(tarjetaSemana(soloModelo, '2026-10-19', MIE, {})).not.toContain('Recorté')
+    expect(tarjetaSemana(soloModelo, '2026-10-19', MIE, {})).not.toContain('no hubo salidas grandes')
+    expect(tarjetaPendiente({ '2026-10-19': { ...SEMANA_VACIA, ruteo: 0.3 } }, MIE + 5 * DIA, undefined)).toBe('2026-10-19')
+    // Menos de un centavo: la cifra sigue en tokens.
+    expect(tarjetaSemana(semana({ porTipo: { salida: 2_000 }, ahorroUsd: 0.004 }), '2026-10-19', MIE, {})).toContain('Te ahorré ~2.0k tokens')
+  })
+
+  test('si en neto costó de más, la tarjeta lo dice primero y el aviso no presume', () => {
+    const s = semana({ ...HABITOS, porTipo: { pegado: 8_000 }, ahorroUsd: -0.5, ruteo: 0.2 })
+    const t = tarjetaSemana(s, '2026-10-19', MIE + 7 * DIA, {}, { suscripcion: true })
+    expect(t).toContain('En neto, Toki costó ~$0.30 de más a precio de API (por más esfuerzo que aprobaste o por compactar)\nRecorté ~8.0k tokens:')
+    expect(t).not.toContain('Te ahorré')
+    // Sin cifra en dólares arriba, la nota de la suscripción sigue en la línea del modelo.
+    expect(t).toContain('ahorró ~$0.20 a precio de API (con suscripción: límite que no gastas)')
+    expect(tarjetaSemana(s, '2026-10-19', MIE + 7 * DIA, {}, { idioma: 'en' })).toContain('On net, Toki cost ~$0.30 extra at API prices (more effort you approved, or compacting)')
+    expect(avisoSemana(s, '2026-10-19')).toBe('Toki: la tarjeta de la semana pasada está lista (nota B). Escribe /toki-semana pasada para verla.')
   })
 })

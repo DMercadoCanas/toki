@@ -21,6 +21,7 @@ import {
   terminaEnPregunta,
   textosRuta,
 } from '../hooks/modelo'
+import { claveDia } from '../hooks/historial'
 
 // Qué modelo y esfuerzo merece cada mensaje: primero lo puro, después con el motor simulado.
 
@@ -849,5 +850,117 @@ describe('ahorro medido con el motor', () => {
     expect(guardado.get('ultimoPedido')).toMatchObject({ familia: 'opus', sin: 'opus', tamano: 30_000 })
     // Sin cambios de modelo, lo real es lo que habría costado: nada que acreditar por el modelo.
     expect(Number(guardado.get('ahorroUsdTotal') ?? 0)).toBeLessThan(0.001)
+  })
+})
+
+// ---------- Una sola cifra: lo ahorrado en dólares ----------
+
+const BANDA = {
+  plugin: 'toki',
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
+
+const PANEL = {
+  plugin: 'toki',
+  component: 'Pane',
+  requestId: 'toki-panel',
+  props: { title: 'Toki', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+} as const
+
+const cerca = (a: unknown, b: number) => Math.abs(Number(a) - b) < 1e-9
+
+describe('una sola cifra en dólares con el motor', () => {
+  test('la barra dice lo ahorrado en dólares con el −%, y "Sonnet ✓" porque lo dijo la API', { options: { sonnetPrimero: true } }, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1)
+    await mensaje($, 't1', COLUMNA, 1)
+    await mensaje($, 't2', FILTRO, 1)
+    // El aviso del cambio dura 12 s; después queda el modelo en la barra.
+    await reloj.advance(13_000)
+    const banda = await $.ui.mount({ ...BANDA, surface: 'terminal' })
+    // Cada mensaje: $0.0074 en Sonnet contra $0.0148 en Opus. Tres: ~$0.02 ahorrados, la mitad de lo que habría costado.
+    expect(await banda.find({ type: 'Text', text: '· ahorrado' })).toBeDefined()
+    expect(await banda.find({ type: 'Text', text: /^~\$0\.02 −50 %$/ })).toBeDefined()
+    expect(await banda.find({ type: 'Text', text: /^Sonnet ✓ · por Toki$/ })).toBeDefined()
+    // Ni relecturas ni "por modelo" sueltos: el desglose está en /toki.
+    expect(await banda.find({ type: 'Text', text: /relecturas|por modelo/ })).toBeUndefined()
+    await banda.unmount()
+
+    const toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).toContain('Toki · ~$0.02 ahorrados en esta sesión (−50 %) · hoy ~$0.02 · semana ~$0.02 · histórico ~$0.02\n')
+    expect(toki).toContain('De dónde sale el ahorro de esta sesión:\n  Modelo y esfuerzo: ~$0.02 (cada pedido contra tu modelo y tu esfuerzo)\n  Esta sesión costó ~$0.02; sin Toki habría costado ~$0.04.\n')
+    expect(toki).toContain('✓ Respondió Sonnet: lo dice la API en cada pedido, no es una suposición de Toki.')
+
+    const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+    expect(await panel.find({ type: 'Text', text: 'De dónde sale el ahorro de esta sesión' })).toBeDefined()
+    expect(await panel.find({ type: 'Text', text: 'Esta sesión costó ~$0.02; sin Toki habría costado ~$0.04.' })).toBeDefined()
+    expect(await panel.find({ type: 'Text', text: /^~\$0\.02 −50 %$/ })).toBeDefined()
+    await panel.unmount()
+
+    // La tarjeta de la semana, con la misma cifra.
+    const semana = ((await $.command.run({ command: 'toki-semana', args: '' } as never)) as { text: string }).text
+    expect(semana).toContain('Te ahorré ~$0.02 a precio de API, un 50 % menos que sin Toki')
+  })
+
+  test('si en neto costó de más, la barra y /toki lo dicen tal cual', { options: { recomendarModelo: 'automatico' } }, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    let primero = true
+    mundo(on, {
+      // El primer pedido en Sonnet no tiene nada en su caché: escribe la conversación entera.
+      uso: e => {
+        if (e.model !== SONNET || !primero) return {}
+        primero = false
+        return { cache_read_input_tokens: 0, cache_creation_input_tokens: 30_000 }
+      },
+    })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1)
+    await mensaje($, 't1', 'renombra la variable foo a bar en utils')
+    await reloj.advance(13_000)
+    const banda = await $.ui.mount({ ...BANDA, surface: 'terminal' })
+    expect(await banda.find({ type: 'Text', text: '· costó de más' })).toBeDefined()
+    expect(await banda.find({ type: 'Text', text: /^~\$0\.06$/ })).toBeDefined()
+    expect(await banda.find({ type: 'Text', text: '· ahorrado' })).toBeUndefined()
+    await banda.unmount()
+    const toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).toContain('Toki · esta sesión Toki costó ~$0.06 de más · hoy −$0.06 · semana −$0.06 · histórico −$0.06\n')
+    expect(toki).toContain('  Modelo y esfuerzo: −$0.06 (costó de más por más esfuerzo o al reescribir el caché)\n')
+    expect(toki).toContain('  Esta sesión costó ~$0.10; sin Toki habría costado ~$0.04.\n')
+    expect(toki.includes('ahorró $0.00')).toBe(false)
+  })
+
+  test('lo ahorrado antes de 0.17 pasa a dólares una sola vez, a precio de Sonnet, y se dice', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const ayer = claveDia(1_000_000 - 86_400_000)
+    const guardado = new Map<string, unknown>([
+      ['tokensAhorradosTotal', 100_000],
+      ['historialDiario', { [ayer]: 100_000 }],
+      ['relecturasEvitadasTotal', 1_000_000],
+      ['logros', ['primero', 'diez', 'cien']],
+    ])
+    mundo(on, { guardado })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    // 100k recortados: no escribirlos en el caché de Sonnet ($2.50/M). 1M sin releer: $0.10/M.
+    expect(cerca(guardado.get('ahorroUsdTotal'), 0.35)).toBe(true)
+    expect(cerca(guardado.get('ahorroUsdEstimado'), 0.35)).toBe(true)
+    expect(guardado.get('ahorroUsdSembrado')).toBe(true)
+    // Por día solo van los recortes: las relecturas nunca se guardaron por día.
+    const dias = guardado.get('historialDiarioUsd') as Record<string, number>
+    expect(Object.keys(dias)).toEqual([ayer])
+    expect(cerca(dias[ayer], 0.25)).toBe(true)
+    // El saludo ya lo dice en dólares.
+    const banda = await $.ui.mount({ ...BANDA, surface: 'terminal' })
+    expect(await banda.find({ type: 'Text', text: '¡Hola de nuevo! Llevamos ~$0.35 ahorrados juntos.' })).toBeDefined()
+    await banda.unmount()
+    const toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).toContain(' · semana ~$0.25 · histórico ~$0.35\n')
+    expect(toki).toContain('Incluye ~$0.35 de antes de la versión 0.17, estimados a precio de Sonnet (solo recortes y relecturas).')
+    // Una sola vez: la sesión siguiente no lo vuelve a sumar.
+    await $.session.end({ reason: 'other', sessionId: 's1', resume: {} } as never)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    expect(cerca(guardado.get('ahorroUsdTotal'), 0.35)).toBe(true)
   })
 })

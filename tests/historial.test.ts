@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { agregarAlRegistro, agregarLeccion, claveDia, filasGrafica, fusionarHistorial, leccionCambioModelo, logrosNuevos, racha, sumarAlDia, totalDesde } from '../hooks/historial'
+import { cifraUsdDia } from '../hooks/ahorro'
+import { agregarAlRegistro, agregarLeccion, claveDia, filasGrafica, fusionarHistorial, hayAhorro, leccionCambioModelo, logrosNuevos, racha, sumarAlDia, totalDesde } from '../hooks/historial'
 import { tokiSvg } from '../hooks/toki-svg'
 import { ANIMACIONES, cuadroSvg, cuadrosDe } from '../hooks/toki-pixel'
 
@@ -43,6 +44,18 @@ describe('historial', () => {
     expect(h).toEqual({ '2026-10-18': 10, '2026-10-19': 100, '2026-10-20': 75 })
   })
 
+  test('la gráfica en dólares: un día que costó de más no tiene barra, se ve en su cifra', async () => {
+    let h = sumarAlDia({}, HOY, 0.84)
+    h = sumarAlDia(h, HOY - 86_400_000, 0.42)
+    h = sumarAlDia(h, HOY - 2 * 86_400_000, -0.3)
+    h = sumarAlDia(h, HOY - 3 * 86_400_000, 0.002)
+    const filas = filasGrafica(h, HOY, 4, 10, 'es', cifraUsdDia)
+    expect(filas.map(f => f.valor)).toEqual(['·', '−$0.30', '~$0.42', '~$0.84'])
+    expect(filas.map(f => f.barra)).toEqual(['░░░░░░░░░░', '░░░░░░░░░░', '█████░░░░░', '██████████'])
+    // Solo días en negativo: ninguna barra.
+    expect(filasGrafica(sumarAlDia({}, HOY, -1), HOY, 1, 4, 'es', cifraUsdDia)[0]?.barra).toBe('░░░░')
+  })
+
   test('la gráfica habla inglés', async () => {
     const filas = filasGrafica(sumarAlDia({}, HOY, 10), HOY, 1, 4, 'en')
     expect(filas[0]?.etiqueta.startsWith('Tue')).toBe(true)
@@ -70,11 +83,22 @@ describe('rachas y logros', () => {
     expect(racha({}, HOY)).toBe(0)
   })
 
+  test('un día con ahorro en dólares también cuenta para la racha', async () => {
+    const tokens = sumarAlDia({}, HOY - 2 * DIA, 100)
+    const usd = sumarAlDia(sumarAlDia(sumarAlDia({}, HOY - DIA, 0.2), HOY, 0.001), HOY - 3 * DIA, -0.5)
+    const dias = hayAhorro(tokens, usd)
+    expect(Object.keys(dias).sort()).toEqual([claveDia(HOY - 2 * DIA), claveDia(HOY - DIA)])
+    expect(racha(dias, HOY)).toBe(2)
+  })
+
   test('los logros se desbloquean una sola vez', async () => {
     expect(logrosNuevos([], { total: 0, racha: 0 })).toEqual([])
     expect(logrosNuevos([], { total: 12_000, racha: 1 })).toEqual(['primero', 'diez'])
     expect(logrosNuevos(['primero', 'diez'], { total: 12_000, racha: 3, memoria: true })).toEqual(['racha3', 'memoria'])
     expect(logrosNuevos(['primero'], { total: 50, racha: 1, rescate: true })).toEqual(['rescate'])
+    // El primer ahorro también cuenta si fue solo en dólares (el modelo, por ejemplo).
+    expect(logrosNuevos([], { total: 0, usd: 0.02, racha: 0 })).toEqual(['primero'])
+    expect(logrosNuevos([], { total: 0, usd: 0.004, racha: 0 })).toEqual([])
     expect(logrosNuevos(['primero', 'diez', 'cien', 'millon', 'racha3', 'racha7', 'memoria', 'rescate'], { total: 5_000_000, racha: 30, memoria: true, rescate: true })).toEqual([])
   })
 })

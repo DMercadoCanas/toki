@@ -1,5 +1,6 @@
 // Historial de ahorro por día y la gráfica del panel. Funciones puras.
 
+import { CENTAVO } from './ahorro'
 import { t } from './idioma'
 import type { Idioma } from './idioma'
 import { formatearTokens } from './mascota'
@@ -42,26 +43,48 @@ export function totalDesde(historial: Historial, ms: number, dias: number): numb
   return total
 }
 
-/** Filas de la gráfica: últimos N días, con barra proporcional al máximo. */
-export function filasGrafica(historial: Historial, ms: number, dias: number, anchoBarra: number, idioma: Idioma = 'es'): { etiqueta: string; barra: string; valor: string; tokens: number; esHoy: boolean }[] {
+/**
+ * Filas de la gráfica: últimos N días, con barra proporcional al máximo.
+ * `formato` escribe la cifra de cada día ('·' = nada ese día); `tokens` es la
+ * cifra del día (tokens o dólares, según el historial).
+ */
+export function filasGrafica(
+  historial: Historial,
+  ms: number,
+  dias: number,
+  anchoBarra: number,
+  idioma: Idioma = 'es',
+  formato: (n: number) => string = n => (n > 0 ? `~${formatearTokens(n)}` : '·'),
+): { etiqueta: string; barra: string; valor: string; tokens: number; esHoy: boolean }[] {
   const DIAS_SEMANA = t(idioma).diasSemana
   const filas: { clave: string; tokens: number; fecha: Date }[] = []
   for (let i = dias - 1; i >= 0; i--) {
     const momento = ms - i * 86_400_000
     const clave = claveDia(momento)
-    filas.push({ clave, tokens: historial[clave] ?? 0, fecha: new Date(momento) })
+    const n = historial[clave] ?? 0
+    filas.push({ clave, tokens: Number.isFinite(n) ? n : 0, fecha: new Date(momento) })
   }
-  const maximo = Math.max(1, ...filas.map(f => f.tokens))
+  // Un día en negativo (costó de más) no tiene barra: se ve en su cifra.
+  const maximo = Math.max(0, ...filas.map(f => f.tokens))
   return filas.map((f, i) => {
-    const lleno = f.tokens === 0 ? 0 : Math.max(1, Math.round((f.tokens / maximo) * anchoBarra))
+    const valor = formato(f.tokens)
+    const lleno = valor === '·' || f.tokens <= 0 || maximo <= 0 ? 0 : Math.max(1, Math.round((f.tokens / maximo) * anchoBarra))
     return {
       etiqueta: `${DIAS_SEMANA[f.fecha.getDay()]} ${String(f.fecha.getDate()).padStart(2, ' ')}`,
       barra: '█'.repeat(lleno) + '░'.repeat(anchoBarra - lleno),
-      valor: f.tokens === 0 ? '·' : `~${formatearTokens(f.tokens)}`,
+      valor,
       tokens: f.tokens,
       esHoy: i === filas.length - 1,
     }
   })
+}
+
+/** Los días con algún ahorro, en tokens o en dólares (para la racha): 1 = hubo. */
+export function hayAhorro(tokens: Historial, usd: Historial): Historial {
+  const dias: Historial = {}
+  for (const [dia, n] of Object.entries(tokens)) if (typeof n === 'number' && n > 0) dias[dia] = 1
+  for (const [dia, n] of Object.entries(usd)) if (typeof n === 'number' && n >= CENTAVO) dias[dia] = 1
+  return dias
 }
 
 /** Lo que Toki aprende de la sesión: una lección por tipo, sin repetir. */
@@ -93,7 +116,10 @@ export const LOGROS = ['primero', 'diez', 'cien', 'millon', 'racha3', 'racha7', 
 export type Logro = (typeof LOGROS)[number]
 
 export type Cifras = {
+  /** Tokens recortados desde siempre. */
   total: number
+  /** Lo ahorrado desde siempre en dólares (neto): el primer ahorro también cuenta así. */
+  usd?: number
   racha: number
   /** Toki le recordó la tarea a Claude después de una compactación. */
   memoria?: boolean
@@ -104,7 +130,7 @@ export type Cifras = {
 /** Qué logros se desbloquean con las cifras actuales (solo los que faltaban). */
 export function logrosNuevos(ya: readonly string[], c: Cifras): Logro[] {
   const cumple: Record<Logro, boolean> = {
-    primero: c.total > 0,
+    primero: c.total > 0 || (c.usd ?? 0) >= 0.01,
     diez: c.total >= 10_000,
     cien: c.total >= 100_000,
     millon: c.total >= 1_000_000,

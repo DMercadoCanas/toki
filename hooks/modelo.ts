@@ -423,9 +423,11 @@ export type TextosRuta = {
   sinDecisiones: string
   ultimoMensaje: string
   sinLectura: string
-  /** La franja: el ahorro por elegir modelo o esfuerzo. */
-  porModelo: string
   balance: (ahorro: string, extra: string | undefined, suscripcion: boolean) => string
+  /** El modelo que Toki pidió y la API confirmó que respondió. */
+  confirmado: (modelo: string) => string
+  /** Por qué la barra de Claude Code puede mostrar otro esfuerzo. */
+  notaEsfuerzo: string
   decision: Record<Decision, string>
   /** /toki-modelo deshacer */
   deshacerHecho: (modelo: string, esfuerzo: string, nivel: string) => string
@@ -496,9 +498,10 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     sinDecisiones: 'Aún no hubo cambios de modelo o esfuerzo.',
     ultimoMensaje: 'Último mensaje',
     sinLectura: 'Toki todavía no leyó ningún mensaje en esta sesión (el primero calibra el esfuerzo).',
-    porModelo: 'por modelo',
     balance: (a, e, s) =>
       `Ahorro por el modelo y el esfuerzo de cada mensaje: ${aprox(a)} medido a precio de API${s ? ' (con suscripción no es dinero: es límite que no gastas)' : ''}${e ? ` · costó de más: ${aprox(e)} (más esfuerzo o reescribir el caché)` : ''}`,
+    confirmado: m => `✓ Respondió ${m}: lo dice la API en cada pedido, no es una suposición de Toki.`,
+    notaEsfuerzo: 'La barra de Claude Code muestra el esfuerzo de la sesión; Toki manda el de cada pedido. La API confirma el modelo (✓), no el esfuerzo.',
     decision: {
       'ya-va-asi': 'ya iba así',
       'da-igual': 'sin cambio (casi no cambia el costo)',
@@ -569,9 +572,10 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     sinDecisiones: 'No model or effort changes yet.',
     ultimoMensaje: 'Last message',
     sinLectura: 'Toki has not read a message in this session yet (the first one calibrates the effort).',
-    porModelo: 'by model',
     balance: (a, e, s) =>
       `Saved by each message's model and effort: ${aprox(a)} measured at API prices${s ? ' (on a subscription it is not money: it is limit you keep)' : ''}${e ? ` · cost extra: ${aprox(e)} (more effort or cache rewrites)` : ''}`,
+    confirmado: m => `✓ ${m} answered: the API reports it on every request, it is not a guess by Toki.`,
+    notaEsfuerzo: "Claude Code's bar shows the session's effort; Toki sends each request's own. The API confirms the model (✓), not the effort.",
     decision: {
       'ya-va-asi': 'already on it',
       'da-igual': 'no change (it barely changes the cost)',

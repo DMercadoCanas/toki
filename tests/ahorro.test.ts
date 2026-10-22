@@ -2,12 +2,17 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   ahorroNeto,
+  cifraUsd,
+  cifraUsdDia,
+  cifraUsdFirmada,
   costoClasificador,
   costoSinTokiPedido,
   esPedidoPrevio,
+  estimarAhorroPrevio,
   factorSalida,
   leidoSinToki,
   porcentajeAhorro,
+  resumenAhorro,
   valorEscritura,
   valorLectura,
 } from '../hooks/ahorro'
@@ -118,5 +123,39 @@ describe('ahorro medido', () => {
     expect(porcentajeAhorro(0, 3)).toBeUndefined()
     expect(porcentajeAhorro(-1, 3)).toBeUndefined()
     expect(porcentajeAhorro(1, Number.NaN)).toBeUndefined()
+  })
+
+  test('el resumen de la sesión: neto, lo que costó, lo que habría costado y el %', async () => {
+    const r = resumenAhorro({ recorteUsd: 0.5, relecturasUsd: 2, ruteoAhorroUsd: 0.8, ruteoExtraUsd: 0.23, gastoMedidoUsd: 13.93 })
+    cerca(r.neto, 3.07)
+    cerca(r.sinToki, 17)
+    expect(r.gastado).toBe(13.93)
+    expect(r.pct).toBe(18)
+    // Sin nada medido no hay porcentaje; en negativo, tampoco.
+    expect(resumenAhorro({})).toEqual({ neto: 0, gastado: 0, sinToki: 0 })
+    expect(resumenAhorro({ relecturasUsd: -0.4, gastoMedidoUsd: 2 }).pct).toBeUndefined()
+    // Menos de un 1 % no se muestra.
+    expect(resumenAhorro({ recorteUsd: 0.001, gastoMedidoUsd: 5 }).pct).toBeUndefined()
+  })
+
+  test('las cifras en dólares, con signo y por día', async () => {
+    expect(cifraUsd(3.071)).toBe('~$3.07')
+    expect(cifraUsd(0.004)).toBe('<$0.01')
+    expect(cifraUsd(127.6)).toBe('~$128')
+    expect(cifraUsd(-2)).toBe('$0.00')
+    expect(cifraUsd(Number.NaN)).toBe('$0.00')
+    expect(cifraUsdFirmada(0.42)).toBe('~$0.42')
+    expect(cifraUsdFirmada(-0.05)).toBe('−$0.05')
+    expect(cifraUsdFirmada(-0.004)).toBe('$0.00')
+    expect(cifraUsdDia(0.42)).toBe('~$0.42')
+    expect(cifraUsdDia(-0.3)).toBe('−$0.30')
+    expect(cifraUsdDia(0.001)).toBe('·')
+    expect(cifraUsdDia(Number.NaN)).toBe('·')
+  })
+
+  test('lo de antes de medir en dólares se estima a lo más barato', async () => {
+    // 100k recortados a escritura de Sonnet (5 min) y 1M de relecturas a lectura de Sonnet.
+    cerca(estimarAhorroPrevio(100_000, 1_000_000), 0.25 + 0.1)
+    expect(estimarAhorroPrevio(-5, Number.NaN)).toBe(0)
   })
 })

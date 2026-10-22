@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { actividadDeHerramienta, barra, colorDePorcentaje, cuadro, decidirActividad, frase, relojCache } from '../hooks/mascota'
+import { actividadDeHerramienta, barra, cantidadAhorrada, colorDePorcentaje, cuadro, decidirActividad, frase, relojCache } from '../hooks/mascota'
 
 describe('Toki', () => {
   test('tiene cuadros para cada estado y la animación avanza', async () => {
@@ -47,6 +47,15 @@ describe('Toki', () => {
     expect(frase({ actividad: 'listo', inactivoMinutos: 0, ahorradoSesion: 2000 }).texto).toBe('Listo. Esta sesión te ahorré ~2.0k tokens.')
     expect(frase({ actividad: 'listo', inactivoMinutos: 0, ahorradoSesion: 2000 }, 'en').texto).toBe('Done. This session I saved you ~2.0k tokens.')
     expect(frase({ actividad: 'tranquilo', inactivoMinutos: 0, ahorradoSesion: 0 }, 'en').texto).toBe('All good. I am watching your tokens.')
+  })
+
+  test('lo ahorrado se dice en dólares desde un centavo; si costó de más, no presume', async () => {
+    expect(cantidadAhorrada({ ahorradoSesion: 2000, ahorradoUsd: 0.42 })).toBe('~$0.42')
+    expect(cantidadAhorrada({ ahorradoSesion: 2000, ahorradoUsd: 0.004 })).toBe('~2.0k tokens')
+    expect(cantidadAhorrada({ ahorradoSesion: 2000, ahorradoUsd: -0.05 })).toBeUndefined()
+    expect(cantidadAhorrada({ ahorradoSesion: 0 })).toBeUndefined()
+    expect(frase({ actividad: 'listo', inactivoMinutos: 0, ahorradoSesion: 2000, ahorradoUsd: 1.5 }).texto).toBe('Listo. Esta sesión te ahorré ~$1.50.')
+    expect(frase({ actividad: 'tranquilo', inactivoMinutos: 0, ahorradoSesion: 0, ahorradoUsd: 0.3 }, 'en').texto).toBe('All good. This session I saved you ~$0.30.')
   })
 
   test('los medidores', async () => {

@@ -6,7 +6,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderNode, ResolveInput, ToolCallResult, TurnStepInput, TurnUsage } from 'claude-code'
 
 import type { Sesion } from '../types'
-import { COMIENZO_TIPICO, costoClasificador, costoSinTokiPedido, esPedidoPrevio, factorSalida, leidoSinToki as leidoCacheSinToki, valorEscritura, valorLectura } from './ahorro'
+import { CENTAVO, cifraUsd, cifraUsdDia, cifraUsdFirmada, COMIENZO_TIPICO, costoClasificador, costoSinTokiPedido, esPedidoPrevio, estimarAhorroPrevio, factorSalida, leidoSinToki as leidoCacheSinToki, resumenAhorro, valorEscritura, valorLectura } from './ahorro'
 import type { PedidoPrevio, UsoMedido } from './ahorro'
 import { avisoBucle, registrar, UMBRAL_FALLOS } from './bucles'
 import { debeMantenerCache, evaluarPing } from './cache'
@@ -30,7 +30,7 @@ import {
   tokensAprox,
 } from './compresor'
 import type { Compactado } from './compresor'
-import { agregarAlRegistro, agregarLeccion, filasGrafica, fusionarHistorial, leccionCambioModelo, LOGROS, logrosNuevos, nombreModelo, racha, sumarAlDia, totalDesde } from './historial'
+import { agregarAlRegistro, agregarLeccion, filasGrafica, fusionarHistorial, hayAhorro, leccionCambioModelo, LOGROS, logrosNuevos, nombreModelo, racha, sumarAlDia, totalDesde } from './historial'
 import type { Historial, Leccion, Logro } from './historial'
 import { detectarIdioma, idiomaDeTexto, quitarEtiquetasDeSistema, t } from './idioma'
 import type { Idioma, Textos } from './idioma'
@@ -42,7 +42,6 @@ import { estaVacia, extraerDecisiones, instruccionesDeCompactacion, LIMITES_MEMO
 import type { Decision, Motivo, PuntoDeControl } from './memoria'
 import {
   ahorroSinCache,
-  aprox,
   costoMedido,
   daIgual,
   decidirInterfaz,
@@ -129,6 +128,10 @@ const CLAVE_RELECTURAS = 'relecturasEvitadasTotal'
 const CLAVE_AHORRO_USD = 'ahorroUsdTotal'
 /** Lo mismo, día por día. */
 const CLAVE_HISTORIAL_USD = 'historialDiarioUsd'
+/** Ya se pasó a dólares lo ahorrado antes de medir en dólares (una sola vez). */
+const CLAVE_USD_SEMBRADO = 'ahorroUsdSembrado'
+/** Cuánto de CLAVE_AHORRO_USD es esa estimación (para decirlo en el panel). */
+const CLAVE_USD_ESTIMADO = 'ahorroUsdEstimado'
 /** El último pedido del hilo principal y el comienzo medido: el caché que sigue vivo entre sesiones. */
 const CLAVE_ULTIMO_PEDIDO = 'ultimoPedido'
 const CLAVE_SEMANAS = 'semanas'
@@ -234,6 +237,8 @@ const vivo: {
   panelDibujado: boolean
   racha: number
   total: number
+  /** Lo ahorrado desde siempre en dólares (neto), como está en el store. */
+  totalUsd: number
   /** Lo que Toki sacó del contexto y Claude habría releído en cada pedido. */
   relecturas: Relecturas
   /** Una compactación que Toki adelantó: lo que se ahorra en los pedidos siguientes. */
@@ -303,6 +308,7 @@ const vivo: {
   panelDibujado: false,
   racha: 0,
   total: 0,
+  totalUsd: 0,
   relecturas: RELECTURAS_VACIAS,
   contextoMax: 0,
   repetidas: {},
@@ -609,16 +615,66 @@ async function migrarDesdeAhorroTokens($: $): Promise<number> {
   }
 }
 
+/**
+ * Antes de 0.17 el ahorro se guardaba solo en tokens: la primera vez se pasa a
+ * dólares (recortes y relecturas a precio de Sonnet, lo más barato) para que el
+ * histórico no empiece en cero. Una sola vez; lo estimado se dice en el panel.
+ */
+async function sembrarAhorroUsd($: $): Promise<void> {
+  try {
+    if ((await $.store.get(CLAVE_USD_SEMBRADO)) === true) return
+    await $.store.set(CLAVE_USD_SEMBRADO, true)
+    const tokens = await leerHistorial($)
+    const usdDias = await leerHistorialUsd($)
+    // Desde el primer día con dólares ya se midió todo: solo cuenta lo anterior.
+    const primerDiaUsd = Object.keys(usdDias).sort()[0]
+    const antes = (d: string) => primerDiaUsd === undefined || d < primerDiaUsd
+    const desdeUsd = Object.entries(tokens)
+      .filter(([d, n]) => !antes(d) && typeof n === 'number' && Number.isFinite(n))
+      .reduce((suma, [, n]) => suma + n, 0)
+    const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
+    const recortados = Math.max(0, (Number.isFinite(total) ? total : 0) - desdeUsd)
+    // Las relecturas no se guardan por día: solo si nunca se midió en dólares.
+    const relecturas = primerDiaUsd === undefined ? Number((await $.store.get(CLAVE_RELECTURAS)) ?? 0) : 0
+    const estimado = estimarAhorroPrevio(recortados, relecturas)
+    if (!(estimado >= CENTAVO)) return
+    let dias: Historial = { ...usdDias }
+    for (const [d, n] of Object.entries(tokens)) {
+      if (antes(d) && typeof n === 'number' && Number.isFinite(n) && n > 0) dias = { ...dias, [d]: (dias[d] ?? 0) + estimarAhorroPrevio(n, 0) }
+    }
+    const previo = Number((await $.store.get(CLAVE_AHORRO_USD)) ?? 0)
+    await $.store.set(CLAVE_AHORRO_USD, (Number.isFinite(previo) ? previo : 0) + estimado)
+    await $.store.set(CLAVE_HISTORIAL_USD, dias)
+    await $.store.set(CLAVE_USD_ESTIMADO, estimado)
+    $.ui.log(`ahorro en dólares: ${estimado.toFixed(4)} estimados de antes de 0.17`, { to: 'debug' })
+  } catch {
+    // Sin store: se empieza a contar en dólares desde ahora.
+  }
+}
+
+/** Días seguidos con algún ahorro, en tokens o en dólares. */
+async function rachaDe($: $, ahora: number): Promise<number> {
+  return racha(hayAhorro(await leerHistorial($), await leerHistorialUsd($)), ahora)
+}
+
+/** Lo ahorrado desde siempre, para decirlo: en dólares si llega a un centavo, si no en tokens. */
+function totalAhorrado(): string | undefined {
+  if (vivo.totalUsd >= 0.01) return cifraUsd(vivo.totalUsd)
+  return vivo.total > 0 ? `~${formatearTokens(vivo.total)} tokens` : undefined
+}
+
 /** Revisa si hay logros nuevos y los celebra. Devuelve los recién desbloqueados. */
 async function revisarLogros($: $, extra: { memoria?: boolean; rescate?: boolean } = {}): Promise<Logro[]> {
   try {
     const ahora = await $.clock.now()
     const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
-    const rachaActual = racha(await leerHistorial($), ahora)
-    vivo.total = total
+    const usd = Number((await $.store.get(CLAVE_AHORRO_USD)) ?? 0)
+    const rachaActual = await rachaDe($, ahora)
+    vivo.total = Number.isFinite(total) ? total : 0
+    vivo.totalUsd = Number.isFinite(usd) ? usd : 0
     vivo.racha = rachaActual
     const ya = await leerLogros($)
-    const nuevos = logrosNuevos(ya, { total, racha: rachaActual, ...extra })
+    const nuevos = logrosNuevos(ya, { total: vivo.total, usd: vivo.totalUsd, racha: rachaActual, ...extra })
     if (nuevos.length === 0) return []
     await $.store.set(CLAVE_LOGROS, [...ya, ...nuevos])
     const x = tx()
@@ -922,8 +978,12 @@ async function acreditar($: $): Promise<void> {
   if (pendientes === 0 || !Number.isFinite(pendientes)) return
   try {
     const total = Number((await $.store.get(CLAVE_AHORRO_USD)) ?? 0)
-    await $.store.set(CLAVE_AHORRO_USD, (Number.isFinite(total) ? total : 0) + pendientes)
+    const nuevo = (Number.isFinite(total) ? total : 0) + pendientes
+    await $.store.set(CLAVE_AHORRO_USD, nuevo)
     await $.store.set(CLAVE_HISTORIAL_USD, sumarAlDia(await leerHistorialUsd($), await $.clock.now(), pendientes))
+    vivo.totalUsd = nuevo
+    // El primer ahorro también puede ser en dólares (un mensaje a un modelo más barato).
+    if (pendientes > 0) await revisarLogros($)
   } catch {
     // Sin store: la cifra de la sesión sigue en la barra.
   }
@@ -1590,6 +1650,18 @@ type Reporte = {
   hoy: number
   semana: number
   mes: number
+  /** La cifra única: neto en dólares a precio de API, cuánto costó y cuánto habría costado sin Toki. */
+  ahorro: ReturnType<typeof resumenAhorro>
+  /** Lo ahorrado en dólares (neto) hoy, en 7 y 30 días y desde siempre. */
+  hoyUsd: number
+  semanaUsd: number
+  mesUsd: number
+  totalUsd: number
+  /** Del total en dólares, lo estimado de antes de 0.17. */
+  estimadoUsd: number
+  /** De dónde sale el ahorro de la sesión. */
+  desglose: string[]
+  suscripcion: boolean
   racha: number
   logros: string[]
   grafica: ReturnType<typeof filasGrafica>
@@ -1624,10 +1696,59 @@ function lineasGasto(x: Textos, g: Gasto): string[] {
   return lineas
 }
 
-/** Si Toki no recortó nada pero la sesión gastó bastante, explica dónde se fue. */
+/** Si Toki no ahorró nada pero la sesión gastó bastante, explica dónde se fue. */
 function explicarCero(x: Textos, s: Sesion, g: Gasto): string | undefined {
-  if (s.tokensAhorrados > 0 || totalGasto(g) < 100_000) return undefined
+  const hubo = s.tokensAhorrados > 0 || Math.abs(resumenAhorro(s).neto) >= CENTAVO || (s.ruteoAhorroUsd ?? 0) + (s.ruteoExtraUsd ?? 0) >= CENTAVO
+  if (hubo || totalGasto(g) < 100_000) return undefined
   return x.porQueCero(formatearTokens(g.cacheLeido), porcentajeRelectura(g))
+}
+
+/** "~290.0k", "−290.0k" (lo que costó compactar, antes de recuperarlo). */
+function tokensFirmados(n: number): string {
+  return n < 0 ? `−${formatearTokens(-n)}` : formatearTokens(n)
+}
+
+/** De dónde sale el ahorro de la sesión: cada fuente en dólares, y lo que costó contra lo que habría costado. */
+function lineasDesglose(x: Textos, s: Sesion): string[] {
+  const lineas: string[] = []
+  const relecturas = s.relecturasUsd ?? 0
+  if (Math.abs(relecturas) >= CENTAVO) {
+    lineas.push(relecturas > 0 ? x.desgloseRelecturas(cifraUsd(relecturas), tokensFirmados(s.relecturasEvitadas ?? 0)) : x.desgloseCompactar(cifraUsdFirmada(relecturas)))
+  }
+  if ((s.recorteUsd ?? 0) >= CENTAVO) lineas.push(x.desgloseRecorte(cifraUsd(s.recorteUsd ?? 0), formatearTokens(s.tokensAhorrados)))
+  const a = s.ruteoAhorroUsd ?? 0
+  const e = s.ruteoExtraUsd ?? 0
+  if (a >= CENTAVO || e >= CENTAVO) lineas.push(x.desgloseRuteo(cifraUsdFirmada(a - e), a >= CENTAVO ? cifraUsd(a) : undefined, e >= CENTAVO ? cifraUsd(e) : undefined))
+  const r = resumenAhorro(s)
+  if (r.gastado >= CENTAVO) lineas.push(x.desgloseCosto(cifraUsd(r.gastado), cifraUsd(r.sinToki)))
+  return lineas
+}
+
+/** Lo de la sesión para la cabecera: en dólares si llega a un centavo, si no en tokens; si costó de más, lo dice. */
+function cifraSesion(x: Textos, s: Sesion): string {
+  const r = resumenAhorro(s)
+  if (r.neto <= -CENTAVO) return x.costoDeMasSesion(cifraUsd(-r.neto))
+  if (r.neto >= 0.01) return x.ahorroSesion(cifraUsd(r.neto), r.pct)
+  return x.ahorroSesion(s.tokensAhorrados > 0 ? `~${formatearTokens(s.tokensAhorrados)} tokens` : cifraUsd(r.neto), undefined)
+}
+
+/**
+ * La cifra de la barra: lo ahorrado en la sesión en dólares, con el "−18 %";
+ * en tokens si aún no llega a un centavo; si en neto costó de más, lo dice.
+ */
+function chipAhorro(x: Textos, s: Sesion, angosto = false): { etiqueta: string; valor: string; color: 'success' | 'warning' } {
+  const r = resumenAhorro(s)
+  if (r.neto <= -CENTAVO) return { etiqueta: x.costoDeMas, valor: cifraUsd(-r.neto), color: 'warning' }
+  if (r.neto >= 0.01) return { etiqueta: x.ahorrado, valor: `${cifraUsd(r.neto)}${r.pct !== undefined && !angosto ? ` ${x.menosPct(r.pct)}` : ''}`, color: 'success' }
+  return { etiqueta: x.ahorrado, valor: s.tokensAhorrados > 0 ? `~${formatearTokens(s.tokensAhorrados)} tokens` : cifraUsd(r.neto), color: 'success' }
+}
+
+/** Las notas bajo la cifra: de dónde salen los dólares y lo estimado de antes de 0.17. */
+function notasAhorro(x: Textos, r: Pick<Reporte, 'ahorro' | 'suscripcion' | 'estimadoUsd' | 'totalUsd'>): string[] {
+  const notas: string[] = []
+  if (Math.abs(r.ahorro.neto) >= CENTAVO || r.ahorro.gastado >= CENTAVO || r.totalUsd >= CENTAVO) notas.push(x.aPrecioApi(r.suscripcion))
+  if (r.estimadoUsd >= CENTAVO) notas.push(x.estimadoPrevio(cifraUsd(r.estimadoUsd)))
+  return notas
 }
 
 async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
@@ -1635,16 +1756,29 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
   const s = await read($, sesion)
   const ahora = await $.clock.now()
   const historial = await leerHistorial($)
+  const historialUsd = await leerHistorialUsd($)
   const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
+  const totalUsd = Number((await $.store.get(CLAVE_AHORRO_USD)) ?? 0)
+  const estimadoUsd = Number((await $.store.get(CLAVE_USD_ESTIMADO)) ?? 0)
+  // Lo de este mensaje que aún no se acreditó ya está en la sesión: también va en el día y el total.
+  const pendiente = Number.isFinite(vivo.dolaresPendientes) ? vivo.dolaresPendientes : 0
   const r: Reporte = {
     sesion: s,
     total,
     hoy: totalDesde(historial, ahora, 1),
     semana: totalDesde(historial, ahora, 7),
     mes: totalDesde(historial, ahora, 30),
-    racha: racha(historial, ahora),
+    ahorro: resumenAhorro(s),
+    hoyUsd: totalDesde(historialUsd, ahora, 1) + pendiente,
+    semanaUsd: totalDesde(historialUsd, ahora, 7) + pendiente,
+    mesUsd: totalDesde(historialUsd, ahora, 30) + pendiente,
+    totalUsd: (Number.isFinite(totalUsd) ? totalUsd : 0) + pendiente,
+    estimadoUsd: Number.isFinite(estimadoUsd) ? estimadoUsd : 0,
+    desglose: lineasDesglose(x, s),
+    suscripcion: vivo.usoCache?.esSuscripcion === true,
+    racha: racha(hayAhorro(historial, historialUsd), ahora),
     logros: await leerLogros($),
-    grafica: filasGrafica(historial, ahora, 14, anchoBarra, vivo.idioma),
+    grafica: filasGrafica(pendiente === 0 ? historialUsd : sumarAlDia(historialUsd, ahora, pendiente), ahora, 14, anchoBarra, vivo.idioma, cifraUsdDia),
     ocupan: [],
     sugerencias: [],
     lecciones: vivo.lecciones,
@@ -1660,6 +1794,7 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
     const ventana = vivo.ventana ?? uso.context.breakdown?.rawMaxTokens ?? uso.context.window
     const pct = uso.context.tokens !== undefined && ventana > 0 ? Math.round((uso.context.tokens / ventana) * 100) : uso.context.percent
     r.contexto = { pct, ventana, costo: uso.cost?.usd, esSuscripcion: uso.rateLimits.length > 0 }
+    if (r.contexto.esSuscripcion) r.suscripcion = true
     const desglose = uso.context.breakdown
     if (desglose !== undefined) {
       r.ocupan = desglose.categories
@@ -1716,24 +1851,34 @@ function lineaLogros(x: Textos, logros: readonly string[]): string {
 function reporteEnTexto(r: Reporte): string {
   const x = tx()
   const lineas = [
-    x.reporteCabecera(formatearTokens(r.sesion.tokensAhorrados), formatearTokens(r.hoy), formatearTokens(r.semana), formatearTokens(r.total)),
+    x.reporteCabecera(cifraSesion(x, r.sesion), cifraUsdFirmada(r.hoyUsd), cifraUsdFirmada(r.semanaUsd), cifraUsdFirmada(r.totalUsd)),
+    ...notasAhorro(x, r),
+  ]
+  if (r.desglose.length > 0) {
+    lineas.push('', `${x.desgloseTitulo}:`)
+    for (const l of r.desglose) lineas.push(`  ${l}`)
+    lineas.push('')
+  }
+  lineas.push(
     x.resumenSesion(r.sesion.compactaciones, r.sesion.llamadas, r.sesion.bucles),
     r.racha > 0 ? x.rachaDias(r.racha) : x.rachaNinguna,
     `${x.logros}: ${lineaLogros(x, r.logros)}`,
-  ]
+  )
   if (r.contexto) {
     lineas.push(x.contextoLinea(r.contexto.pct === undefined ? x.sinDatos : `${r.contexto.pct}% ${x.usado}`, formatearTokens(r.contexto.ventana)))
   }
   if (vivo.pingsTotales > 0) lineas.push(x.cacheMantenido(vivo.pingsTotales, formatearTokens(vivo.tokensLeidosPing)))
   const cuentas = lineasGasto(x, r.gasto)
-  if ((r.sesion.relecturasEvitadas ?? 0) > 0) cuentas.push(x.relecturasLinea(formatearTokens(r.sesion.relecturasEvitadas)))
+  // Las relecturas ya están en el desglose, en dólares; sin desglose van aquí, en tokens.
+  if ((r.sesion.relecturasEvitadas ?? 0) > 0 && r.desglose.length === 0) cuentas.push(x.relecturasLinea(formatearTokens(r.sesion.relecturasEvitadas)))
   if (r.ventanaTexto !== undefined) cuentas.push(r.ventanaTexto)
   if (r.porQueCero !== undefined) cuentas.push(r.porQueCero)
   if (cuentas.length > 0) {
     lineas.push('', `${x.gastoTitulo}:`)
     for (const l of cuentas) lineas.push(`  ${l}`)
   }
-  lineas.push('', ...textoRuta(xr(), r.sesion))
+  // El balance del modelo ya está en el desglose.
+  lineas.push('', ...textoRuta(xr()))
   if (r.ocupan.length > 0) {
     lineas.push('', `${x.queOcupa}:`)
     for (const c of r.ocupan) lineas.push(`  ${c.nombre}: ~${formatearTokens(c.tokens)}`)
@@ -1878,6 +2023,10 @@ const ruta: {
   /** En qué modelo fue cada mensaje de esta sesión. */
   mensajesEn: Partial<Record<Familia, number>>
   medicion?: Medicion
+  /** El modelo que Toki pidió para el hilo principal y la API confirmó que respondió (el ✓ de la barra). */
+  confirmado?: string
+  /** Toki cambió el esfuerzo de algún pedido en esta sesión: la barra de Claude Code no lo muestra. */
+  cambioEsfuerzo: boolean
 } = {
   modo: 'preguntar',
   modoConfig: 'preguntar',
@@ -1898,6 +2047,7 @@ const ruta: {
   preguntoAntes: false,
   deshechos: {},
   mensajesEn: {},
+  cambioEsfuerzo: false,
 }
 
 function xr(): TextosRuta {
@@ -1923,6 +2073,7 @@ function reiniciarRuta(): void {
   ruta.soloComienzo = true
   ruta.mensajesEn = {}
   ruta.medicion = undefined
+  ruta.confirmado = undefined
 }
 
 /** La línea del diagnóstico para un mensaje medido. */
@@ -2178,7 +2329,11 @@ function textoRuta(x: TextosRuta, s?: Pick<Sesion, 'ruteoAhorroUsd' | 'ruteoExtr
   const extra = s?.ruteoExtraUsd ?? 0
   if (ahorro >= 0.005 || extra >= 0.005) lineas.push(`  ${x.balance(usdTexto(ahorro), extra >= 0.005 ? usdTexto(extra) : undefined, vivo.usoCache?.esSuscripcion === true)}`)
   if (ruta.sonnetPrimero) lineas.push(`  ${x.sonnet.titulo}: ${x.sonnet.estado(true)}${ruta.sonnetPausado ? ` (${x.sonnet.pausa})` : ''}`)
-  if (ruta.modeloPrincipal !== undefined) lineas.push(`  ${nombreCorto(ruta.modeloPrincipal)} ${x.porToki}`)
+  if (ruta.modeloPrincipal !== undefined) {
+    lineas.push(`  ${nombreCorto(ruta.modeloPrincipal)} ${x.porToki}`)
+    if (ruta.confirmado === ruta.modeloPrincipal) lineas.push(`  ${x.confirmado(nombreCorto(ruta.modeloPrincipal))}`)
+  }
+  if (ruta.cambioEsfuerzo) lineas.push(`  ${x.notaEsfuerzo}`)
   if (guardia.ahorroHasta > 0) lineas.push(`  ${xg().limite.enAhorro(hora(guardia.ahorroHasta, guardia.ahorroVentana ?? 'five_hour', vivo.idioma))}`)
   if (ruta.subagentesEnSonnet > 0) lineas.push(`  ${x.subagentes.replace(/^Toki: /, '')} (${ruta.subagentesEnSonnet})`)
   const u = ruta.ultima
@@ -2799,11 +2954,12 @@ export const register: Register = (on, options) => {
       decir(ahora, x.migrado(formatearTokens(migrado)), 'bien', 20_000)
       $.ui.toast(`Toki: ${x.migrado(formatearTokens(migrado))}`, { timeoutMs: 8000 })
     }
+    await sembrarAhorroUsd($)
     await revisarLogros($)
     vivo.costoContado = 0
     await alaSemana($, { sesiones: 1 })
     if (e.isInteractive) await avisarSemana($, ahora)
-    if (e.isInteractive && config.acompanante && vivo.mensaje === undefined) decir(ahora, x.saludo(vivo.total > 0 ? formatearTokens(vivo.total) : undefined, vivo.racha), 'normal', 15_000)
+    if (e.isInteractive && config.acompanante && vivo.mensaje === undefined) decir(ahora, x.saludo(totalAhorrado(), vivo.racha), 'normal', 15_000)
     return next(e)
   })
 
@@ -2969,7 +3125,12 @@ export const register: Register = (on, options) => {
       ruta.modeloPrincipal = undefined
       $.ui.toast(xr().modeloNoDisponible(nombreCorto(pedido.model)), { timeoutMs: 8000 })
       void anotarDiagnostico($, `modelo pedido ${pedido.model}, respondió ${respuesta.usage.model}`)
+    } else if (e.agentId === undefined && pedido.model !== e.model && respuesta.usage !== null && ruta.confirmado !== pedido.model) {
+      // La API dice qué modelo respondió: el ✓ de la barra no es una suposición.
+      ruta.confirmado = pedido.model
+      $.ui.invalidate('ui.render')
     }
+    if (e.agentId === undefined && pedido.effort !== e.effort) ruta.cambioEsfuerzo = true
     if (respuesta.usage !== null) {
       const u = respuesta.usage
       const sin = familiaSinDelPedido(e, u)
@@ -3285,7 +3446,7 @@ export const register: Register = (on, options) => {
       : actual
     const historial = await leerHistorial($)
     const suscripcion = vivo.usoCache?.esSuscripcion === true
-    const opciones = { idioma: vivo.idioma, mostrarCosto: !suscripcion, suscripcion, racha: racha(historial, ahora), sonnetPrimero: sonnetActivo() }
+    const opciones = { idioma: vivo.idioma, mostrarCosto: !suscripcion, suscripcion, racha: await rachaDe($, ahora), sonnetPrimero: sonnetActivo() }
     if (!md || semanas[lunes] === undefined) return { text: tarjetaSemana(semanas, lunes, ahora, historial, opciones) }
     const archivo = `${CARPETA}/semana-${lunes}.md`
     try {
@@ -3428,6 +3589,7 @@ export const register: Register = (on, options) => {
         contextoTokens: uso?.tokens,
         inactivoMinutos: s.ultimaActividad > 0 ? (ahora - s.ultimaActividad) / 60_000 : 0,
         ahorradoSesion: s.tokensAhorrados,
+        ahorradoUsd: r.ahorro.neto,
         ultimoAhorro: vivo.ultimoAhorro,
         bucleReciente: vivo.bucleReciente,
       },
@@ -3439,7 +3601,9 @@ export const register: Register = (on, options) => {
     }
     const colorFrase = dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : dicho.tono === 'bien' ? 'success' : 'text'
     const cacheRestante = vivo.enTurno ? ttl : ultimoUso > 0 ? Math.max(0, ttl - desdeCache) : undefined
-    const medidores = `${x.contexto} ${uso?.pct === undefined ? '—' : `${uso.pct}%`} · ${x.cache} ${relojCache(cacheRestante, ttl)} ${cacheRestante === undefined ? '—' : cacheRestante <= 0 ? x.frio : formatearMinutos(cacheRestante, vivo.idioma)} · ${x.ahorrado} ~${formatearTokens(s.tokensAhorrados)}${(s.ruteoAhorroUsd ?? 0) >= 0.005 ? ` · ${xr().porModelo} ${aprox(usdTexto(s.ruteoAhorroUsd ?? 0))}` : ''}`
+    const ahorroChip = chipAhorro(x, s)
+    const medidores = `${x.contexto} ${uso?.pct === undefined ? '—' : `${uso.pct}%`} · ${x.cache} ${relojCache(cacheRestante, ttl)} ${cacheRestante === undefined ? '—' : cacheRestante <= 0 ? x.frio : formatearMinutos(cacheRestante, vivo.idioma)} · ${ahorroChip.etiqueta} ${ahorroChip.valor}`
+    const notas = notasAhorro(x, r)
     return (
       <Box flexDirection="column" paddingX={1}>
         {e.surface !== 'terminal' &&
@@ -3466,12 +3630,31 @@ export const register: Register = (on, options) => {
           <Text dimColor>· {x.eslogan}</Text>
         </Box>
         <Box flexDirection="row" marginTop={1}>
-          {cifra(x.estaSesion, `~${formatearTokens(r.sesion.tokensAhorrados)}`, 'success')}
-          {cifra(x.hoy, `~${formatearTokens(r.hoy)}`)}
-          {cifra(x.dias7, `~${formatearTokens(r.semana)}`)}
-          {cifra(x.dias30, `~${formatearTokens(r.mes)}`)}
-          {cifra(x.historico, `~${formatearTokens(r.total)}`, 'claude')}
+          {cifra(ahorroChip.etiqueta === x.costoDeMas ? `${x.estaSesion} · ${x.costoDeMas}` : x.estaSesion, ahorroChip.valor, ahorroChip.color === 'warning' ? 'text' : 'success')}
+          {cifra(x.hoy, cifraUsdFirmada(r.hoyUsd))}
+          {cifra(x.dias7, cifraUsdFirmada(r.semanaUsd))}
+          {cifra(x.dias30, cifraUsdFirmada(r.mesUsd))}
+          {cifra(x.historico, cifraUsdFirmada(r.totalUsd), 'claude')}
         </Box>
+        <Text dimColor wrap="wrap">
+          {x.tokensLinea(formatearTokens(r.sesion.tokensAhorrados), formatearTokens(r.total), (r.sesion.relecturasEvitadas ?? 0) > 0 ? formatearTokens(r.sesion.relecturasEvitadas ?? 0) : undefined)}
+        </Text>
+        {notas.map(l => (
+          <Text dimColor wrap="wrap">
+            {l}
+          </Text>
+        ))}
+        {r.desglose.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>{x.desgloseTitulo}</Text>
+            {r.desglose.map((l, i) => (
+              <Text color={i === r.desglose.length - 1 && r.ahorro.gastado >= CENTAVO ? 'text' : 'success'} wrap="wrap">
+                {'  '}
+                {l}
+              </Text>
+            ))}
+          </Box>
+        )}
         <Box flexDirection="row" gap={1} marginTop={1}>
           <Text dimColor wrap="wrap">
             {x.resumenSesion(r.sesion.compactaciones, r.sesion.llamadas, r.sesion.bucles)}
@@ -3482,7 +3665,7 @@ export const register: Register = (on, options) => {
         </Box>
         {ruta.modo !== 'no' && (
           <Box flexDirection="column" marginTop={1}>
-            {textoRuta(xr(), r.sesion).map((l, i) =>
+            {textoRuta(xr(), r.desglose.length > 0 ? undefined : r.sesion).map((l, i) =>
               i === 0 ? (
                 <Text bold wrap="wrap">
                   {l}
@@ -3504,7 +3687,7 @@ export const register: Register = (on, options) => {
                 {l}
               </Text>
             ))}
-            {(r.sesion.relecturasEvitadas ?? 0) > 0 && (
+            {(r.sesion.relecturasEvitadas ?? 0) > 0 && r.desglose.length === 0 && (
               <Text color="success" wrap="wrap">
                 {'  '}
                 {x.relecturasLinea(formatearTokens(r.sesion.relecturasEvitadas))}
@@ -3550,10 +3733,12 @@ export const register: Register = (on, options) => {
               <Text dimColor={!f.esHoy} bold={f.esHoy}>
                 {f.etiqueta}
               </Text>
-              <Text color={f.tokens > 0 ? 'success' : 'inactive'} mono>
+              <Text color={f.tokens >= CENTAVO ? 'success' : 'inactive'} mono>
                 {f.barra}
               </Text>
-              <Text dimColor={!f.esHoy}>{f.valor}</Text>
+              <Text dimColor={!f.esHoy} color={f.tokens <= -CENTAVO ? 'warning' : undefined}>
+                {f.valor}
+              </Text>
             </Box>
           ))}
         </Box>
@@ -3655,6 +3840,7 @@ export const register: Register = (on, options) => {
         cacheMinutosRestantes: cacheRestante,
         inactivoMinutos: inactivo,
         ahorradoSesion: s.tokensAhorrados,
+        ahorradoUsd: resumenAhorro(s).neto,
         ultimoAhorro: vivo.ultimoAhorro,
         bucleReciente: vivo.bucleReciente,
       },
@@ -3686,9 +3872,10 @@ export const register: Register = (on, options) => {
     const botonDeshacer = avisoRuta?.deshacer !== undefined ? <Button key="deshacer" label={xr().deshacer} onPress={() => void deshacerEleccion($)} /> : null
     // Mientras el modelo o el esfuerzo de este turno no son los tuyos, se ve en la barra.
     const esfuerzoToki = ruta.esfuerzo !== undefined && ruta.turno !== undefined ? ruta.esfuerzo : ruta.pendiente?.esfuerzo
-    const partesChip = [ruta.modeloPrincipal !== undefined ? nombreCorto(ruta.modeloPrincipal) : undefined, esfuerzoToki !== undefined ? xr().esfuerzo[esfuerzoToki] : undefined].filter(
-      (p): p is string => p !== undefined,
-    )
+    // ✓: la API confirmó que respondió el modelo que Toki pidió.
+    const modeloChip = ruta.modeloPrincipal !== undefined ? `${nombreCorto(ruta.modeloPrincipal)}${ruta.confirmado === ruta.modeloPrincipal ? ' ✓' : ''}` : undefined
+    const partesChip = [modeloChip, esfuerzoToki !== undefined ? xr().esfuerzo[esfuerzoToki] : undefined].filter((p): p is string => p !== undefined)
+    const ahorroChip = chipAhorro(x, s, angosto)
     const chipModelo = partesChip.length > 0 && avisoRuta === undefined ? `${partesChip.join(' · ')} · ${xr().porToki}` : undefined
     const pctTope = tarea.p !== undefined ? porcentaje(tarea.p, actualDe(tarea.p)) : undefined
     const chipTope = pctTope !== undefined ? ({ texto: xp().chip(pctTope), color: pctTope >= 100 ? 'error' : pctTope >= 80 ? 'warning' : 'inactive' } as const) : undefined
@@ -3703,8 +3890,8 @@ export const register: Register = (on, options) => {
             {x.cache} {cacheTexto}
           </Text>
           <Text dimColor>·</Text>
-          <Text color="success">
-            ~{formatearTokens(s.tokensAhorrados)} {x.ahorrados}
+          <Text color={ahorroChip.color}>
+            {ahorroChip.etiqueta === x.costoDeMas ? `${x.costoDeMas} ${ahorroChip.valor}` : `${ahorroChip.valor} ${x.ahorrados}`}
           </Text>
           {conRacha && <Text color="warning">· 🔥{vivo.racha}</Text>}
           {chipTope !== undefined && <Text color={chipTope.color}>· {chipTope.texto}</Text>}
@@ -3746,16 +3933,13 @@ export const register: Register = (on, options) => {
         </Text>,
         vivo.pingsEnPausa > 0 ? <Text dimColor>({x.cacheCaliente(vivo.pingsEnPausa)})</Text> : '',
       ]),
+      // Una sola cifra: el desglose (relecturas, recortes, modelo) está en /toki.
       chip('ahorrado', [
-        <Text dimColor>· {x.ahorrado}</Text>,
-        <Text color="success" bold>
-          ~{formatearTokens(s.tokensAhorrados)}
+        <Text dimColor>· {ahorroChip.etiqueta}</Text>,
+        <Text color={ahorroChip.color} bold>
+          {ahorroChip.valor}
         </Text>,
       ]),
-      (s.ruteoAhorroUsd ?? 0) >= 0.005
-        ? chip('ruteo', [<Text dimColor>· {xr().porModelo}</Text>, <Text color="success">{aprox(usdTexto(s.ruteoAhorroUsd ?? 0))}</Text>])
-        : null,
-      (s.relecturasEvitadas ?? 0) > 0 && !angosto ? chip('relecturas', [<Text dimColor>· {x.relecturas}</Text>, <Text color="success">~{formatearTokens(s.relecturasEvitadas)}</Text>]) : null,
       conRacha && !angosto ? chip('racha', [<Text color="warning">· {x.rachaCorta(vivo.racha)}</Text>]) : null,
       uso?.cincoHoras !== undefined && !angosto
         ? chip('cinco', [
@@ -3846,7 +4030,7 @@ export const register: Register = (on, options) => {
             <Text dimColor wrap="wrap">
               {x.sesion} {uso ? formatearDuracion(ahora - uso.inicio, vivo.idioma) : '—'} · {s.llamadas} {x.llamadas} · {s.compactaciones} {x.salidasCompactadas} · {s.bucles} {x.bucles}
               {vivo.aprovechado !== undefined ? ` · ${x.aprovechado(vivo.aprovechado)}` : ''}
-              {uso?.costo !== undefined && !uso.esSuscripcion ? ` · $${uso.costo.toFixed(2)}` : ''} · {x.historico} ~{formatearTokens(Number((await $.store.get(CLAVE_TOTAL)) ?? 0))} · /toki
+              {uso?.costo !== undefined && !uso.esSuscripcion ? ` · $${uso.costo.toFixed(2)}` : ''} · {x.historico} {totalAhorrado() ?? '$0.00'} · /toki
             </Text>
           </Box>
         )}

@@ -95,13 +95,15 @@ export type Textos = {
   fraseEsperando: string
   fraseBucle: string
   fraseListoAhorro: (comando: string, tokens: string) => string
-  sesionAhorro: (tokens: string) => string
+  /** `cantidad`: "~$3.07" o "~2.0k tokens". */
+  sesionAhorro: (cantidad: string) => string
   fraseListo: (extra: string) => string
   fraseTranquilo: string
-  fraseTranquiloAhorro: (tokens: string) => string
+  fraseTranquiloAhorro: (cantidad: string) => string
   fraseCelebrando: string
   fraseLogro: (nombres: string) => string
   fraseCambioModelo: (modelo: string, tokens: string) => string
+  /** `total`: lo ahorrado desde siempre, ya escrito ("~$12.40" o "~2.0k tokens"). */
   saludo: (total: string | undefined, racha: number) => string
   min: string
   h: string
@@ -187,7 +189,29 @@ export type Textos = {
   sugConciso: string
   sugCache: string
   cacheMantenido: (pings: number, tokens: string) => string
+  /** `sesion`: lo de `ahorroSesion` o `costoDeMasSesion`; las demás cifras, ya escritas en dólares. */
   reporteCabecera: (sesion: string, hoy: string, semana: string, total: string) => string
+  /** "~$3.07 ahorrados en esta sesión (−18 %)". */
+  ahorroSesion: (cantidad: string, pct: number | undefined) => string
+  /** Cuando, en neto, Toki costó más de lo que ahorró. */
+  costoDeMasSesion: (cantidad: string) => string
+  /** Etiqueta de la barra en ese caso. */
+  costoDeMas: string
+  /** "−18 %": cuánto menos costó que sin Toki. */
+  menosPct: (pct: number) => string
+  /** Lo mismo en tokens, bajo las cifras del panel. */
+  tokensLinea: (sesion: string, total: string, relecturas: string | undefined) => string
+  aPrecioApi: (suscripcion: boolean) => string
+  estimadoPrevio: (cantidad: string) => string
+  desgloseTitulo: string
+  desgloseRelecturas: (usd: string, tokens: string) => string
+  /** Recién compactado: lo que costó compactar, antes de recuperarlo en los pedidos siguientes. */
+  desgloseCompactar: (usd: string) => string
+  desgloseRecorte: (usd: string, tokens: string) => string
+  /** `extra`: lo que costó de más (ya restado), si hubo. */
+  /** `ahorro`: undefined si no ahorró nada (solo costó de más); `extra`: undefined si no costó de más. */
+  desgloseRuteo: (neto: string, ahorro: string | undefined, extra: string | undefined) => string
+  desgloseCosto: (gastado: string, sinToki: string) => string
   diasSemana: string[]
   mapaTitulo: string
   mapaCabecera: (fecha: string, n: number, recortado: boolean) => string
@@ -200,7 +224,6 @@ export type Textos = {
   gastoPedidos: (pedidos: number, promedio: string) => string
   gastoSub: (pedidos: number, tokens: string) => string
   relecturasLinea: (tokens: string) => string
-  relecturas: string
   ventanaToki: (ventana: string, nativa: string) => string
   ventanaTuya: (ventana: string) => string
   ventanaNativa: (ventana: string) => string
@@ -245,17 +268,17 @@ const es: Textos = {
   fraseEsperando: 'Claude espera tu permiso para continuar.',
   fraseBucle: 'Ojo: un comando falló 3 veces seguidas. Le pedí a Claude cambiar de enfoque.',
   fraseListoAhorro: (c, t) => `Listo. En «${c}» te ahorré ~${t} tokens.`,
-  sesionAhorro: t => `Esta sesión te ahorré ~${t} tokens.`,
+  sesionAhorro: c => `Esta sesión te ahorré ${c}.`,
   fraseListo: extra => `Listo.${extra}`,
   fraseTranquilo: 'Todo en orden. Estoy pendiente de tus tokens.',
-  fraseTranquiloAhorro: t => `Todo en orden. Esta sesión te ahorré ~${t} tokens.`,
+  fraseTranquiloAhorro: c => `Todo en orden. Esta sesión te ahorré ${c}.`,
   fraseCelebrando: '¡Logro desbloqueado!',
   fraseLogro: n => `¡Logro desbloqueado: ${n}! Sigue así.`,
   fraseCambioModelo: (m, t) => `Cambiaste a ${m} con el caché caliente: tu próximo mensaje reprocesará ~${t} tokens. Si fue sin querer, vuelve al modelo anterior con /model.`,
   saludo: (total, r) =>
     total === undefined
       ? '¡Hola! Soy Toki, tu robot de limpieza de tokens. Voy a aspirar el ruido mientras trabajas.'
-      : `¡Hola de nuevo! Llevamos ~${total} tokens ahorrados juntos${r >= 2 ? ` y una racha de ${r} días` : ''}.`,
+      : `¡Hola de nuevo! Llevamos ${total} ahorrados juntos${r >= 2 ? ` y una racha de ${r} días` : ''}.`,
   min: 'min',
   h: 'h',
   menosDe1Min: 'menos de 1 min',
@@ -367,7 +390,26 @@ const es: Textos = {
   sugConciso: 'Para respuestas más cortas sin perder lo técnico: /output-style → toki:conciso.',
   sugCache: 'Pagas por token y el caché dura solo 5 min: activa "Mantener el caché caliente" en /plugin para no reprocesar todo al volver de una pausa.',
   cacheMantenido: (n, t) => `Toki mantuvo el caché caliente ${n} ${n === 1 ? 'vez' : 'veces'} (~${t} tokens leídos de caché, a 1/10 del precio de reprocesarlos).`,
-  reporteCabecera: (s, h, w, total) => `Toki · ~${s} tokens ahorrados en esta sesión · hoy ~${h} · semana ~${w} · histórico ~${total}`,
+  reporteCabecera: (s, h, w, total) => `Toki · ${s} · hoy ${h} · semana ${w} · histórico ${total}`,
+  ahorroSesion: (c, p) => `${c} ahorrados en esta sesión${p !== undefined ? ` (−${p} %)` : ''}`,
+  costoDeMasSesion: c => `esta sesión Toki costó ${c} de más`,
+  costoDeMas: 'costó de más',
+  menosPct: p => `−${p} %`,
+  tokensLinea: (s, t, r) => `En tokens: ~${s} recortados esta sesión · ~${t} desde siempre${r !== undefined ? ` · ~${r} relecturas evitadas` : ''}`,
+  aPrecioApi: s =>
+    `En dólares a precio de API: lo de modelo y esfuerzo sale de lo que devolvió cada pedido; recortes y relecturas, de los tokens que Toki quitó.${s ? ' Con tu suscripción no lo pagas aparte: es uso de tus límites que te queda libre.' : ''}`,
+  estimadoPrevio: c => `Incluye ${c} de antes de la versión 0.17, estimados a precio de Sonnet (solo recortes y relecturas).`,
+  desgloseTitulo: 'De dónde sale el ahorro de esta sesión',
+  desgloseRelecturas: (u, t) => `Relecturas evitadas: ${u} (~${t} tokens que Claude no volvió a leer porque Toki compactó antes o sacó algo del contexto)`,
+  desgloseCompactar: u => `Compactar antes: ${u} (lo que costó resumir la conversación; se recupera en los pedidos siguientes, que releen mucho menos)`,
+  desgloseRecorte: (u, t) => `Salidas recortadas: ${u} (~${t} tokens que no entraron al contexto)`,
+  desgloseRuteo: (n, a, e) =>
+    e === undefined
+      ? `Modelo y esfuerzo: ${n} (cada pedido contra tu modelo y tu esfuerzo)`
+      : a === undefined
+        ? `Modelo y esfuerzo: ${n} (costó de más por más esfuerzo o al reescribir el caché)`
+        : `Modelo y esfuerzo: ${n} (ahorró ${a}; costó ${e} de más por más esfuerzo o al reescribir el caché)`,
+  desgloseCosto: (g, s) => `Esta sesión costó ${g}; sin Toki habría costado ${s}.`,
   diasSemana: ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'],
   mapaTitulo: 'Mapa del proyecto',
   mapaCabecera: (f, n, r) => `Generado por Toki el ${f}, sin usar el modelo (solo análisis de texto). ${n} archivos de código${r ? ' (recortado: el proyecto es más grande)' : ''}.`,
@@ -379,7 +421,6 @@ const es: Textos = {
   gastoPedidos: (n, prom) => `${n} ${n === 1 ? 'pedido' : 'pedidos'} al modelo; cada uno mandó en promedio ~${prom} de contexto.`,
   gastoSub: (n, t) => `Subagentes y tareas internas (compactar, memoria): ${n} ${n === 1 ? 'pedido' : 'pedidos'}, ~${t}.`,
   relecturasLinea: t => `Relecturas evitadas: ~${t} tokens que Claude no volvió a leer porque Toki los sacó del contexto o compactó antes. Es la parte más barata de cada pedido, pero la más grande.`,
-  relecturas: 'relecturas evitadas',
   ventanaToki: (v, n) => `Compactación: a los ${v} (Claude Code lo haría a los ${n}). La ajusta Toki; cámbiala en /plugin → Toki.`,
   ventanaTuya: v => `Compactación: a los ${v} (la elegiste tú; Toki no la toca).`,
   ventanaNativa: v => `Compactación: a los ${v} (la de Claude Code).`,
@@ -387,7 +428,8 @@ const es: Textos = {
   deVentana: v => `de ${v}`,
   salidaRepetida: (m, tam, r) => `[Toki] Salida idéntica a la de este mismo comando hace ${m < 1 ? 'menos de 1 min' : `${m} min`} (${tam}): no cambió nada. Sigue arriba en la conversación; copia completa en ${r}`,
   detalleRepetida: 'salida idéntica a la anterior: quedó una línea con la ruta de la copia',
-  porQueCero: (l, p) => `Por qué el ahorro va en ~0: los comandos de esta sesión ya venían filtrados o eran lecturas exactas, y eso Toki no lo recorta para no perder información. Lo que más pesó fue releer la conversación en cada pedido: ~${l} (${p}% de todo).`,
+  porQueCero: (l, p) =>
+    `Por qué el ahorro va en cero: Toki ahorra al recortar salidas largas (no toca lecturas exactas ni salidas ya filtradas), al compactar antes que Claude Code cuando la conversación crece y al mandar los mensajes sencillos a un modelo más barato; en esta sesión todavía no hubo dónde. Lo que más pesó fue releer la conversación en cada pedido: ~${l} (${p}% de todo).`,
   logroNombres: {
     primero: 'Primer ahorro',
     diez: '10k tokens',
@@ -434,17 +476,17 @@ const en: Textos = {
   fraseEsperando: 'Claude is waiting for your permission.',
   fraseBucle: 'Heads up: a command failed 3 times in a row. I asked Claude to change approach.',
   fraseListoAhorro: (c, t) => `Done. On "${c}" I saved you ~${t} tokens.`,
-  sesionAhorro: t => `This session I saved you ~${t} tokens.`,
+  sesionAhorro: c => `This session I saved you ${c}.`,
   fraseListo: extra => `Done.${extra}`,
   fraseTranquilo: 'All good. I am watching your tokens.',
-  fraseTranquiloAhorro: t => `All good. This session I saved you ~${t} tokens.`,
+  fraseTranquiloAhorro: c => `All good. This session I saved you ${c}.`,
   fraseCelebrando: 'Achievement unlocked!',
   fraseLogro: n => `Achievement unlocked: ${n}! Keep it up.`,
   fraseCambioModelo: (m, t) => `You switched to ${m} with a warm cache: your next message will reprocess ~${t} tokens. If it was by accident, switch back with /model.`,
   saludo: (total, r) =>
     total === undefined
       ? "Hi! I'm Toki, your token-cleaning robot. I'll vacuum up the noise while you work."
-      : `Welcome back! We have saved ~${total} tokens together${r >= 2 ? ` with a ${r}-day streak` : ''}.`,
+      : `Welcome back! We have saved ${total} together${r >= 2 ? ` with a ${r}-day streak` : ''}.`,
   min: 'min',
   h: 'h',
   menosDe1Min: 'under 1 min',
@@ -556,7 +598,26 @@ const en: Textos = {
   sugConciso: 'For shorter replies without losing technical detail: /output-style → toki:conciso.',
   sugCache: 'You pay per token and the cache lasts only 5 min: turn on "Keep the cache warm" in /plugin so you do not reprocess everything after a break.',
   cacheMantenido: (n, t) => `Toki kept the cache warm ${n} ${n === 1 ? 'time' : 'times'} (~${t} tokens read from cache, at 1/10 of the cost of reprocessing them).`,
-  reporteCabecera: (s, h, w, total) => `Toki · ~${s} tokens saved this session · today ~${h} · week ~${w} · all time ~${total}`,
+  reporteCabecera: (s, h, w, total) => `Toki · ${s} · today ${h} · week ${w} · all time ${total}`,
+  ahorroSesion: (c, p) => `${c} saved this session${p !== undefined ? ` (−${p}%)` : ''}`,
+  costoDeMasSesion: c => `this session Toki cost ${c} extra`,
+  costoDeMas: 'cost extra',
+  menosPct: p => `−${p}%`,
+  tokensLinea: (s, t, r) => `In tokens: ~${s} trimmed this session · ~${t} all time${r !== undefined ? ` · ~${r} re-reads avoided` : ''}`,
+  aPrecioApi: s =>
+    `In dollars at API prices: model and effort come from what each request returned; trims and re-reads, from the tokens Toki removed.${s ? ' On your subscription you do not pay it separately: it is usage of your limits left free.' : ''}`,
+  estimadoPrevio: c => `Includes ${c} from before version 0.17, estimated at Sonnet prices (trims and re-reads only).`,
+  desgloseTitulo: "Where this session's savings come from",
+  desgloseRelecturas: (u, t) => `Re-reads avoided: ${u} (~${t} tokens Claude did not read again because Toki compacted earlier or took something out of context)`,
+  desgloseCompactar: u => `Compacting earlier: ${u} (what summarizing the conversation cost; it is made up in the following requests, which re-read much less)`,
+  desgloseRecorte: (u, t) => `Trimmed outputs: ${u} (~${t} tokens that never entered the context)`,
+  desgloseRuteo: (n, a, e) =>
+    e === undefined
+      ? `Model and effort: ${n} (each request against your model and your effort)`
+      : a === undefined
+        ? `Model and effort: ${n} (cost extra from more effort or rewriting the cache)`
+        : `Model and effort: ${n} (saved ${a}; cost ${e} extra from more effort or rewriting the cache)`,
+  desgloseCosto: (g, s) => `This session cost ${g}; without Toki it would have cost ${s}.`,
   diasSemana: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
   mapaTitulo: 'Project map',
   mapaCabecera: (f, n, r) => `Generated by Toki on ${f}, without using the model (text analysis only). ${n} code files${r ? ' (truncated: the project is larger)' : ''}.`,
@@ -568,7 +629,6 @@ const en: Textos = {
   gastoPedidos: (n, avg) => `${n} ${n === 1 ? 'request' : 'requests'} to the model; each sent ~${avg} of context on average.`,
   gastoSub: (n, t) => `Subagents and internal tasks (compaction, memory): ${n} ${n === 1 ? 'request' : 'requests'}, ~${t}.`,
   relecturasLinea: t => `Re-reads avoided: ~${t} tokens Claude did not read again because Toki took them out of context or compacted earlier. It is the cheapest part of each request, but the largest.`,
-  relecturas: 're-reads avoided',
   ventanaToki: (v, n) => `Compaction: at ${v} (Claude Code would wait until ${n}). Set by Toki; change it in /plugin → Toki.`,
   ventanaTuya: v => `Compaction: at ${v} (your choice; Toki leaves it alone).`,
   ventanaNativa: v => `Compaction: at ${v} (Claude Code's own).`,
@@ -576,7 +636,8 @@ const en: Textos = {
   deVentana: v => `of ${v}`,
   salidaRepetida: (m, size, r) => `[Toki] Output identical to this same command's ${m < 1 ? 'less than 1 min' : `${m} min`} ago (${size}): nothing changed. It is still above in the conversation; full copy at ${r}`,
   detalleRepetida: 'identical to the previous output: one line with the path to the copy',
-  porQueCero: (l, p) => `Why savings are ~0: this session's commands were already filtered or were exact reads, and Toki does not trim those so no information is lost. What weighed most was re-reading the conversation on every request: ~${l} (${p}% of everything).`,
+  porQueCero: (l, p) =>
+    `Why savings are at zero: Toki saves by trimming long outputs (it leaves exact reads and already-filtered outputs alone), by compacting earlier than Claude Code once the conversation grows, and by sending simple messages to a cheaper model; this session there was no room for any of that yet. What weighed most was re-reading the conversation on every request: ~${l} (${p}% of everything).`,
   logroNombres: {
     primero: 'First savings',
     diez: '10k tokens',

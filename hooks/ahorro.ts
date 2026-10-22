@@ -95,9 +95,9 @@ export function valorLectura(tokens: number, familia: Familia, contexto = 0): nu
   return (tokens * precio(familia, contexto).lectura) / 1_000_000
 }
 
-/** El "−18 %": cuánto menos costó que sin Toki. Solo si hubo ahorro. */
+/** El "−18 %": cuánto menos costó que sin Toki. Solo si hubo ahorro y algo medido contra qué compararlo. */
 export function porcentajeAhorro(ahorro: number, gastado: number): number | undefined {
-  if (!(ahorro > 0) || !Number.isFinite(gastado) || gastado < 0) return undefined
+  if (!(ahorro > 0) || !(gastado > 0) || !Number.isFinite(gastado)) return undefined
   return Math.round((ahorro / (gastado + ahorro)) * 100)
 }
 
@@ -106,4 +106,48 @@ export type AhorroUsd = { recorte?: number; relecturas?: number; ruteo?: number;
 
 export function ahorroNeto(s: AhorroUsd): number {
   return (s.recorte ?? 0) + (s.relecturas ?? 0) + (s.ruteo ?? 0) - (s.ruteoExtra ?? 0)
+}
+
+/** Las cifras en dólares de una sesión, como las guarda Toki. */
+export type CifrasUsd = { recorteUsd?: number; relecturasUsd?: number; ruteoAhorroUsd?: number; ruteoExtraUsd?: number; gastoMedidoUsd?: number }
+
+/**
+ * La cifra única: lo que Toki ahorró (neto), cuánto costó de verdad, cuánto
+ * habría costado sin Toki y el "−18 %" (solo si hubo ahorro).
+ */
+export function resumenAhorro(s: CifrasUsd): { neto: number; gastado: number; sinToki: number; pct?: number } {
+  const neto = ahorroNeto({ recorte: s.recorteUsd, relecturas: s.relecturasUsd, ruteo: s.ruteoAhorroUsd, ruteoExtra: s.ruteoExtraUsd })
+  const gastado = Math.max(0, s.gastoMedidoUsd ?? 0)
+  const pct = porcentajeAhorro(neto, gastado)
+  return { neto, gastado, sinToki: gastado + neto, ...(pct !== undefined && pct >= 1 ? { pct } : {}) }
+}
+
+/** Menos que medio centavo no cuenta como ahorro (ni como gasto de más) para mostrarlo. */
+export const CENTAVO = 0.005
+
+/** "~$3.07", "<$0.01", "~$128" o "$0.00" (también si es negativo: eso se dice aparte). */
+export function cifraUsd(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '$0.00'
+  if (n < 0.01) return '<$0.01'
+  return n >= 100 ? `~$${Math.round(n)}` : `~$${n.toFixed(2)}`
+}
+
+/** Con signo: "−$0.05" si costó de más. */
+export function cifraUsdFirmada(n: number): string {
+  return Number.isFinite(n) && n <= -CENTAVO ? `−${cifraUsd(-n).replace(/^~/, '')}` : cifraUsd(n)
+}
+
+/** La cifra de un día en la gráfica: "~$0.42", "−$0.05" si ese día costó de más, "·" si nada. */
+export function cifraUsdDia(n: number): string {
+  return !Number.isFinite(n) || Math.abs(n) < CENTAVO ? '·' : cifraUsdFirmada(n)
+}
+
+/**
+ * Lo que valían los recortes y las relecturas de antes de medir en dólares, a
+ * precio de Sonnet con caché de 5 min: lo más barato, para no inflar nada.
+ */
+export function estimarAhorroPrevio(recortados: number, relecturas: number): number {
+  const r = Number.isFinite(recortados) ? Math.max(0, recortados) : 0
+  const l = Number.isFinite(relecturas) ? Math.max(0, relecturas) : 0
+  return valorEscritura(r, 'sonnet', false) + valorLectura(l, 'sonnet')
 }

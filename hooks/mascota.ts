@@ -1,6 +1,7 @@
 // Toki, el robot de limpieza que cuida tus tokens: aspira el ruido para que Claude lea lo que importa.
 // Funciones puras: cuadros de animación, frases y medidores. Sin $.
 
+import { CENTAVO, cifraUsd } from './ahorro'
 import { t } from './idioma'
 import type { Idioma } from './idioma'
 
@@ -57,7 +58,10 @@ export type Situacion = {
   contextoTokens?: number
   cacheMinutosRestantes?: number
   inactivoMinutos: number
+  /** Tokens recortados en la sesión. */
   ahorradoSesion: number
+  /** Lo que Toki ahorró en la sesión en dólares a precio de API (neto): manda sobre los tokens. */
+  ahorradoUsd?: number
   ultimoAhorro?: { tokens: number; comando: string }
   bucleReciente?: boolean
 }
@@ -77,10 +81,24 @@ export function formatearMinutos(min: number, idioma: Idioma = 'es'): string {
   return r === 0 ? `${h} ${x.h}` : `${h} ${x.h} ${r} ${x.min}`
 }
 
+/**
+ * Lo ahorrado en la sesión, para decirlo: en dólares si llega a un centavo, si
+ * no en tokens. Si en neto costó de más, Toki no presume.
+ */
+export function cantidadAhorrada(s: Pick<Situacion, 'ahorradoSesion' | 'ahorradoUsd'>): string | undefined {
+  const usd = s.ahorradoUsd
+  if (usd !== undefined && Number.isFinite(usd)) {
+    if (usd <= -CENTAVO) return undefined
+    if (usd >= 0.01) return cifraUsd(usd)
+  }
+  return s.ahorradoSesion > 0 ? `~${formatearTokens(s.ahorradoSesion)} tokens` : undefined
+}
+
 /** La frase que Toki dice, con la acción sugerida cuando hay una. */
 export function frase(s: Situacion, idioma: Idioma = 'es'): { texto: string; tono: 'normal' | 'bien' | 'aviso' | 'peligro'; accion?: 'compactar' | 'limpiar' } {
   const x = t(idioma)
-  const ahorro = s.ahorradoSesion > 0 ? ` ${x.sesionAhorro(formatearTokens(s.ahorradoSesion))}` : ''
+  const cantidad = cantidadAhorrada(s)
+  const ahorro = cantidad !== undefined ? ` ${x.sesionAhorro(cantidad)}` : ''
   switch (s.actividad) {
     case 'alerta':
       if ((s.contextoPct ?? 0) < 70 && (s.contextoTokens ?? 0) >= TOKENS_PESADOS) {
@@ -111,7 +129,7 @@ export function frase(s: Situacion, idioma: Idioma = 'es'): { texto: string; ton
       return { texto: x.fraseListo(ahorro), tono: 'bien' }
     case 'tranquilo':
     default:
-      return { texto: s.ahorradoSesion > 0 ? x.fraseTranquiloAhorro(formatearTokens(s.ahorradoSesion)) : x.fraseTranquilo, tono: 'normal' }
+      return { texto: cantidad !== undefined ? x.fraseTranquiloAhorro(cantidad) : x.fraseTranquilo, tono: 'normal' }
   }
 }
 

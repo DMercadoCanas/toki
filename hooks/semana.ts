@@ -1,6 +1,7 @@
 // La tarjeta semanal: cuánto ahorró Toki, en qué, cuánto leyó Claude, una nota de la A a la F
 // con tus hábitos y un consejo con tus cifras. Funciones puras: el registro lo hace register.tsx.
 
+import { CENTAVO, cifraUsd, porcentajeAhorro } from './ahorro'
 import { claveDia } from './historial'
 import type { Historial } from './historial'
 import type { Idioma } from './idioma'
@@ -225,6 +226,25 @@ export function ahorroDe(s: ResumenSemana | undefined): number {
   return TIPOS_AHORRO.reduce((a, t) => a + (s.porTipo[t] ?? 0), 0)
 }
 
+/** Lo que Toki ahorró en la semana en dólares a precio de API, neto: recortes, relecturas y modelo menos lo de más. */
+export function ahorroUsdDe(s: ResumenSemana | undefined): number {
+  if (s === undefined) return 0
+  return s.ahorroUsd + s.ruteo - s.ruteoExtra
+}
+
+/**
+ * La cifra de la semana en dólares, si llega a un centavo: cuánto, el "−18 %"
+ * (si hay gasto medido) y el cambio contra la semana anterior (si también la tuvo).
+ */
+function ahorroUsdSemana(semanas: Semanas, lunes: string): { neto: number; pct?: number; cambio?: number } {
+  const s = semanas[lunes]
+  const neto = ahorroUsdDe(s)
+  const pct = porcentajeAhorro(neto, s?.gastoUsd ?? 0)
+  const previo = ahorroUsdDe(semanas[semanaAnterior(lunes)])
+  const cambio = neto >= 0.01 && previo >= 0.01 ? cambioPct(neto, previo) : undefined
+  return { neto, ...(pct !== undefined && pct >= 1 ? { pct } : {}), ...(cambio !== undefined ? { cambio } : {}) }
+}
+
 /**
  * ¿Toca mostrar la tarjeta de la semana pasada? Al primer inicio de una semana nueva,
  * si la pasada tuvo actividad y no se mostró todavía. Devuelve el lunes de la semana pasada.
@@ -233,7 +253,7 @@ export function tarjetaPendiente(semanas: Semanas, ms: number, ultimaMostrada: u
   const pasada = semanaAnterior(lunesDe(ms))
   if (ultimaMostrada === pasada) return undefined
   const s = semanas[pasada]
-  if (s === undefined || (ahorroDe(s) <= 0 && s.pedidos === 0)) return undefined
+  if (s === undefined || (ahorroDe(s) <= 0 && Math.abs(ahorroUsdDe(s)) < CENTAVO && s.pedidos === 0)) return undefined
   return pasada
 }
 
@@ -302,6 +322,10 @@ const ES = {
   porqueClaridad: (c: number, m: number) => (c <= 0 ? `ninguna corrección en ${m} mensajes` : `${c} ${c === 1 ? 'corrección' : 'correcciones'} en ${m} mensajes`),
   porqueCache: (f: number) => (f <= 0 ? 'nunca volviste con el caché vencido' : `volviste ${f === 1 ? 'una vez' : `${f} veces`} con el caché vencido y mucho contexto`),
   ahorre: (t: string) => `Te ahorré ~${t} tokens`,
+  ahorreUsd: (u: string, pct: number | undefined) => `Te ahorré ${u} a precio de API${pct !== undefined ? `, un ${pct} % menos que sin Toki` : ''}`,
+  costoDeMas: (u: string) => `En neto, Toki costó ${u} de más a precio de API (por más esfuerzo que aprobaste o por compactar)`,
+  suscripcionNota: 'Con suscripción no lo pagas aparte: es uso de tus límites que te queda libre.',
+  recorte: (t: string) => `Recorté ~${t} tokens:`,
   sinAhorro: 'Esta semana no hubo salidas grandes que recortar.',
   vsAnterior: (pct: number) => (pct >= 0 ? `▲ ${pct}% vs. la semana anterior` : `▼ ${-pct}% vs. la semana anterior`),
   tipos: { salida: 'salidas de terminal', busqueda: 'búsquedas enormes', pegado: 'textos pegados', repetida: 'salidas repetidas' } as Record<TipoAhorro, string>,
@@ -336,6 +360,8 @@ const ES = {
   vacia: 'Toki todavía no tiene cifras de esta semana.',
   aviso: (t: string, cambio: string, letra: Letra | undefined) =>
     `Toki: la semana pasada te ahorré ~${t} tokens${cambio}${letra !== undefined ? ` · nota ${letra}` : ''}. Escribe /toki-semana pasada para ver la tarjeta.`,
+  avisoUsd: (u: string, pct: number | undefined, cambio: string, letra: Letra | undefined) =>
+    `Toki: la semana pasada te ahorré ${u} a precio de API${pct !== undefined ? `, un ${pct} % menos que sin Toki` : ''}${cambio}${letra !== undefined ? ` · nota ${letra}` : ''}. Escribe /toki-semana pasada para ver la tarjeta.`,
   avisoSinAhorro: (letra: Letra | undefined) =>
     `Toki: la tarjeta de la semana pasada está lista${letra !== undefined ? ` (nota ${letra})` : ''}. Escribe /toki-semana pasada para verla.`,
   guardada: (ruta: string) => `Toki: guardé la tarjeta en ${ruta} (Markdown).`,
@@ -363,6 +389,10 @@ const EN: Textos = {
   porqueClaridad: (c, m) => (c <= 0 ? `no corrections in ${m} messages` : `${c} ${c === 1 ? 'correction' : 'corrections'} in ${m} messages`),
   porqueCache: f => (f <= 0 ? 'never came back to an expired cache' : `came back to an expired cache ${f === 1 ? 'once' : `${f} times`} with a big context`),
   ahorre: t => `I saved you ~${t} tokens`,
+  ahorreUsd: (u, pct) => `I saved you ${u} at API prices${pct !== undefined ? `, ${pct}% less than without Toki` : ''}`,
+  costoDeMas: u => `On net, Toki cost ${u} extra at API prices (more effort you approved, or compacting)`,
+  suscripcionNota: "On a subscription you don't pay it separately: it's usage of your limits that stays free.",
+  recorte: t => `Trimmed ~${t} tokens:`,
   sinAhorro: 'No big outputs to trim this week.',
   vsAnterior: pct => (pct >= 0 ? `▲ ${pct}% vs. the week before` : `▼ ${-pct}% vs. the week before`),
   tipos: { salida: 'terminal output', busqueda: 'huge searches', pegado: 'pasted text', repetida: 'repeated output' },
@@ -395,6 +425,8 @@ const EN: Textos = {
   consejoBien: "you're doing well. Open /toki to see where each token of the session goes.",
   vacia: 'Toki has no numbers for this week yet.',
   aviso: (t, cambio, letra) => `Toki: last week I saved you ~${t} tokens${cambio}${letra !== undefined ? ` · grade ${letra}` : ''}. Type /toki-semana last to see the card.`,
+  avisoUsd: (u, pct, cambio, letra) =>
+    `Toki: last week I saved you ${u} at API prices${pct !== undefined ? `, ${pct}% less than without Toki` : ''}${cambio}${letra !== undefined ? ` · grade ${letra}` : ''}. Type /toki-semana last to see the card.`,
   avisoSinAhorro: letra => `Toki: last week's card is ready${letra !== undefined ? ` (grade ${letra})` : ''}. Type /toki-semana last to see it.`,
   guardada: ruta => `Toki: saved the card to ${ruta} (Markdown).`,
   noGuardada: error => `Toki: couldn't save the card (${error}).`,
@@ -497,7 +529,8 @@ type Piezas = {
   titulo: string
   nota?: { titulo: string; filas: { etiqueta: string; puntos: number; porque: string }[] }
   notaPendiente?: string
-  ahorro: string
+  /** La cifra de la semana (en dólares si llega a un centavo) y, debajo, lo recortado en tokens. */
+  ahorro: string[]
   tipos: { etiqueta: string; tokens: number }[]
   /** Más ahorro: relecturas, lecturas frenadas, modelo y esfuerzo. */
   extras: string[]
@@ -512,10 +545,23 @@ function piezas(semanas: Semanas, lunes: string, ms: number, historial: Historia
   const inicio = msDeClave(lunes)
   const actual = lunesDe(ms) === lunes
   const ahorro = ahorroDe(s)
-  let lineaAhorro = x.sinAhorro
-  if (ahorro > 0) {
-    const cambio = cambioPct(ahorro, ahorroDe(semanas[semanaAnterior(lunes)]))
-    lineaAhorro = `${x.ahorre(formatearTokens(ahorro))}${cambio !== undefined && !actual ? `  (${x.vsAnterior(cambio)})` : ''}`
+  const usd = ahorroUsdSemana(semanas, lunes)
+  const suscripcion = opciones.suscripcion === true
+  const vs = (cambio: number | undefined) => (cambio !== undefined && !actual ? `  (${x.vsAnterior(cambio)})` : '')
+  // La cifra manda en dólares (lo que de verdad cuesta); los tokens recortados quedan debajo, con su reparto.
+  const lineasAhorro: string[] = []
+  if (usd.neto >= 0.01) {
+    lineasAhorro.push(`${x.ahorreUsd(cifraUsd(usd.neto), usd.pct)}${vs(usd.cambio)}`)
+    if (suscripcion) lineasAhorro.push(x.suscripcionNota)
+    if (ahorro > 0) lineasAhorro.push(x.recorte(formatearTokens(ahorro)))
+  } else if (usd.neto <= -CENTAVO) {
+    // Si en neto costó de más, se dice primero; lo recortado también fue real.
+    lineasAhorro.push(x.costoDeMas(cifraUsd(-usd.neto)))
+    if (ahorro > 0) lineasAhorro.push(x.recorte(formatearTokens(ahorro)))
+  } else if (ahorro > 0) {
+    lineasAhorro.push(`${x.ahorre(formatearTokens(ahorro))}${vs(cambioPct(ahorro, ahorroDe(semanas[semanaAnterior(lunes)])))}`)
+  } else {
+    lineasAhorro.push(x.sinAhorro)
   }
   const tipos = TIPOS_AHORRO.filter(t => (s.porTipo[t] ?? 0) > 0)
     .sort((a, b) => (s.porTipo[b] ?? 0) - (s.porTipo[a] ?? 0))
@@ -523,7 +569,8 @@ function piezas(semanas: Semanas, lunes: string, ms: number, historial: Historia
   const extras: string[] = []
   if (s.relecturas > 0) extras.push(x.relecturas(formatearTokens(s.relecturas)))
   if (s.frenos > 0) extras.push(x.frenos(s.frenos))
-  const ruteo = lineaRuteo(s, x, opciones.suscripcion === true)
+  // Lo de la suscripción ya va debajo de la cifra en dólares: no se repite.
+  const ruteo = lineaRuteo(s, x, suscripcion && !(usd.neto >= 0.01))
   if (ruteo !== undefined) extras.push(ruteo)
   const uso: string[] = []
   if (s.pedidos > 0) {
@@ -558,7 +605,7 @@ function piezas(semanas: Semanas, lunes: string, ms: number, historial: Historia
         : { titulo: x.nota(nota.letra, nota.puntos), filas: nota.partes.map(p => ({ etiqueta: x.partes[p.clave], puntos: p.puntos, porque: porqueDe(p.clave, s, x) })) },
     // La semana en curso explica por qué todavía no tiene nota; una pasada sin nota no dice nada.
     notaPendiente: nota === undefined && actual ? x.notaPendiente(s.pedidos, s.mensajes) : undefined,
-    ahorro: lineaAhorro,
+    ahorro: lineasAhorro,
     tipos,
     extras,
     uso,
@@ -576,7 +623,7 @@ function enTexto(p: Piezas, x: Textos): string {
   } else if (p.notaPendiente !== undefined) {
     lineas.push(p.notaPendiente, '')
   }
-  lineas.push(p.ahorro)
+  lineas.push(...p.ahorro)
   if (p.tipos.length > 0) {
     const maximo = Math.max(...p.tipos.map(t => t.tokens))
     const ancho = Math.max(...p.tipos.map(t => t.etiqueta.length))
@@ -601,7 +648,7 @@ function enMarkdown(p: Piezas, x: Textos, pie: string): string {
   } else if (p.notaPendiente !== undefined) {
     bloques.push(`_${escaparMd(p.notaPendiente)}_`)
   }
-  bloques.push(`## ${x.md.ahorro}`, escaparMd(p.ahorro.replace(/ {2,}/g, ' ')))
+  bloques.push(`## ${x.md.ahorro}`, ...p.ahorro.map(l => escaparMd(l.replace(/ {2,}/g, ' '))))
   if (p.tipos.length > 0) {
     bloques.push([`| ${x.md.tipo} | ${x.md.tokens} |`, '|---|---:|', ...p.tipos.map(t => `| ${t.etiqueta} | ~${formatearTokens(t.tokens)} |`)].join('\n'))
   }
@@ -630,10 +677,13 @@ export function avisoSemana(semanas: Semanas, lunes: string, idioma: Idioma = 'e
   const x = TEXTOS[idioma]
   const s = semanas[lunes]
   const letra = s === undefined ? undefined : notaDe(s)?.letra
+  const cambioTexto = (c: number | undefined) => (c !== undefined ? ` (${x.vsAnterior(c)})` : '')
+  const usd = ahorroUsdSemana(semanas, lunes)
+  if (usd.neto >= 0.01) return x.avisoUsd(cifraUsd(usd.neto), usd.pct, cambioTexto(usd.cambio), letra)
   const ahorro = ahorroDe(s)
-  if (ahorro <= 0) return x.avisoSinAhorro(letra)
-  const cambio = cambioPct(ahorro, ahorroDe(semanas[semanaAnterior(lunes)]))
-  return x.aviso(formatearTokens(ahorro), cambio !== undefined ? ` (${x.vsAnterior(cambio)})` : '', letra)
+  // Si en neto costó de más, Toki no presume de los tokens en el aviso: la tarjeta lo explica.
+  if (ahorro <= 0 || usd.neto <= -CENTAVO) return x.avisoSinAhorro(letra)
+  return x.aviso(formatearTokens(ahorro), cambioTexto(cambioPct(ahorro, ahorroDe(semanas[semanaAnterior(lunes)]))), letra)
 }
 
 /** Lo que responde /toki-semana md: dónde quedó el archivo, o por qué no se pudo. */
