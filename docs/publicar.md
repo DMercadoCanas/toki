@@ -21,7 +21,7 @@ Lista para el día que decidas enviarlo. Nada de esto se ha enviado.
 - [ ] `claude plugin test .` → todo verde (hoy 204/204).
 - [ ] Instalar desde el marketplace en una carpeta limpia y abrir una sesión: `claude plugin marketplace add DMercadoCanas/toki`, luego `claude plugin install toki@toki`.
 - [ ] Correr en el Mac los casos con Bash (necesitan el sandbox; el comando, con `-j 1`, está en `evals/README.md`), juntarlos con los demás (`python3 evals/benchmark.py evals/results/2026-10-22-sin-bash.json evals/results/bash.json`) y pegar la tabla en el README. Los casos sin Bash ya están medidos con 0.16.
-- [ ] `homepage` y `repository` en `plugin.json` apuntan a `https://github.com/DMercadoCanas/toki`. Tu `origin` local todavía dice `ahorro-tokens`; GitHub redirige, pero puedes actualizarlo con `git remote set-url origin https://github.com/DMercadoCanas/toki.git`.
+- [x] `homepage` y `repository` en `plugin.json` apuntan a `https://github.com/DMercadoCanas/toki`, igual que tu `origin` local.
 - [ ] Licencia MIT en `LICENSE`. Los sonidos son sintéticos, sin derechos de terceros.
 
 ## Lo que la revisión puede preguntar (y la respuesta)
