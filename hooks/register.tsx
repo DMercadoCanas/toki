@@ -3448,25 +3448,28 @@ export const register: Register = (on, options) => {
   // (leer para preparar las preguntas pasa). A lo sumo FRENOS_ENTREVISTA veces por turno.
   on('tool.check', async ($, e, next) => {
     const t = entrevista.turno
-    // Solo las llamadas de Claude en tu conversación: no las consultas ni los subagentes.
-    if (t === undefined || t.pregunto || t.frenos >= FRENOS_ENTREVISTA || e.tool_use_id === undefined || e.agentId !== undefined) return next(e)
+    // Lo que hace un subagente que ya corre sigue: la entrevista es de tu conversación.
+    if (t === undefined || t.pregunto || t.frenos >= FRENOS_ENTREVISTA || e.agentId !== undefined) return next(e)
     if (!frenaAntesDePreguntar(e.tool, e.isReadOnly === true)) return next(e)
+    const consulta = e.tool_use_id === undefined
+    // La llamada de otro plugin no es Claude saltándose la entrevista.
+    if (!consulta && next.origin.plugin !== 'engine') return next(e)
     const r = await next(e)
     // Si ya se rechazaba (modo plan, una regla tuya), el motivo de siempre basta.
     if (r.decision === 'deny') return r
-    t.frenos += 1
-    void anotarDiagnostico($, `entrevista: frenó ${e.tool} antes de preguntar`)
+    // Una consulta recibe el mismo veredicto, sin contar como freno: así la captura no envuelve
+    // un comando de solo lectura en uno que se frenaría (envolver cambiaría el veredicto).
+    if (!consulta) {
+      t.frenos += 1
+      void anotarDiagnostico($, `entrevista: frenó ${e.tool} antes de preguntar`)
+    }
     return { decision: 'deny', reason: xe().frenada }
   })
 
-  // Claude preguntó (sus preguntas, no las de Toki): desde aquí la entrevista ya no frena nada.
+  // Claude preguntó (el AskUserQuestion del modelo, no un $.ui.ask de Toki u otro plugin): desde aquí no frena nada.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     const t = entrevista.turno
-    if (t !== undefined && !t.pregunto && e.agentId === undefined) {
-      const preguntas = (e as unknown as { questions?: { header?: unknown }[] }).questions
-      const deToki = Array.isArray(preguntas) && preguntas.length > 0 && preguntas.every(p => p?.header === 'Toki')
-      if (!deToki) t.pregunto = true
-    }
+    if (t !== undefined && !t.pregunto && e.agentId === undefined && next.origin.plugin === 'engine') t.pregunto = true
     return next(e)
   })
 

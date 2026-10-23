@@ -280,7 +280,7 @@ En `evals/` está la suite para `claude plugin eval`: corre cada caso con y sin 
 
 - La copia completa y los rescates funcionan con bash y zsh (macOS, Linux, WSL, Git Bash) y con PowerShell. PowerShell está probado con la herramienta real de Claude Code y PowerShell 7; con Windows PowerShell 5.1 (que guarda la copia en UTF-16) solo con pruebas automáticas. Si ves algo raro, `/toki-por-que` lo explica y puedes apagar el compactador en la configuración.
 - Toki solo envuelve un comando si Claude Code le da exactamente el mismo permiso que al original. Si tienes reglas finas (por ejemplo `Bash(npm test:*)`), el comando envuelto ya no calza con la regla, así que Toki compacta lo que entrega Claude Code sin copia completa, y lo dice en el encabezado si Claude Code ya había recortado algo.
-- En cuentas de empresa (Team o Enterprise), Claude Code carga un guardia que no deja a los plugins intervenir en la compactación ni recibir el evento de cambio de modelo. Toki lo compensa: detecta ambas cosas por su cuenta.
+- En cuentas de empresa (Team o Enterprise), Claude Code carga un guardia que no deja a los plugins intervenir en la compactación, recibir el evento de cambio de modelo ni agregar secciones al system prompt. Las dos primeras, Toki las detecta por su cuenta. Las respuestas breves no se aplican ahí, y por eso tampoco se cuentan: `/output-style` → `toki:conciso` hace lo mismo.
 - La franja se dibuja en la terminal y en la app de escritorio. En la extensión de VS Code y en `claude -p` el motor funciona igual, sin franja; `/toki` responde con el reporte en texto.
 - El mapa es análisis de texto, no un árbol sintáctico completo: puede omitir símbolos en código poco convencional.
 
@@ -313,6 +313,7 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **The interview is enforced (0.17).** On a big request with an interview, until Claude asks you, Toki blocks (and says why) tools that change things and subagents; reading to prepare the questions is allowed. At most 3 times per message, never a loop. "With" or "without interview" is counted at the end, by whether Claude really asked; if you interrupt before it asks, it doesn't count. Asking why something fails is never interviewed: Claude investigates first.
 - Measured with `claude plugin eval` on Opus: a mechanical rename cost **55% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
+- On Team and Enterprise accounts, a Claude Code guard stops plugins from adding to the system prompt, so brief replies don't apply there and aren't counted: `/output-style` → `toki:conciso` does the same.
 
 ## Para desarrollar
 

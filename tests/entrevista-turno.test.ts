@@ -4,19 +4,27 @@ import type { TestBody } from 'claude-code/testing'
 
 import { textosEntrevista } from '../hooks/entrevista'
 
-// Cómo cierra Toki el turno de un pedido con entrevista: cortado no cuenta, y las preguntas de Toki no son las de Claude.
+// Cómo cierra Toki el turno de un pedido con entrevista: cortado no cuenta, solo cuenta la pregunta de Claude,
+// y las consultas de permiso reciben el mismo veredicto sin contar como freno.
 
 const x = textosEntrevista.es
 const PROYECTO = 'quiero construir una app para gestionar las citas de mi clínica con recordatorios por WhatsApp'
 
 type Motor = Parameters<TestBody>[0]
 
-/** Lo que Toki anotó en .claude/toki/diagnostico.txt sobre la entrevista, sin la hora. */
-function mundo(on: On): string[] {
+/** Lo que ve el permiso del motor: la herramienta, sus argumentos y, en una llamada real, su id. */
+type Revision = { tool: string; input: unknown; tool_use_id?: string }
+
+/**
+ * Lo que Toki anotó en .claude/toki/diagnostico.txt sobre la entrevista, sin la hora.
+ * `alRevisar` ve cada decisión de permiso del motor; `preguntas` junta la etiqueta de cada pregunta que se te hizo.
+ */
+function mundo(on: On, o: { shell?: string; alRevisar?: (e: Revision) => void; preguntas?: string[] } = {}): string[] {
   const diagnostico: string[] = []
   mock.store(on)
-  on('env.get', () => ({ value: undefined }))
+  on('env.get', ($, e) => ({ value: e.name === 'SHELL' ? o.shell : undefined }))
   on('env.set', () => ({ value: {} }))
+  on('session.cwd', () => ({ value: '/p' }))
   on('fs.exists', () => ({ value: false }))
   on('fs.write', ($, e) => {
     const linea = (e.text.trimEnd().split('\n').pop() ?? '').replace(/^\S+ /, '')
@@ -53,12 +61,16 @@ function mundo(on: On): string[] {
     }
   })
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
-    const q = (e as unknown as { questions: { question: string; options: { label: string }[] }[] }).questions[0]
+    const q = (e as unknown as { questions: { question: string; header?: string; options: { label: string }[] }[] }).questions[0]
     if (q === undefined) return { deny: 'sin pregunta' }
+    o.preguntas?.push(q.header ?? '')
     return { result: { questions: [], answers: { [q.question]: q.options[0]?.label ?? '' } } } as never
   })
   on('agent.spawn', ($, e) => ({ model: e.model ?? e.parentModel, agentId: 'a1' }))
-  on('tool.check', () => ({ decision: 'allow' as const }))
+  on('tool.check', ($, e) => {
+    o.alRevisar?.(e)
+    return { decision: 'allow' as const }
+  })
   return diagnostico
 }
 
@@ -76,11 +88,17 @@ async function mensaje($: Motor, turnId: string, texto: string, o: { durante?: (
   await $.turn.complete({ answer: fin === 'answer' ? 'Listo.' : '', durationMs: 1000, isAborted: fin === 'aborted', turnId, reason: fin } as never)
 }
 
-async function escribe($: Motor, id: string): Promise<string> {
-  const r = (await $.tool.check({ tool: 'Write', input: { file_path: '/p/app.ts', content: 'x' }, tool_use_id: id } as never)) as { decision: string; reason?: string }
+/** El veredicto, como lo vería quien preguntó. */
+async function veredicto($: Motor, args: Record<string, unknown>): Promise<string> {
+  const r = (await $.tool.check(args as never)) as { decision: string; reason?: string }
   return r.decision === 'deny' ? `deny: ${r.reason ?? ''}` : r.decision
 }
 
+function escribe($: Motor, id: string): Promise<string> {
+  return veredicto($, { tool: 'Write', input: { file_path: '/p/app.ts', content: 'x' }, tool_use_id: id })
+}
+
+/** El AskUserQuestion del modelo (el `$` de la prueba llama como el motor). */
 function pregunta($: Motor, header: string, question: string): Promise<unknown> {
   const options = [
     { label: 'Sí', description: 'Seguir' },
@@ -133,35 +151,71 @@ describe('el turno de la entrevista', () => {
 
   test('una pregunta de Toki en medio del turno no es la entrevista: sigue frenando', async ($, on) => {
     const reloj = mock.clock(on, { now: 1_000_000 })
-    const diagnostico = mundo(on)
+    const preguntas: string[] = []
+    const diagnostico = mundo(on, { preguntas })
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    // Mientras Claude trabaja, pegas un log enorme: Toki te pregunta si lo guarda en un archivo.
+    const log = Array.from({ length: 1500 }, (_, i) => `2026-10-22 10:${String(i % 60).padStart(2, '0')} INFO cita ${i} confirmada`).join('\n')
     const vistos: string[] = []
     await mensaje($, 't0', PROYECTO, {
       durante: async () => {
-        await pregunta($, 'Toki', 'Toki: ¿sigo?')
+        await $.prompt.submit({ text: log, wait: false, origin: { kind: 'composer' } } as never)
         vistos.push(await escribe($, 'u1'))
         await pregunta($, 'Alcance', '¿Qué alcance tiene la primera versión?')
         vistos.push(await escribe($, 'u2'))
       },
     })
+    expect(preguntas).toEqual(['Toki', 'Alcance'])
     expect(vistos).toEqual([`deny: ${x.frenada}`, 'allow'])
     await reloj.settle()
     expect(diagnostico).toEqual(['entrevista: proyecto', 'entrevista: frenó Write antes de preguntar', 'entrevista: hecha · frenó 1'])
   })
 
-  test('las consultas (sin id de llamada) y los subagentes no se frenan', async ($, on) => {
-    mock.clock(on, { now: 1_000_000 })
-    mundo(on)
+  test('una consulta recibe el mismo veredicto sin contar como freno; leer y los subagentes pasan', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const diagnostico = mundo(on)
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
     const vistos: string[] = []
     await mensaje($, 't0', PROYECTO, {
       durante: async () => {
-        const consulta = (await $.tool.check({ tool: 'Write', input: { file_path: '/p/app.ts', content: 'x' } })) as { decision: string }
-        vistos.push(consulta.decision)
-        const sub = (await $.tool.check({ tool: 'Write', input: { file_path: '/p/app.ts', content: 'x' }, tool_use_id: 'u9', agentId: 'a1' } as never)) as { decision: string }
-        vistos.push(sub.decision)
+        vistos.push(await veredicto($, { tool: 'Write', input: { file_path: '/p/app.ts', content: 'x' } }))
+        vistos.push(await veredicto($, { tool: 'Read', input: { file_path: '/p/app.ts' }, isReadOnly: true }))
+        vistos.push(await veredicto($, { tool: 'Write', input: { file_path: '/p/app.ts', content: 'x' }, tool_use_id: 'u9', agentId: 'a1' }))
       },
     })
-    expect(vistos).toEqual(['allow', 'allow'])
+    expect(vistos).toEqual([`deny: ${x.frenada}`, 'allow', 'allow'])
+    await reloj.settle()
+    expect(diagnostico).toEqual(['entrevista: proyecto', 'entrevista: Claude no preguntó'])
+  })
+
+  test('mientras frena, Toki no envuelve los comandos: el permiso se decide sobre el comando de Claude', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    // Sobre qué comando decide el motor el permiso de cada llamada real, y qué corre.
+    const decididos: string[] = []
+    mundo(on, {
+      shell: '/bin/zsh',
+      alRevisar: e => {
+        if (e.tool === 'Bash' && e.tool_use_id !== undefined) decididos.push(String((e.input as { command?: unknown }).command))
+      },
+    })
+    const corridos: string[] = []
+    on('tool.call', { tool: 'Bash' }, ($, e) => {
+      corridos.push(String((e as { command?: unknown }).command))
+      return { result: { stdout: 'src/citas.ts:12:  buscarCita(id)', stderr: '', interrupted: false } }
+    })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', PROYECTO, {
+      durante: async () => {
+        await $.tool.call({ tool: 'Bash', command: 'rg -n buscarCita src' })
+        await pregunta($, 'Alcance', '¿Qué alcance tiene la primera versión?')
+        await $.tool.call({ tool: 'Bash', command: 'rg -n buscarCita src' })
+      },
+    })
+    // Antes de la pregunta llega tal cual: en Claude Code una búsqueda de solo lectura pasa.
+    // (El motor de prueba no marca nada de solo lectura, así que aquí se frena y no corre.)
+    expect(decididos[0]).toBe('rg -n buscarCita src')
+    // Con la pregunta hecha, la captura vuelve a guardar la salida completa.
+    expect(decididos[1]).toContain("tee '/p/.claude/toki/salidas/")
+    expect(corridos).toEqual([decididos[1]])
   })
 })
