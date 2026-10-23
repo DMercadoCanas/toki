@@ -99,8 +99,23 @@ import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjeta
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
 import type { Presupuesto, TipoOpcionPresupuesto } from './presupuesto'
-import { armarPedidoMejorado, CONTEXTO_CAMBIO_DE_TEMA, CONTEXTO_PARA_LIMPIAR, cambioDeTema, consejoDe, esCorreccion, esPedidoGrande, evaluarEntrevista, leerModoEntrevista, SALTOS_PARA_CALLAR, textosEntrevista } from './entrevista'
-import type { Consejo, ModoEntrevista, TextosEntrevista } from './entrevista'
+import {
+  armarPedidoMejorado,
+  CONTEXTO_CAMBIO_DE_TEMA,
+  CONTEXTO_PARA_LIMPIAR,
+  cambioDeTema,
+  consejoDe,
+  esCorreccion,
+  esPedidoGrande,
+  evaluarEntrevista,
+  FRENOS_ENTREVISTA,
+  frenaAntesDePreguntar,
+  leerModoEntrevista,
+  retomaLoAnterior,
+  SALTOS_PARA_CALLAR,
+  textosEntrevista,
+} from './entrevista'
+import type { Consejo, ModoEntrevista, PorQueEntrevistar, TextosEntrevista } from './entrevista'
 import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, opcionesFrio, preguntaFrio, proyectar, textosGuardia, VENTANAS } from './guardia'
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
@@ -2790,6 +2805,10 @@ const entrevista: {
   consejos: Partial<Record<Consejo, number>>
   consejosLeidos: boolean
   limpioRechazos: number
+  /** Tu mensaje lleva la instrucción de preguntar: espera su turno (si no entra, se descarta). */
+  pendiente?: { porque: PorQueEntrevistar }
+  /** El turno de ese mensaje: ¿Claude ya preguntó? y cuántos cambios frenó Toki antes. */
+  turno?: { turnId: string; porque: PorQueEntrevistar; frenos: number; pregunto: boolean }
 } = { modo: 'auto', mensajes: 0, recientes: [], saltos: 0, silenciada: false, correcciones: [], consejos: {}, consejosLeidos: false, limpioRechazos: 0 }
 
 function xe(): TextosEntrevista {
@@ -2803,6 +2822,30 @@ function reiniciarEntrevista(): void {
   entrevista.tarea = undefined
   entrevista.correcciones = []
   entrevista.limpioRechazos = 0
+  entrevista.pendiente = undefined
+  entrevista.turno = undefined
+}
+
+/**
+ * Terminó el turno del pedido con entrevista: ¿Claude preguntó (con AskUserQuestion o en el
+ * texto)? Lo anota en el diagnóstico y lo cuenta con o sin entrevista. Un turno cortado
+ * (lo interrumpiste, un error) sin preguntas no cuenta: no se sabe si Claude iba a preguntar.
+ */
+async function cerrarEntrevista($: $, turnId: string, respuesta: string, motivo: string): Promise<void> {
+  const t = entrevista.turno
+  if (t === undefined || t.turnId !== turnId) return
+  entrevista.turno = undefined
+  const frenos = t.frenos > 0 ? ` · frenó ${t.frenos}` : ''
+  if (!t.pregunto && motivo !== 'answer') {
+    entrevista.grupo = undefined
+    void anotarDiagnostico($, `entrevista: ${motivo === 'aborted' ? 'interrumpida' : `turno cortado (${motivo})`}${frenos}`)
+    return
+  }
+  const enTexto = !t.pregunto && terminaEnPregunta(respuesta)
+  const con = t.pregunto || enTexto
+  void anotarDiagnostico($, `entrevista: ${t.pregunto ? 'hecha' : enTexto ? 'preguntó en el texto' : 'Claude no preguntó'}${frenos}`)
+  entrevista.grupo = con ? 'con' : 'sin'
+  await contarEntrevista($, con ? 'con' : 'sin')
 }
 
 type CuentaEntrevista = 'con' | 'conCorr' | 'sin' | 'sinCorr' | 'consejos'
@@ -2891,6 +2934,7 @@ function contarSalto($: $): void {
  */
 async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto?: string; drop?: string }> {
   const texto = quitarEtiquetasDeSistema(textoCrudo)
+  entrevista.pendiente = undefined
   if (texto === '' || texto.startsWith('/')) return {}
   const e = entrevista
   const previos = e.mensajes
@@ -2929,7 +2973,9 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
   if (!seguimiento && lectura.nivel !== 'trivial' && texto.split(/\s+/).length >= 8) e.tarea = texto
 
   // Cambio de tema con mucho contexto a cuestas: mejor empezar en limpio (y la entrevista, ya sin lastre).
-  if (!seguimiento && lectura.nivel !== 'trivial' && previos > 0 && contexto >= CONTEXTO_CAMBIO_DE_TEMA && e.limpioRechazos < 2 && !yaPregunto && cambioDeTema(recientes, texto)) {
+  // «Esto hay que solucionarlo…» retoma lo anterior: limpiar borraría lo que necesita.
+  const otroTema = !seguimiento && lectura.nivel !== 'trivial' && previos > 0 && !retomaLoAnterior(texto) && cambioDeTema(recientes, texto)
+  if (otroTema && contexto >= CONTEXTO_CAMBIO_DE_TEMA && e.limpioRechazos < 2 && !yaPregunto) {
     if (await ofrecerLimpio($, x.tema.pregunta(formatearTokens(contexto)), x.tema.si, x.tema.no, texto, contexto)) return { drop: x.limpiando }
   }
 
@@ -2952,8 +2998,9 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
       e.saltos = 0
       instruccion = x.instruccion(ev.porque)
       if (e.modo === 'auto') $.ui.toast(x.aviso, { timeoutMs: 9_000 })
-      e.grupo = 'con'
-      await contarEntrevista($, 'con')
+      // Con o sin entrevista se cuenta al terminar el turno: según Claude haya preguntado o no.
+      e.grupo = undefined
+      e.pendiente = { porque: ev.porque }
       void anotarDiagnostico($, `entrevista: ${ev.porque}`)
     }
   }
@@ -3182,7 +3229,10 @@ export const register: Register = (on, options) => {
     }
     const base = texto === e.text ? e : { ...e, text: texto }
     // La instrucción va como contexto: Claude la lee junto a tu mensaje y tú no ves nada distinto.
-    return next(contexto === undefined ? base : { ...base, context: [...(e.context ?? []), contexto] })
+    const r = await next(contexto === undefined ? base : { ...base, context: [...(e.context ?? []), contexto] })
+    // Otro hook lo frenó: no hay turno, y la entrevista no puede quedar para el turno de otro mensaje.
+    if ('drop' in r) entrevista.pendiente = undefined
+    return r
   })
 
   // Subagentes con encargos simples: Sonnet. Empiezan sin contexto, no se pierde caché.
@@ -3213,6 +3263,10 @@ export const register: Register = (on, options) => {
       ruta.turno = ruta.pendiente !== undefined ? e.turnId : undefined
       ruta.esfuerzo = ruta.pendiente?.esfuerzo
       ruta.pendiente = undefined
+      // La entrevista pedida vale para este turno y solo para él.
+      const porque = entrevista.pendiente?.porque
+      entrevista.turno = porque === undefined ? undefined : { turnId: e.turnId, porque, frenos: 0, pregunto: false }
+      entrevista.pendiente = undefined
       // La medición del mensaje que se acaba de planear es de este turno; una vieja sin terminar se descarta.
       const medicion = ruta.medicion
       if (medicion !== undefined && medicion.turno === undefined) medicion.turno = e.turnId
@@ -3327,6 +3381,11 @@ export const register: Register = (on, options) => {
       if (vivo.ultimoAhorro !== undefined) sonar($, 'listo')
       for (const d of extraerDecisiones(e.answer)) vivo.memoria.decisiones = recordar(vivo.memoria.decisiones, d, LIMITES_MEMORIA.decisiones)
       ruta.preguntoAntes = terminaEnPregunta(e.answer)
+      try {
+        await cerrarEntrevista($, e.turnId, e.answer, e.isAborted ? 'aborted' : e.reason)
+      } catch (err) {
+        $.ui.log(`Toki, entrevista: ${String(err)}`, { to: 'debug' })
+      }
       const medicion = ruta.medicion
       if (medicion !== undefined && medicion.turno === e.turnId) {
         ruta.medicion = undefined
@@ -3383,6 +3442,32 @@ export const register: Register = (on, options) => {
     } catch {
       return r
     }
+  })
+
+  // La entrevista se cumple: hasta que Claude pregunte, Toki frena los cambios y los subagentes
+  // (leer para preparar las preguntas pasa). A lo sumo FRENOS_ENTREVISTA veces por turno.
+  on('tool.check', async ($, e, next) => {
+    const t = entrevista.turno
+    // Solo las llamadas de Claude en tu conversación: no las consultas ni los subagentes.
+    if (t === undefined || t.pregunto || t.frenos >= FRENOS_ENTREVISTA || e.tool_use_id === undefined || e.agentId !== undefined) return next(e)
+    if (!frenaAntesDePreguntar(e.tool, e.isReadOnly === true)) return next(e)
+    const r = await next(e)
+    // Si ya se rechazaba (modo plan, una regla tuya), el motivo de siempre basta.
+    if (r.decision === 'deny') return r
+    t.frenos += 1
+    void anotarDiagnostico($, `entrevista: frenó ${e.tool} antes de preguntar`)
+    return { decision: 'deny', reason: xe().frenada }
+  })
+
+  // Claude preguntó (sus preguntas, no las de Toki): desde aquí la entrevista ya no frena nada.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    const t = entrevista.turno
+    if (t !== undefined && !t.pregunto && e.agentId === undefined) {
+      const preguntas = (e as unknown as { questions?: { header?: unknown }[] }).questions
+      const deToki = Array.isArray(preguntas) && preguntas.length > 0 && preguntas.every(p => p?.header === 'Toki')
+      if (!deToki) t.pregunto = true
+    }
+    return next(e)
   })
 
   // Observador: qué está haciendo Claude, para que Toki lo actúe.

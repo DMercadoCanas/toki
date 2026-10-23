@@ -49,6 +49,15 @@ const AMPLIO =
 const CORRECCION =
   conAcentos(/\b(no,? (as[ií]|eso|esto) no|no era (eso|as[ií])|eso no es lo que|no (es|era) lo que (ped[ií]|quer[ií]a)|te ped[ií]|ya te dije|sigue (mal|igual|fallando)|a[uú]n (falla|no funciona)|todav[ií]a (falla|no funciona)|sigue sin|otra vez (falla|mal|lo mismo)|no funcion[oó]|no sirvi[oó]|est[aá] mal|incorrecto|that'?s (not what|wrong)|not what i (asked|meant|wanted)|i (asked|said)|still (fails?|broken|wrong|not working)|didn'?t work|undo|deshaz|revierte)\b/i)
 const LISTA = /^\s*(?:[-*]|\d+[.)])\s/gm
+/** Averiguar por qué pasa algo: primero hay que investigar, y antes no hay nada útil que preguntar. */
+const DIAGNOSTICO =
+  conAcentos(/\b(por qu[eé]|qu[eé] (pasa|pas[oó]|ocurre|ocurri[oó]|sucede|sucedi[oó]|est[aá] pasando)|cu[aá]l (es|era|fue) (el|la) (problema|error|causa|falla|fallo)|a qu[eé] se debe|de d[oó]nde (sale|viene)|investig\w*|diagnostic\w*|averigu\w*|depur\w*|debug\w*|causa ra[ií]z|why|what'?s (wrong|happening|going on)|what (is|was) (wrong|happening|causing)|how come|root cause|figure out why)\b/i)
+/** Pedir que explique algo («explícame…», «¿cómo funciona…?»): solo al empezar, para no tomar «diseña cómo funciona…» por una pregunta. */
+const EXPLICAR = conAcentos(/^(¿\s*)?(expl[ií]ca(me|nos)?|c[oó]mo funciona\w*|qu[eé] hace|explain|how does|what does)\b/i)
+/** Retoma lo que ya está en la conversación («esto hay que…», «lo que encontraste»): necesita ese contexto. */
+const REFERENCIA =
+  conAcentos(/\b((esto|eso|aquello)(?!\s*:)(?!\s+es\s+lo\s+que)|lo (anterior|de antes|de arriba|mismo)|lo que (me )?(dijiste|propusiste|sugeriste|encontraste|explicaste|mencionaste|hiciste|recomendaste|planteaste)|tu (respuesta|propuesta|diagn[oó]stico|soluci[oó]n|plan|an[aá]lisis|recomendaci[oó]n|idea|explicaci[oó]n)|(ese|esa|este|esta|esos|esas|estos|estas) (error|errores|problema|problemas|caso|casos|bug|bugs|fallo|fallos|tema|asunto|cambio|cambios|diagn[oó]stico)|the (above|previous|same) (issue|problem|error|bug|case|one)|what you (said|found|proposed|suggested|did|wrote)|your (answer|proposal|diagnosis|fix|plan|analysis|suggestion|idea)|(this|that|these|those) (issue|problem|error|bug|case|fix|change)s?)\b/i)
+const REFERENCIA_EN = /^(?:so |ok,? |and |but )?(?:this|that|it) (?:is|was|has|needs?|should|must|can'?t|cannot|won'?t|keeps?|happens?|still)\b/i
 
 function palabrasDe(texto: string): number {
   const l = limpiarPrompt(texto)
@@ -70,6 +79,21 @@ export function esCorreccion(texto: string): boolean {
 
 export function pideSinPreguntas(texto: string): boolean {
   return SIN_PREGUNTAS.test(limpiarPrompt(texto))
+}
+
+/** «¿Por qué falla…?», «investiga…», «explícame…»: la respuesta sale de investigar, no de preguntar. */
+export function esDiagnostico(texto: string): boolean {
+  const limpio = limpiarPrompt(texto)
+  return DIAGNOSTICO.test(limpio) || EXPLICAR.test(limpio)
+}
+
+/**
+ * El mensaje se apoya en lo que ya se habló («Esto hay que solucionarlo…»). Puede ser
+ * trabajo nuevo, pero no otro tema: limpiar la conversación borraría lo que necesita.
+ */
+export function retomaLoAnterior(texto: string): boolean {
+  const inicio = limpiarPrompt(texto).split(' ').slice(0, 12).join(' ')
+  return REFERENCIA.test(inicio) || REFERENCIA_EN.test(inicio)
 }
 
 const PALABRAS_VACIAS = new Set(
@@ -121,7 +145,10 @@ function esTareaNueva(e: Pick<Entrada, 'mensajes' | 'recientes' | 'texto'>): boo
 export function esPedidoGrande(e: Entrada): boolean {
   if (e.nivel === 'trivial' || e.motivo === 'seguimiento' || esCorreccion(e.texto) || palabrasDe(e.texto) < 6) return false
   if (!esTareaNueva(e)) return false
-  return e.nivel === 'complejo' || e.nivel === 'profundo' || PROYECTO.test(limpiarPrompt(e.texto))
+  const proyecto = PROYECTO.test(limpiarPrompt(e.texto))
+  // Averiguar por qué falla algo: Claude primero investiga. Preguntar antes solo retrasa (y la entrevista lo obliga).
+  if (!proyecto && esDiagnostico(e.texto)) return false
+  return proyecto || e.nivel === 'complejo' || e.nivel === 'profundo'
 }
 
 /** Un pedido grande y vago al empezar algo nuevo: ahí es donde una pregunta a tiempo ahorra iteraciones. */
@@ -135,6 +162,25 @@ export function evaluarEntrevista(e: Entrada): Evaluacion {
   return { entrevistar: true, porque: proyecto ? 'proyecto' : 'grande' }
 }
 
+// ---------- Que la entrevista se cumpla ----------
+
+/** Cuántas veces por turno Toki frena un cambio antes de que Claude pregunte. Después lo deja pasar: nunca un bucle. */
+export const FRENOS_ENTREVISTA = 3
+/** No cambian nada del proyecto, aunque no se declaren de solo lectura. */
+const SIN_EFECTO = new Set(['AskUserQuestion', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'ToolSearch', 'Skill', 'EnterPlanMode', 'ExitPlanMode', 'SendUserMessage'])
+/** Lanzan otro agente: gastan mucho aunque solo lean. */
+const LANZA_AGENTES = new Set(['Agent', 'Task', 'Workflow'])
+
+/**
+ * Con la entrevista pedida y Claude sin preguntar todavía: ¿se frena esta herramienta?
+ * Leer para preparar las preguntas pasa; cambiar algo o lanzar subagentes, no.
+ */
+export function frenaAntesDePreguntar(herramienta: string, soloLectura: boolean): boolean {
+  if (LANZA_AGENTES.has(herramienta)) return true
+  if (SIN_EFECTO.has(herramienta)) return false
+  return !soloLectura
+}
+
 // ---------- Textos ----------
 
 export const RUTA_SPEC = '.claude/toki/spec.md'
@@ -142,6 +188,8 @@ export const RUTA_SPEC = '.claude/toki/spec.md'
 export type TextosEntrevista = {
   /** Lo que Claude lee junto a tu mensaje (no lo ves, tú escribes lo mismo de siempre). */
   instruccion: (porque: PorQueEntrevistar) => string
+  /** Lo que Claude lee si intenta cambiar algo antes de preguntar. */
+  frenada: string
   aviso: string
   pregunta: string
   opcionesPregunta: { si: string; no: string }
@@ -167,15 +215,17 @@ export const textosEntrevista: Record<Idioma, TextosEntrevista> = {
     instruccion: porque =>
       [
         porque === 'proyecto'
-          ? '[Toki] Es un proyecto nuevo y el pedido deja decisiones abiertas.'
-          : '[Toki] Pedido grande y el mensaje deja decisiones abiertas.',
-        'Antes de leer archivos grandes o escribir código, entrevista a la persona con la herramienta AskUserQuestion:',
-        `2 a 4 preguntas de opción múltiple por ronda${porque === 'proyecto' ? ' (una segunda ronda solo si hace falta)' : ''}, con la opción recomendada primero y marcada "(Recomendado)".`,
-        'Pregunta solo lo que cambia el resultado y no puedes deducir del proyecto: alcance, tecnología o formato, datos y casos límite, y qué cuenta como "listo" (cómo se comprueba).',
-        'Si necesitas ver el proyecto, mira solo su estructura (ls, README).',
+          ? '[Toki] La persona activó en Toki «preguntas antes de un pedido grande», y este es un proyecto nuevo que deja decisiones abiertas.'
+          : '[Toki] La persona activó en Toki «preguntas antes de un pedido grande», y este pedido es grande y deja decisiones abiertas.',
+        'Es una preferencia explícita suya, así que vale también en modo auto: un pedido así no es una decisión de rutina.',
+        'Antes de cualquier cambio, llama a la herramienta AskUserQuestion:',
+        `2 a 4 preguntas de opción múltiple${porque === 'proyecto' ? ' (una segunda ronda solo si hace falta)' : ''}, con la opción recomendada primero y marcada "(Recomendado)".`,
+        'Pregunta lo que más cambia el resultado: alcance, enfoque o tecnología, datos y casos límite, y qué cuenta como "listo" (cómo se comprueba). Si ya lo ves todo claro, haz una sola pregunta para confirmar el plan.',
+        'Hasta tener las respuestas no edites ni crees archivos, no ejecutes comandos que cambien algo y no lances subagentes (Toki los frena). Para preparar las preguntas, como mucho mira la estructura del proyecto (ls, README) o el archivo que nombra el pedido.',
         `Con las respuestas, guarda un resumen del pedido (máx. 15 líneas, con el criterio de "listo") en ${RUTA_SPEC} y sigue con el trabajo.`,
-        'Si la persona no quiere preguntas, continúa sin ellas.',
       ].join(' '),
+    frenada:
+      '[Toki] Todavía no: la persona pidió que, en los pedidos grandes, Claude pregunte antes de cambiar nada. Llama primero a AskUserQuestion (2 a 4 preguntas con la recomendada primero; si todo está claro, una sola para confirmar el plan) y después sigue.',
     aviso: 'Pedido grande: Claude te hará unas preguntas antes de empezar (tres respuestas rápidas evitan varias correcciones). Escribe «sin preguntas» para saltarlas.',
     pregunta: 'Este pedido es grande y deja decisiones abiertas. ¿Dejo que Claude te haga unas preguntas de opción múltiple antes de empezar? Cuesta ~1-2k tokens y suele ahorrar correcciones.',
     opcionesPregunta: { si: 'Sí, que pregunte (Recomendado)', no: 'Enviar así' },
@@ -217,14 +267,18 @@ export const textosEntrevista: Record<Idioma, TextosEntrevista> = {
   en: {
     instruccion: porque =>
       [
-        porque === 'proyecto' ? '[Toki] This is a new project and the request leaves decisions open.' : '[Toki] This is a big request and the message leaves decisions open.',
-        'Before reading big files or writing code, interview the person with the AskUserQuestion tool:',
-        `2 to 4 multiple-choice questions per round${porque === 'proyecto' ? ' (a second round only if needed)' : ''}, recommended option first and marked "(Recommended)".`,
-        'Ask only what changes the result and you cannot infer from the project: scope, technology or format, data and edge cases, and what counts as "done" (how it is checked).',
-        'If you need to see the project, look only at its structure (ls, README).',
+        porque === 'proyecto'
+          ? '[Toki] The person turned on "questions before a big request" in Toki, and this is a new project that leaves decisions open.'
+          : '[Toki] The person turned on "questions before a big request" in Toki, and this request is big and leaves decisions open.',
+        'It is their explicit preference, so it applies in auto mode too: a request like this is not a routine decision.',
+        'Before any change, call the AskUserQuestion tool:',
+        `2 to 4 multiple-choice questions${porque === 'proyecto' ? ' (a second round only if needed)' : ''}, recommended option first and marked "(Recommended)".`,
+        'Ask what changes the result most: scope, approach or technology, data and edge cases, and what counts as "done" (how it is checked). If everything already looks clear, ask a single question to confirm the plan.',
+        'Until you have the answers, do not edit or create files, do not run commands that change anything and do not launch subagents (Toki blocks them). To prepare the questions, at most look at the project structure (ls, README) or the file the request names.',
         `With the answers, save a summary of the request (max 15 lines, including the "done" criterion) to ${RUTA_SPEC} and carry on.`,
-        'If the person does not want questions, continue without them.',
       ].join(' '),
+    frenada:
+      '[Toki] Not yet: the person asked that, on big requests, Claude asks before changing anything. Call AskUserQuestion first (2 to 4 questions, recommended option first; if everything is clear, a single one to confirm the plan), then carry on.',
     aviso: 'Big request: Claude will ask a few questions before starting (three quick answers save several corrections). Type "no questions" to skip them.',
     pregunta: 'This request is big and leaves decisions open. Should Claude ask a few multiple-choice questions before starting? It costs ~1-2k tokens and usually saves corrections.',
     opcionesPregunta: { si: 'Yes, let it ask (Recommended)', no: 'Send as is' },

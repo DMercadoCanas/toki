@@ -9,8 +9,12 @@ import {
   consejoDe,
   esCorreccion,
   esDetallado,
+  esDiagnostico,
   evaluarEntrevista,
+  FRENOS_ENTREVISTA,
+  frenaAntesDePreguntar,
   leerModoEntrevista,
+  retomaLoAnterior,
   RUTA_SPEC,
   textosEntrevista,
 } from '../hooks/entrevista'
@@ -136,17 +140,22 @@ type Mundo = {
   entrados: string[]
   fills: string[]
   comandos: string[]
+  /** Las líneas que Toki anotó en .claude/toki/diagnostico.txt, sin la hora. */
+  diagnostico: string[]
 }
 
-function mundo(on: On, o: { tokens?: number; respuesta?: (etiquetas: string[]) => string } = {}): Mundo {
-  const m: Mundo = { toasts: [], preguntas: [], etiquetas: [], contextos: [], entrados: [], fills: [], comandos: [] }
+function mundo(on: On, o: { tokens?: number; respuesta?: (etiquetas: string[]) => string; soltar?: () => boolean } = {}): Mundo {
+  const m: Mundo = { toasts: [], preguntas: [], etiquetas: [], contextos: [], entrados: [], fills: [], comandos: [], diagnostico: [] }
   // Se lee en cada pedido: una prueba puede cambiarlo (por ejemplo, tras /clear).
   const tokens = (): number => o.tokens ?? 30_000
   mock.store(on)
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
   on('fs.exists', () => ({ value: false }))
-  on('fs.write', () => ({ value: undefined }))
+  on('fs.write', ($, e) => {
+    if (e.path.endsWith('diagnostico.txt')) m.diagnostico.push((e.text.trimEnd().split('\n').pop() ?? '').replace(/^\S+ /, ''))
+    return { value: undefined }
+  })
   on('fs.read', () => ({ deny: 'no existe' }))
   on('fs.stat', () => ({ deny: 'no existe' }))
   on('fs.list', () => ({ value: [] }))
@@ -166,6 +175,7 @@ function mundo(on: On, o: { tokens?: number; respuesta?: (etiquetas: string[]) =
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('prompt.submit', ($, e) => {
+    if (o.soltar?.() === true) return { drop: 'un hook de settings lo frenó' }
     m.entrados.push(e.text)
     m.contextos.push(e.context)
     return { text: e.text }
@@ -201,13 +211,18 @@ function mundo(on: On, o: { tokens?: number; respuesta?: (etiquetas: string[]) =
     return { result: { questions: [], answers: { [q.question]: elegida } } } as never
   })
   on('agent.spawn', ($, e) => ({ model: e.model ?? e.parentModel, agentId: 'a1' }))
+  // Lo que el motor decidiría sin Toki: dejar pasar.
+  on('tool.check', () => ({ decision: 'allow' as const }))
   return m
 }
 
 type Motor = Parameters<TestBody>[0]
 
-/** Manda un mensaje como lo haría la persona; si Toki lo frena, no hay turno. */
-async function mensaje($: Motor, turnId: string, texto: string): Promise<unknown> {
+/**
+ * Manda un mensaje como lo haría la persona; si Toki lo frena, no hay turno.
+ * `durante`: lo que Claude hace en el turno (herramientas); `respuesta`: cómo termina.
+ */
+async function mensaje($: Motor, turnId: string, texto: string, o: { durante?: () => Promise<unknown>; respuesta?: string } = {}): Promise<unknown> {
   const r = await $.prompt.submit({ text: texto, wait: false, origin: { kind: 'composer' } } as never)
   if (r !== null && typeof r === 'object' && 'drop' in r) return r
   await $.turn.start({ text: texto, turnId })
@@ -216,8 +231,25 @@ async function mensaje($: Motor, turnId: string, texto: string): Promise<unknown
     // Sin trozos.
   }
   await stream.result
-  await $.turn.complete({ answer: 'Listo.', durationMs: 1000, isAborted: false, turnId, reason: 'answer' as const })
+  await o.durante?.()
+  await $.turn.complete({ answer: o.respuesta ?? 'Listo.', durationMs: 1000, isAborted: false, turnId, reason: 'answer' as const })
   return r
+}
+
+/** Claude hace la entrevista: una pregunta con AskUserQuestion. */
+function claudePregunta($: Motor): Promise<unknown> {
+  const opciones = [
+    { label: 'Lo mínimo primero (Recomendado)', description: 'Agenda y recordatorios' },
+    { label: 'Todo de una vez', description: 'Con pagos y reportes' },
+  ]
+  return $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: '¿Qué alcance tiene la primera versión?', header: 'Alcance', options: opciones, multiSelect: false }] } as never)
+}
+
+/** Lo que Claude intenta en el turno, y lo que el motor (con Toki) decide. */
+async function intenta($: Motor, tool: string, id: string, isReadOnly?: true): Promise<string> {
+  const input = tool === 'Write' ? { file_path: '/p/app.ts', content: 'x' } : tool === 'Agent' ? { description: 'explorar', prompt: 'mira todo el proyecto' } : { file_path: '/p/README.md' }
+  const r = (await $.tool.check({ tool, input, tool_use_id: id, ...(isReadOnly ? { isReadOnly } : {}) } as never)) as { decision: string; reason?: string }
+  return r.decision === 'deny' ? `deny: ${r.reason ?? ''}` : r.decision
 }
 
 const ARRANQUE = 'sigue con lo que veníamos haciendo'
@@ -227,14 +259,15 @@ describe('entrevista con el motor', () => {
     mock.clock(on, { now: 1_000_000 })
     const m = mundo(on)
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
-    await mensaje($, 't0', PROYECTO)
+    await mensaje($, 't0', PROYECTO, { durante: () => claudePregunta($) })
     expect(m.entrados).toEqual([PROYECTO])
     const contexto = m.contextos[0]?.join('\n') ?? ''
     expect(contexto).toContain('AskUserQuestion')
     expect(contexto).toContain('(Recomendado)')
     expect(contexto).toContain(RUTA_SPEC)
     expect(m.toasts).toContain(x.aviso)
-    expect(m.preguntas.length).toBe(0)
+    // Toki no te preguntó nada: la pregunta es de Claude.
+    expect(m.preguntas).toEqual(['¿Qué alcance tiene la primera versión?'])
     const r = (await $.command.run({ command: 'toki-entrevista', args: '' } as never)) as { text: string }
     expect(r.text).toContain('Con entrevista: 1 pedido')
   })
@@ -389,11 +422,183 @@ describe('entrevista con el motor', () => {
     mock.clock(on, { now: 1_000_000 })
     mundo(on)
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
-    await mensaje($, 't0', PROYECTO)
+    await mensaje($, 't0', PROYECTO, { durante: () => claudePregunta($) })
     await mensaje($, 't1', 'sigue fallando el recordatorio por WhatsApp')
     const r = (await $.command.run({ command: 'toki-entrevista', args: '' } as never)) as { text: string }
     expect(r.text).toContain('Con entrevista: 1 pedido, correcciones después: 1 (100 %)')
     expect(r.text).toContain('Sin entrevista: 0 pedidos')
     expect(r.text).toContain('muy pocos pedidos todavía')
+  })
+})
+
+// ---------- 22 oct: Toki avisó «Claude te hará unas preguntas» y Claude no las hizo ----------
+
+// El diagnóstico del día: un pedido para averiguar por qué falla algo, y después el arreglo.
+const DIAGNOSTICO = 'investiga por qué falla el botón Otorgar acceso con la empleada Angela: dice que la cédula ya existe en otro contacto'
+const ESTO = 'Esto hay que solucionarlo con codigo, no puede volver a pasar cosas así, que me recomiendas?'
+
+describe('cuándo se pide la entrevista (puro)', () => {
+  test('averiguar por qué falla algo no se entrevista: Claude investiga primero', () => {
+    expect(esDiagnostico(DIAGNOSTICO)).toBe(true)
+    expect(evaluar(DIAGNOSTICO)).toEqual({ entrevistar: false })
+    expect(evaluar('why does the sync engine drop conflicts between devices after reconnecting?')).toEqual({ entrevistar: false })
+    expect(evaluar('explícame la arquitectura de la sincronización offline y todos los escenarios de conflicto')).toEqual({ entrevistar: false })
+    // Un proyecto nuevo sigue siendo un proyecto aunque pida explicaciones.
+    expect(evaluar('quiero construir una app para las citas de la clínica; explícame qué necesitas saber')).toEqual({ entrevistar: true, porque: 'proyecto' })
+    expect(esDiagnostico(ARQUITECTURA)).toBe(false)
+    // «Explica» o «cómo funciona» en medio de un pedido de diseño no lo vuelven una pregunta.
+    expect(esDiagnostico('diseña cómo funciona la sincronización offline y explica las decisiones de arquitectura')).toBe(false)
+    expect(esDiagnostico('¿cómo funciona la sincronización offline entre dispositivos?')).toBe(true)
+  })
+
+  test('«Esto hay que solucionarlo con código…» después del diagnóstico sí se entrevista: hay que decidir cómo', () => {
+    expect(evaluar(ESTO, { mensajes: 1, recientes: [DIAGNOSTICO] })).toEqual({ entrevistar: true, porque: 'grande' })
+  })
+
+  test('retoma lo anterior: puede ser trabajo nuevo, pero no es otro tema que convenga limpiar', () => {
+    expect(retomaLoAnterior(ESTO)).toBe(true)
+    expect(retomaLoAnterior('eso no era, revisa el otro módulo de contactos')).toBe(true)
+    expect(retomaLoAnterior('con lo que encontraste, arma una migración que una los contactos duplicados')).toBe(true)
+    expect(retomaLoAnterior('ese error también sale en el portal de pacientes')).toBe(true)
+    expect(retomaLoAnterior('this keeps failing after the fix you proposed')).toBe(true)
+    expect(retomaLoAnterior(ARQUITECTURA)).toBe(false)
+    expect(retomaLoAnterior('quiero hacer esto: una app de turnos para la barbería')).toBe(false)
+    expect(retomaLoAnterior('esto es lo que necesito: una app de turnos para la barbería')).toBe(false)
+    expect(retomaLoAnterior('estos días quiero armar un tablero de ventas')).toBe(false)
+    expect(retomaLoAnterior('I want an app that tracks expenses for my team')).toBe(false)
+  })
+
+  test('antes de que Claude pregunte: leer pasa; cambiar algo o lanzar subagentes, no', () => {
+    expect(frenaAntesDePreguntar('Write', false)).toBe(true)
+    expect(frenaAntesDePreguntar('Edit', false)).toBe(true)
+    expect(frenaAntesDePreguntar('Bash', false)).toBe(true)
+    expect(frenaAntesDePreguntar('mcp__odoo__write_record', false)).toBe(true)
+    expect(frenaAntesDePreguntar('Agent', true)).toBe(true)
+    expect(frenaAntesDePreguntar('Bash', true)).toBe(false)
+    expect(frenaAntesDePreguntar('Read', true)).toBe(false)
+    expect(frenaAntesDePreguntar('AskUserQuestion', false)).toBe(false)
+    expect(frenaAntesDePreguntar('TodoWrite', false)).toBe(false)
+  })
+
+  test('la instrucción no deja salida: es preferencia de la persona, vale en modo auto y pregunta primero', () => {
+    for (const porque of ['grande', 'proyecto'] as const) {
+      const es = x.instruccion(porque)
+      expect(es).toContain('preferencia explícita')
+      expect(es).toContain('modo auto')
+      expect(es).toContain('AskUserQuestion')
+      expect(es).not.toContain('continúa sin ellas')
+      const en = textosEntrevista.en.instruccion(porque)
+      expect(en).toContain('auto mode')
+      expect(en).not.toContain('continue without them')
+    }
+    expect(x.frenada).toContain('AskUserQuestion')
+  })
+})
+
+describe('la entrevista se cumple (con el motor)', () => {
+  test('antes de preguntar, Toki frena cambios y subagentes; leer pasa; después de preguntar, nada', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const m = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    const vistos: string[] = []
+    await mensaje($, 't0', PROYECTO, {
+      durante: async () => {
+        vistos.push(await intenta($, 'Write', 'u1'))
+        vistos.push(await intenta($, 'Read', 'u2', true))
+        vistos.push(await intenta($, 'Agent', 'u3', true))
+        await claudePregunta($)
+        vistos.push(await intenta($, 'Write', 'u4'))
+      },
+    })
+    expect(vistos).toEqual([`deny: ${x.frenada}`, 'allow', `deny: ${x.frenada}`, 'allow'])
+    await reloj.settle()
+    expect(m.diagnostico.filter(l => l.startsWith('entrevista:'))).toEqual([
+      'entrevista: proyecto',
+      'entrevista: frenó Write antes de preguntar',
+      'entrevista: frenó Agent antes de preguntar',
+      'entrevista: hecha · frenó 2',
+    ])
+    const r = (await $.command.run({ command: 'toki-entrevista', args: '' } as never)) as { text: string }
+    expect(r.text).toContain('Con entrevista: 1 pedido')
+  })
+
+  test('si Claude responde sin preguntar, el diagnóstico lo dice y cuenta como sin entrevista; el turno siguiente no frena', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const m = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', PROYECTO)
+    let siguiente = ''
+    await mensaje($, 't1', 'dale', { durante: async () => (siguiente = await intenta($, 'Write', 'u1')) })
+    expect(siguiente).toBe('allow')
+    await reloj.settle()
+    expect(m.diagnostico.filter(l => l.startsWith('entrevista:'))).toEqual(['entrevista: proyecto', 'entrevista: Claude no preguntó'])
+    const r = (await $.command.run({ command: 'toki-entrevista', args: '' } as never)) as { text: string }
+    expect(r.text).toContain('Con entrevista: 0 pedidos')
+    expect(r.text).toContain('Sin entrevista: 1 pedido')
+  })
+
+  test('preguntar en el texto también cuenta', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const m = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', ARQUITECTURA, { respuesta: 'Antes de empezar: ¿los dispositivos pueden estar offline más de un día?' })
+    await reloj.settle()
+    expect(m.diagnostico).toContain('entrevista: preguntó en el texto')
+    const r = (await $.command.run({ command: 'toki-entrevista', args: '' } as never)) as { text: string }
+    expect(r.text).toContain('Con entrevista: 1 pedido')
+  })
+
+  test(`frena a lo sumo ${FRENOS_ENTREVISTA} veces por turno: después deja seguir (nunca un bucle)`, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const m = mundo(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    const vistos: string[] = []
+    await mensaje($, 't0', ARQUITECTURA, {
+      durante: async () => {
+        for (let i = 0; i <= FRENOS_ENTREVISTA; i++) vistos.push(await intenta($, 'Write', `u${i}`))
+      },
+    })
+    expect(vistos.filter(v => v.startsWith('deny')).length).toBe(FRENOS_ENTREVISTA)
+    expect(vistos[FRENOS_ENTREVISTA]).toBe('allow')
+    await reloj.settle()
+    expect(m.diagnostico).toContain(`entrevista: Claude no preguntó · frenó ${FRENOS_ENTREVISTA}`)
+  })
+
+  test('sin entrevista no frena nada, y un pedido que no entró no deja la entrevista pendiente', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    let soltar = true
+    mundo(on, { soltar: () => soltar })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    // Un hook de settings frena el mensaje: no hay turno.
+    const r = await mensaje($, 't0', PROYECTO)
+    expect(r).toEqual({ drop: expect.any(String) })
+    soltar = false
+    let visto = ''
+    await mensaje($, 't1', 'renombra la variable foo a bar en utils', { durante: async () => (visto = await intenta($, 'Write', 'u1')) })
+    expect(visto).toBe('allow')
+  })
+
+  test('el caso del 22 oct: diagnóstico sin entrevista; «Esto hay que solucionarlo…» con entrevista y sin ofrecer limpiar', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const m = mundo(on, { tokens: 150_000, respuesta: ls => ls.find(l => l.startsWith('Empezar en limpio')) ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', DIAGNOSTICO)
+    expect(m.contextos[0]).toBe(undefined)
+    const vistos: string[] = []
+    const r = await mensaje($, 't1', ESTO, {
+      durante: async () => {
+        vistos.push(await intenta($, 'Write', 'u1'))
+        await claudePregunta($)
+        vistos.push(await intenta($, 'Write', 'u2'))
+      },
+    })
+    // Con 150k a cuestas parecía otro tema, pero retoma lo anterior: no se ofrece limpiar.
+    expect(m.preguntas.some(p => p.includes('otro tema'))).toBe(false)
+    expect(r).not.toEqual({ drop: expect.any(String) })
+    expect(m.contextos[1]?.join('\n')).toContain('modo auto')
+    expect(m.toasts).toContain(x.aviso)
+    expect(vistos).toEqual([`deny: ${x.frenada}`, 'allow'])
+    await reloj.settle()
+    expect(m.diagnostico.filter(l => l.startsWith('entrevista:'))).toEqual(['entrevista: grande', 'entrevista: frenó Write antes de preguntar', 'entrevista: hecha · frenó 1'])
   })
 })
