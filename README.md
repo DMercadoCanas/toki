@@ -6,9 +6,9 @@
 
 **Cada token cuenta.** Toki es un robot de limpieza que vive sobre tu prompt en Claude Code: aspira el ruido para que Claude lea solo lo que importa. Lo instalas una vez y se encarga solo: compacta las salidas ruidosas, rescata los errores que se esconden, recuerda lo importante cuando Claude Code compacta, mapea tu proyecto y te avisa justo cuando conviene actuar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen y nunca sacrifica calidad para ahorrar.
 
-Habla español e inglés. No agrega ni un token fijo a tu contexto.
+Habla español e inglés. Lo único fijo que agrega a tu contexto son ~200 tokens (en el caché) para pedir respuestas breves, y lo que cuestan se resta de lo que ahorran.
 
-> Versión 0.16.2. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+> Versión 0.17.0. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
 ## Instalación
 
@@ -19,6 +19,20 @@ En una sesión de Claude Code:
 ```
 
 Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario"). Queda activo de inmediato. Desde la terminal del sistema es lo mismo con `claude plugin install toki --marketplace DMercadoCanas/toki`. En la app de escritorio: botón **+** junto al cuadro de texto → **Plugins** → **Add marketplace** con `DMercadoCanas/toki` → **Add plugin**.
+
+## Lo nuevo en 0.17
+
+- **El ahorro, medido y en dólares.** Antes la barra tenía tres cifras, y la primera, «ahorrado», solo contaba las salidas recortadas: en una sesión sin tests ni builds se quedaba en ~0 aunque Toki ahorrara por otro lado. Ahora hay una sola cifra, lo ahorrado en la sesión a precio de API, con cuánto menos costó que sin Toki («ahorrado $0.42 −18 %»). Suma todo lo que ahorra:
+  - **Modelo y esfuerzo:** cada pedido se compara con el mismo pedido sin Toki (tu modelo, tu esfuerzo y el caché que tu modelo habría tenido), con lo que devolvió la API. Lo que costó de más (reescribir el caché al cambiar de modelo, más esfuerzo, la consulta a Haiku) se resta. Si en neto costó de más, la barra lo dice.
+  - **Relecturas evitadas y salidas recortadas**, ahora también en dólares.
+  - **Empezar en limpio:** si Toki lo propone y dices que sí, la conversación de antes deja de releerse en cada pedido. Cuenta hasta que esa conversación habría llegado al 80 % de la ventana, hasta que compactes o hasta que termine la sesión.
+  - **Respuestas breves** (abajo).
+  - `/toki` desglosa de dónde sale cada dólar y dice «esta sesión costó X; sin Toki habría costado Y». La tarjeta semanal y el aviso del lunes traen la cifra neta y la comparación con la semana anterior. Con suscripción no lo pagas aparte: es uso de tus límites que te queda libre.
+  - Lo ahorrado antes de 0.17 (solo tokens) se pasa a dólares una sola vez, a precio de Sonnet, y el panel dice cuánto fue estimado.
+- **Respuestas breves desde el primer mensaje.** Una sección fija al final del system prompt (~200 tokens, en el caché) le pide a Claude respuestas sin relleno; el código, los comandos, los errores y las rutas no se tocan. Medido sin Toki en Opus 5.5: ~12 % menos salida en tareas de código y ~15 % en preguntas abiertas, con los tests pasando igual ([evals/modo-breve](evals/modo-breve)). El ahorro se cuenta con el 12 %, en tu modelo y con tu esfuerzo, menos lo que cuesta mandar la sección. Si eliges tu propio `/output-style`, se respeta; se apaga en `/plugin` → Toki → Respuestas breves.
+- **La entrevista se cumple.** En un pedido grande con entrevista, hasta que Claude te pregunte, Toki frena (y le dice por qué) las herramientas que cambian algo y los subagentes; leer para preparar las preguntas sí pasa. A lo sumo 3 veces por mensaje: nunca un bucle. «Con» o «sin entrevista» se cuenta al terminar, según Claude haya preguntado de verdad; si lo interrumpes antes de que pregunte, no cuenta. Las preguntas de Toki no cuentan como las de Claude.
+- **Investigar no se entrevista.** «¿Por qué falla…?» va directo: Claude investiga primero. Y «esto hay que solucionarlo…» retoma lo anterior, así que Toki no ofrece empezar en limpio aunque parezca otro tema.
+- El chip del modelo lleva ✓ cuando la API confirma qué modelo respondió.
 
 ## Lo nuevo en 0.16
 
@@ -186,20 +200,20 @@ Medido con `claude -p` y Opus 5.5 de modelo:
 ```
 ╭──────────────────────────────────────────────────────────────────────────────────────╮
 │ [^‿^] ✓ Toki · Listo. En «npm test» te ahorré ~5.4k tokens.                    − × │
-│ contexto ██████░░░░░░░░ 37% de 300k · caché ● 48 min · ahorrado ~5.4k · relecturas evitadas ~1.2M · 🔥 4 │
+│ contexto █████░░░░░░░ 37% de 300k · caché ● 48 min · ahorrado $0.42 −18 % · 🔥 4 días │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 - **Toki actúa lo que pasa:** su cara va en la pantalla del robot. `[•_•]···` pensando, `[⊙‿⊙]` leyendo, `[•‿•] ⠋` ejecutando, `✎` editando, `[>‿<] ≋` aspirando (compactando), `[•o•]?` esperando tu permiso, `[^‿^]✓` listo, `\[^‿^]/ ✦` celebrando un logro, `[−_−]zZ` caché frío, `[•△•]!` contexto alto. En la app de escritorio es un dibujo animado en píxeles: parpadea, se toca la barbilla cuando piensa, barre con la escoba cuando trabaja, aprieta una caja cuando compacta, duerme cuando el caché se enfría y lanza confeti con cada logro.
 - **Una frase y, si hace falta, un botón:** al 70% de contexto (o si la conversación ya pesa más de 200k tokens) aparece **Compactar ahora** (atajo `c`).
-- **Medidores:** contexto (contra el tamaño al que se compacta, no contra el millón del modelo), reloj del caché (`●` lleno → `○` frío), tokens ahorrados en la sesión, relecturas evitadas, tu racha y, en planes con suscripción, los límites de 5 horas y de la semana.
+- **Medidores:** contexto (contra el tamaño al que se compacta, no contra el millón del modelo), reloj del caché (`●` lleno → `○` frío), lo ahorrado en la sesión en dólares a precio de API con el % frente a lo que habría costado sin Toki (mientras no llega a un centavo, en tokens; el desglose está en `/toki`), tu racha y, en planes con suscripción, los límites de 5 horas y de la semana.
 - **Cada ahorro y cada rescate te lo dice** con un aviso corto, y una campanita (solo macOS).
 - **`▸ más`** muestra duración, llamadas, salidas compactadas, bucles, cuánto del último turno salió del caché e histórico. **`−`** la deja en una línea. **`×`** la oculta (vuelve con `/toki`).
 - **Toki aprende** y lo anota en "Lo que Toki notó": cambios de modelo con el caché caliente, bucles, relecturas del mismo archivo, varias salidas enormes seguidas (mejor un subagente con Haiku), sesiones de más de 3 horas y compactaciones repetidas.
 
 ## El panel `/toki`
 
-Cifras grandes (esta sesión, hoy, 7 días, 30 días, histórico), lo que costó la sesión según la API y las relecturas evitadas, a cuánto compacta, tu racha y tus logros, una gráfica del ahorro por día de las últimas dos semanas, qué ocupa tu contexto ahora, los últimos comandos y qué hizo Toki con cada uno, lo que notó en la sesión y sugerencias concretas.
+Cifras grandes en dólares (esta sesión, hoy, 7 días, 30 días, histórico), de dónde sale el ahorro de la sesión (relecturas, recortes, empezar en limpio, respuestas breves, modelo y esfuerzo), lo que costó según la API y lo que habría costado sin Toki, a cuánto compacta, tu racha y tus logros, una gráfica del ahorro por día de las últimas dos semanas, qué ocupa tu contexto ahora, los últimos comandos y qué hizo Toki con cada uno, lo que notó en la sesión y sugerencias concretas.
 
 ### Logros
 
@@ -235,7 +249,7 @@ En `/plugin`, elige Toki y abre su configuración. Puedes apagar cualquier pieza
 | `ruta-compleja`: por qué falla un test de citas que se pisan | $0.074 | $0.073 | +1 % | 100 % / 100 % |
 | `lockfile-version`: qué versión hay en un `package-lock.json` de 200 KB | $0.066 | $0.066 | 0 % | 100 % / 100 % |
 
-En la tarea mecánica, Toki la mandó en Sonnet con esfuerzo bajo en las tres corridas, sin perder la respuesta. En la que pide razonar, no tocó el modelo: en las trazas, el contexto que recibió Claude difirió en 8 tokens entre los dos brazos, y el +1 % (menos de $0.001) es una respuesta unas decenas de tokens más larga. En el lockfile, Opus fue directo a Grep, así que Toki no tuvo que frenar nada. Y Toki no agrega tokens fijos: el primer pedido mide lo mismo con y sin él (~15k tokens).
+En la tarea mecánica, Toki la mandó en Sonnet con esfuerzo bajo en las tres corridas, sin perder la respuesta. En la que pide razonar, no tocó el modelo: en las trazas, el contexto que recibió Claude difirió en 8 tokens entre los dos brazos, y el +1 % (menos de $0.001) es una respuesta unas decenas de tokens más larga. En el lockfile, Opus fue directo a Grep, así que Toki no tuvo que frenar nada. Con 0.16, el primer pedido medía lo mismo con y sin Toki (~15k tokens); desde 0.17 lleva además la sección de respuestas breves (~200 tokens).
 
 Los casos con Bash (`test-con-fallo`, `tail-esconde-error`, `salida-enorme`, `busqueda-enorme`) necesitan el sandbox del sistema: se corren en macOS, o en Linux con bubblewrap y socat. Usa `-j 1`: el comienzo del prompt es igual en los dos brazos y queda en el caché, así que si varias corridas arrancan a la vez, el brazo que va primero paga la escritura del caché y sale más caro sin que Toki tenga que ver.
 
@@ -258,7 +272,7 @@ Lo honesto: el ahorro grande aparece cuando Toki le evita a Claude volver a corr
 
 Las **relecturas evitadas** son otra cuenta, aparte: lo que Toki sacó del contexto, multiplicado por cada pedido siguiente que ya no lo releyó, hasta la próxima compactación. Si Toki compactó antes que Claude Code, cuenta la diferencia de tamaño en cada pedido mientras la conversación "sin Toki" no hubiera llegado al umbral de Claude Code, y descuenta una lectura completa por la compactación. Son lecturas de caché: la parte más barata de cada pedido, pero la más grande.
 
-Lo que la barra muestra como "ahorrado" es la diferencia entre lo que Claude habría leído sin Toki (como máximo 30 KB, o la vista previa de 2 KB cuando Claude Code guarda la salida en un archivo) y lo que leyó con él, a ~4 caracteres por token. Es una estimación conservadora y siempre lleva "~": los rescates y los turnos evitados no se suman.
+Lo que la barra muestra como "ahorrado" suma, en dólares a precio de API: las relecturas evitadas; las salidas recortadas (lo que Claude habría leído sin Toki, como máximo 30 KB o la vista previa de 2 KB cuando Claude Code guarda la salida en un archivo, menos lo que leyó con él, a ~4 caracteres por token); empezar en limpio; las respuestas breves (con lo medido); y modelo y esfuerzo (con lo que devolvió cada pedido). Resta lo que costó de más. Los rescates y los turnos evitados no se suman, así que en sesiones con tests y builds la cifra se queda corta.
 
 En `evals/` está la suite para `claude plugin eval`: corre cada caso con y sin el plugin y califica el resultado. `evals/README.md` explica cada caso.
 
@@ -274,7 +288,7 @@ En `evals/` está la suite para `claude plugin eval`: corre cada caso con y sin 
 
 **Toki: your token-saving companion. Every token counts.**
 
-Toki is a little cleaning robot that lives above your Claude Code prompt and vacuums up the noise so Claude reads only what matters. Install it once and it takes care of the rest: on 1M-context models it compacts at 300k instead of waiting until ~500k–967k (every message re-reads the whole conversation), it shows what each request really cost according to the API, it collapses identical repeated outputs into one line, it compacts noisy command output (tests, builds, installs, linters, logs) while keeping every error, rescues the errors Claude Code's truncation or a `| tail` would hide, reminds Claude of the task after a compaction, maps your project without using the model, and tells you when it is the right moment to compact or clear. It adds zero always-on tokens to your context and never touches file reads or diffs.
+Toki is a little cleaning robot that lives above your Claude Code prompt and vacuums up the noise so Claude reads only what matters. Install it once and it takes care of the rest: on 1M-context models it compacts at 300k instead of waiting until ~500k–967k (every message re-reads the whole conversation), it shows what each request really cost according to the API, it collapses identical repeated outputs into one line, it compacts noisy command output (tests, builds, installs, linters, logs) while keeping every error, rescues the errors Claude Code's truncation or a `| tail` would hide, reminds Claude of the task after a compaction, maps your project without using the model, and tells you when it is the right moment to compact or clear. The only always-on tokens it adds are ~200 (cached) asking for brief replies, and their cost is subtracted from what they save. It never touches file reads or diffs.
 
 ```
 /plugin install toki --marketplace DMercadoCanas/toki
@@ -294,6 +308,9 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **Accented words (0.16.1).** Toki misread some Spanish words with accents or ñ: «no funcionó» (it didn't work) didn't count as being stuck, so the message could go to a cheaper model right then; «área» counted as asking to think hard; and «un pequeño sistema» didn't count as a new project. It now handles any letter. `/toki-sonnet actívalo` and `apágalo`, as its help says, now work too.
 - **Decision log (0.16.2).** `.claude/toki/diagnostico.txt` now carries over between sessions (the last 1,000 lines, a few days of use). It records each model and effort decision, what you undid, which messages corrected the one before, and what each message really used next to what Toki estimated. It never stores what you wrote: only the kind of message, the reason, the change and the numbers. It's there to tune Toki's thresholds with real use. It stays in the project folder, which git ignores on its own.
 - **Measured in a real session (0.16.2).** On a simple message, going from medium to low effort saves nothing: the answer comes out the same size. Toki no longer changes it or counts it as savings; `/toki-modelo` says "no change (it barely changes the cost)". What weighs most is how often the context is reread: every time Claude uses a tool. A "thanks" after deep thinking no longer inherits the deep level or switches models. And when Toki can't ask (`claude -p`, or you silenced it) and the pick would rewrite the cache, it at least lowers the effort on your model, if that saves.
+- **Savings, measured and in dollars (0.17).** The bar used to show three numbers, and the first one, "saved", only counted trimmed output: in a session without tests or builds it stayed at ~0 even when Toki was saving elsewhere. Now there is one number, what the session saved at API prices and how much less it cost than without Toki ("saved $0.42 −18%"). It adds up everything Toki saves: model and effort (each request against the same request without Toki: your model, your effort and the cache your model would have had, from what the API returned, minus what cost extra, such as rewriting the cache when switching models); re-reads avoided and trimmed output; starting clean when Toki suggested it; and brief replies. If Toki cost extra overall, the bar says so. `/toki` breaks it down and shows what the session would have cost without Toki; the weekly card and the Monday notice carry the net figure. Savings from before 0.17 (tokens only) are converted once, at Sonnet prices.
+- **Brief replies from the first message (0.17).** A fixed section at the end of the system prompt (~200 tokens, cached) asks Claude for replies without filler; code, commands, errors and paths are left alone. Measured without Toki on Opus 5.5: ~12% less output on coding tasks and ~15% on open questions, with tests passing the same ([evals/modo-breve](evals/modo-breve)). Savings are counted at 12%, on your model and effort, minus the cost of sending the section. Your own `/output-style` is respected; turn it off in `/plugin` → Toki → Brief replies.
+- **The interview is enforced (0.17).** On a big request with an interview, until Claude asks you, Toki blocks (and says why) tools that change things and subagents; reading to prepare the questions is allowed. At most 3 times per message, never a loop. "With" or "without interview" is counted at the end, by whether Claude really asked; if you interrupt before it asks, it doesn't count. Asking why something fails is never interviewed: Claude investigates first.
 - Measured with `claude plugin eval` on Opus: a mechanical rename cost **55% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 

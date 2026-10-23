@@ -120,7 +120,7 @@ import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, o
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.16.2'
+export const VERSION = '0.17.0'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'

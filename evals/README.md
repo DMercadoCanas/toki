@@ -36,6 +36,8 @@ python3 evals/benchmark.py evals/results/sin-bash.json evals/results/bash.json
 | `ruta-trivial` | "Renombra la función sumar a add" con Opus. Toki debería mandarlo en un modelo o esfuerzo más barato sin perder el resultado. | Read, Edit | ruta-modelo, benchmark |
 | `ruta-compleja` | Por qué falla un test de citas que se tocan en el borde. Toki no debe bajar el modelo hasta perder la respuesta (calificado por un juez). | Read, Grep | ruta-modelo, benchmark |
 
+`modo-breve/` es otra cosa: no usa `claude plugin eval`. Mide, sin Toki y con `claude -p`, cuánto baja la salida con la sección de respuestas breves (−12 % en tareas de código, −15 % en preguntas abiertas, con los tests pasando igual). De ahí sale el 12 % con que Toki cuenta ese ahorro. Su `README.md` explica cómo correrlo.
+
 ## Última corrida (22 oct 2026: Toki 0.16, Claude Code 2.1.308, Opus 5.5, 3 corridas por brazo, `-j 1`)
 
 | Caso | Con Toki: nota · costo | Sin Toki: nota · costo | Diferencia |
@@ -49,6 +51,6 @@ Costo = mediana por corrida, sin el juez. En total, $0.178 por corrida con Toki 
 - En `ruta-trivial`, Toki eligió Sonnet con esfuerzo bajo en las tres corridas: las tres costaron $0.038, contra $0.081–$0.085 de Opus sin Toki. `/toki-modelo` y `.claude/toki/diagnostico.txt` registran el cambio.
 - En `ruta-compleja` lo dejó en Opus. En una corrida con trazas, el contexto que recibió Claude difirió en 8 tokens entre los dos brazos; el +1 % (menos de $0.001) es una respuesta unas decenas de tokens más larga. En `claude -p` no hay a quién preguntar, así que Toki nunca sube el costo por su cuenta: solo aplica cambios que ahorran.
 - En `lockfile-version`, Opus fue directo a Grep, así que la guardia no tuvo que actuar. Con modelos que sí intentan leerlo entero (lo vimos en vivo), la guardia los lleva a leer por tramos.
-- Toki no agrega tokens fijos: el primer pedido mide lo mismo con y sin él (~15k tokens).
+- Con 0.16, Toki no agregaba tokens fijos: el primer pedido medía lo mismo con y sin él (~15k tokens). Desde 0.17 lleva además la sección de respuestas breves (~200 tokens, en el caché).
 
 Los casos con Bash no se corrieron aquí: esta máquina no tiene el sandbox. Las cifras medidas a mano para esos escenarios están en el README principal.
