@@ -43,31 +43,33 @@ import type { Actividad } from './mascota'
 import { estaVacia, extraerDecisiones, instruccionesDeCompactacion, LIMITES_MEMORIA, motivo, notaPostCompactacion, primerError, recordar, registrarDecision, resumenCorto, vacio } from './memoria'
 import type { Decision, Motivo, PuntoDeControl } from './memoria'
 import {
-  ahorroSinCache,
   costoMedido,
-  daIgual,
-  decidirInterfaz,
+  decidirRuta,
   diferencia,
   esEsfuerzo,
+  esfuerzoDeFabrica,
+  esfuerzoGuardado,
   etiquetas,
   ETIQUETAS_CLASIFICADOR,
   familiaDe,
   hermano,
   igual,
+  leerEsfuerzo,
   leerModo,
   limpiarPrompt,
+  modeloCanonico,
   modeloSubagente,
   nivelHeuristico,
   nombreCorto,
   PEDIDOS_POR_NIVEL,
   proponer,
-  REESCRITURA_QUE_PREGUNTA,
   terminaEnPregunta,
   textoDiferencia,
   textosRuta,
+  usaEsfuerzoHeredado,
   usd as usdTexto,
 } from './modelo'
-import type { Decision as DecisionMensaje, Esfuerzo, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, Propuesta, TextosRuta, TipoOpcion } from './modelo'
+import type { Decision as DecisionMensaje, Esfuerzo, EstadoRuta, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, Propuesta, TextosRuta, TipoOpcion } from './modelo'
 import {
   alCompactar,
   contarLimpio,
@@ -120,7 +122,7 @@ import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, o
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
 /** Cambia en cada versión: así Claude Code recompila el módulo al recargar. */
-export const VERSION = '0.17.0'
+export const VERSION = '0.17.1'
 
 type $ = EngineInterface
 type Tono = 'normal' | 'bien' | 'aviso' | 'peligro'
@@ -2062,10 +2064,42 @@ type DecisionRuta = {
 
 const CLAVE_MODO_RUTA = 'modoModeloEsfuerzo'
 const CLAVE_SONNET = 'sonnetPrimero'
+/** El esfuerzo que Claude Code usó para cada modelo sin que nadie lo fijara (el de tu organización), si no es el de fábrica. */
+const CLAVE_ESFUERZO = 'esfuerzoPorDefecto'
+/** Cuántos modelos recuerda con un esfuerzo por defecto distinto del de fábrica. */
+const MAX_DEFECTOS = 8
+/** Del más fuerte al más débil, como los junta Claude Code. */
+const FUENTES_DE_CONFIGURACION = ['policy', 'flag', 'local', 'project', 'user'] as const
+/** De dónde sale el esfuerzo: la variable de entorno, tu configuración o nadie lo fijó (el por defecto). */
+type FuenteEsfuerzo = 'entorno' | 'config' | 'defecto'
 /** Cuánto espera Toki a Haiku en la zona dudosa antes de seguir con la heurística. */
 const ESPERA_CLASIFICADOR = 2_000
 /** Por debajo de esto el contexto real (sistema + herramientas) aún no se midió: se usa este piso. */
 const CONTEXTO_BASE = 35_000
+
+/**
+ * Lo que Toki planeó para tu mensaje y con qué esfuerzo creía que iba. En el
+ * primer pedido Claude Code dice el de verdad: si es otro, se decide de nuevo.
+ */
+type PlanTurno = {
+  /** El esfuerzo que Toki supuso al planear. */
+  supuesto: Esfuerzo
+  /** El modelo con que iba la conversación. */
+  modelo: string
+  usada: Opcion
+  como: DecisionRuta['como']
+  /** Te preguntó: vale lo que respondiste. */
+  preguntado: boolean
+  nivel: Nivel
+  motivo: MotivoRuta
+  propuesta: Omit<Parameters<typeof proponer>[0], 'esfuerzo'>
+  estado: EstadoRuta
+  /** El cambio en el historial, si lo hubo. */
+  entrada?: DecisionRuta
+  /** El turno del mensaje: se ata en `turn.start`. */
+  turno?: string
+  revisado?: boolean
+}
 
 /**
  * Un mensaje tuyo: lo que Toki estimó al planearlo y lo que de verdad usó, pedido
@@ -2113,6 +2147,16 @@ const ruta: {
   nivelPrevio?: Nivel
   /** El esfuerzo de la sesión, como lo pide Claude Code (antes de que Toki lo cambie). */
   esfuerzoSesion?: Esfuerzo
+  /**
+   * De dónde sale ese esfuerzo, para el modelo (canónico) en que se calculó:
+   * la variable de entorno, tu configuración o nadie lo fijó (el por defecto).
+   */
+  fuenteEsfuerzo?: { modelo: string; fuente: FuenteEsfuerzo }
+  /** Lo que el entorno y tu configuración decían la última vez: si cambia, el esfuerzo se calcula de nuevo. */
+  vistoEsfuerzo?: { modelo: string; entorno: Esfuerzo | null | undefined; config: Esfuerzo | undefined }
+  /** Lo que Claude Code usó sin que nadie fijara un esfuerzo, por modelo, si no es el de fábrica (lo fija tu organización). */
+  defectos: Record<string, Esfuerzo>
+  plan?: PlanTurno
   /** Lo que elegiste antes para cada nivel: la próxima vez se aplica solo. */
   preferencias: Partial<Record<Nivel, TipoOpcion>>
   rechazos: number
@@ -2167,6 +2211,7 @@ const ruta: {
   deshechos: {},
   mensajesEn: {},
   cambioEsfuerzo: false,
+  defectos: {},
 }
 
 function xr(): TextosRuta {
@@ -2177,12 +2222,14 @@ function xr(): TextosRuta {
 function eleccionActual(): Eleccion | undefined {
   const modelo = ruta.modeloPrincipal ?? vivo.modelo
   if (modelo === undefined) return undefined
-  return { modelo, esfuerzo: ruta.esfuerzoSesion ?? 'medium' }
+  // Claude Code calcula el esfuerzo para tu modelo, aunque Toki mande el pedido a otro.
+  return { modelo, esfuerzo: ruta.esfuerzoSesion ?? esfuerzoDeFabrica(vivo.modelo ?? modelo) }
 }
 
 function reiniciarRuta(): void {
   ruta.modeloPrincipal = undefined
   ruta.pendiente = undefined
+  ruta.plan = undefined
   ruta.turno = undefined
   ruta.esfuerzo = undefined
   ruta.nivelPrevio = undefined
@@ -2239,14 +2286,203 @@ async function leerNivel($: $, texto: string): Promise<{ nivel: Nivel; motivo: M
   return l
 }
 
+// ---------- El esfuerzo con que pide Claude Code ----------
+
+/** `CLAUDE_CODE_EFFORT_LEVEL`, como lo lee Claude Code: `null` si dice `auto` (lo de fábrica, aunque tu configuración diga otro). */
+async function esfuerzoDelEntorno($: $): Promise<Esfuerzo | null | undefined> {
+  let v: string | undefined
+  try {
+    v = await $.env.get('CLAUDE_CODE_EFFORT_LEVEL')
+  } catch {
+    return undefined
+  }
+  if (v === undefined) return undefined
+  const t = v.toLowerCase()
+  return t === 'auto' || t === 'unset' ? null : leerEsfuerzo(t)
+}
+
+/**
+ * El esfuerzo que fijaste para este modelo (`/effort` lo guarda en tu configuración),
+ * juntado como Claude Code: de la fuente más fuerte a la más débil, lo de ese modelo
+ * o el `effortLevel` de arriba. El de arriba de tu configuración personal solo vale
+ * para los modelos de antes. `undefined` si nadie lo fijó.
+ */
+async function esfuerzoDeConfiguracion($: $, modelo: string): Promise<Esfuerzo | undefined> {
+  const canon = modeloCanonico(modelo)
+  // Sin versión (un alias) no se puede saber a qué modelo apunta.
+  if (!/\d/.test(canon)) return undefined
+  try {
+    let personal: unknown
+    for (const source of FUENTES_DE_CONFIGURACION) {
+      const s = await $.settings.read({ source })
+      const porModelo = s.modelSettings
+      if (typeof porModelo === 'object' && porModelo !== null) {
+        let valor: unknown
+        for (const [clave, ajustes] of Object.entries(porModelo)) {
+          const nivel: unknown = typeof ajustes === 'object' && ajustes !== null ? (ajustes as { effortLevel?: unknown }).effortLevel : undefined
+          if (nivel === undefined || modeloCanonico(clave) !== canon) continue
+          // Gana la clave con el nombre exacto; si no, la primera.
+          if (clave === canon || valor === undefined) valor = nivel
+        }
+        if (valor !== undefined) return esfuerzoGuardado(valor)
+      }
+      if (source === 'user') personal = s.effortLevel
+      else if (s.effortLevel !== undefined) return esfuerzoGuardado(s.effortLevel)
+    }
+    return usaEsfuerzoHeredado(modelo) ? esfuerzoGuardado(personal) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Antes de planear: con qué esfuerzo va a pedir Claude Code en tu modelo. Solo se
+ * calcula de nuevo si cambió el modelo, la variable de entorno o tu configuración;
+ * si no, vale lo que dijo el último pedido (también un `--effort` que Toki no ve).
+ */
+async function refrescarEsfuerzo($: $, modelo: string): Promise<void> {
+  const canon = modeloCanonico(modelo)
+  const entorno = await esfuerzoDelEntorno($)
+  const config = entorno === null ? undefined : await esfuerzoDeConfiguracion($, modelo)
+  const visto = ruta.vistoEsfuerzo
+  if (visto !== undefined && visto.modelo === canon && visto.entorno === entorno && visto.config === config) return
+  ruta.vistoEsfuerzo = { modelo: canon, entorno, config }
+  if (typeof entorno === 'string') {
+    ruta.esfuerzoSesion = entorno
+    ruta.fuenteEsfuerzo = { modelo: canon, fuente: 'entorno' }
+  } else if (config !== undefined) {
+    ruta.esfuerzoSesion = config
+    ruta.fuenteEsfuerzo = { modelo: canon, fuente: 'config' }
+  } else {
+    ruta.esfuerzoSesion = ruta.defectos[canon] ?? esfuerzoDeFabrica(modelo)
+    ruta.fuenteEsfuerzo = { modelo: canon, fuente: 'defecto' }
+  }
+}
+
+/**
+ * Nadie fijó el esfuerzo y Claude Code pidió con este: es el por defecto de ese
+ * modelo (tu organización puede fijar otro que el de fábrica). Se recuerda para
+ * la próxima sesión, solo si no es el de fábrica.
+ */
+function recordarDefecto($: $, canon: string, esfuerzo: Esfuerzo): void {
+  // `max` solo se elige para la sesión: no es un por defecto.
+  if (esfuerzoGuardado(esfuerzo) === undefined) return
+  const antes = ruta.defectos[canon]
+  const otros = Object.entries(ruta.defectos).filter(([clave]) => clave !== canon)
+  ruta.defectos = Object.fromEntries(esfuerzo === esfuerzoDeFabrica(canon) ? otros : [...otros, [canon, esfuerzo] as const].slice(-MAX_DEFECTOS))
+  if (ruta.defectos[canon] === antes) return
+  void $.store.set(CLAVE_ESFUERZO, ruta.defectos).catch(() => undefined)
+}
+
+/** /effort: lo que elegiste vale desde tu próximo mensaje (`max`, solo en esta sesión). */
+async function alElegirEsfuerzo($: $, args: string): Promise<void> {
+  const modelo = vivo.modelo
+  if (modelo === undefined) return
+  // Con la variable de entorno puesta, /effort no cambia lo que se pide.
+  if ((await esfuerzoDelEntorno($)) !== undefined) return
+  const arg = args.trim().toLowerCase()
+  const nivel = leerEsfuerzo(arg)
+  if (nivel !== undefined) {
+    const canon = modeloCanonico(modelo)
+    ruta.esfuerzoSesion = nivel
+    ruta.fuenteEsfuerzo = { modelo: canon, fuente: 'config' }
+    // Tu configuración ya trae lo que /effort guardó (`max` no se guarda): el próximo mensaje no lo pisa.
+    ruta.vistoEsfuerzo = { modelo: canon, entorno: undefined, config: await esfuerzoDeConfiguracion($, modelo) }
+  } else if (arg === 'auto' || arg === 'unset') {
+    // Vuelve a lo de tu configuración o al por defecto: se calcula de nuevo antes del próximo mensaje.
+    ruta.vistoEsfuerzo = undefined
+  }
+  // Sin nivel (el selector): si lo guarda en tu configuración, se nota antes del próximo mensaje; si no, en su primer pedido.
+}
+
+/**
+ * El primer pedido de tu mensaje trae el esfuerzo de verdad. Si no es el que Toki
+ * supuso al planear, decide de nuevo con la misma regla, ya sin preguntar (lo que
+ * respondiste vale), antes de que salga el pedido.
+ */
+async function corregirPlan($: $, plan: PlanTurno, real: Esfuerzo, turnId: string): Promise<void> {
+  const supuesto = plan.supuesto
+  if (real === supuesto) return
+  const p = proponer({ ...plan.propuesta, esfuerzo: real })
+  let envio: Opcion
+  let como = plan.como
+  if (plan.preguntado) {
+    envio = como === 'elegido' ? plan.usada : p.actual
+    if (ruta.ultima !== undefined) ruta.ultima = { ...ruta.ultima, actual: p.actual }
+  } else {
+    const d = decidirRuta(p, { ...plan.estado, interactivo: false })
+    envio = d.modo === 'auto' ? d.elegida : p.actual
+    como = d.como
+    ruta.ultima = { nivel: plan.nivel, motivo: plan.motivo, actual: p.actual, recomendada: d.elegida, decision: d.decision }
+  }
+  const cambia = !igual(envio, p.actual)
+  const dif = diferencia(envio, p.actual)
+  void anotarDiagnostico($, `ruta corregida: esfuerzo ${real}, Toki supuso ${supuesto} → ${envio.modelo}/${envio.esfuerzo} ${cambia ? textoDiferencia(dif, xr()) : 'sin cambio'}`)
+  // Lo que se manda desde este pedido.
+  ruta.modeloPrincipal = envio.modelo === vivo.modelo ? undefined : envio.modelo
+  ruta.turno = turnId
+  ruta.esfuerzo = envio.esfuerzo !== real ? envio.esfuerzo : undefined
+  const m = ruta.medicion
+  if (m !== undefined && m.turno === turnId) {
+    m.modelo = envio.modelo
+    m.esfuerzo = envio.esfuerzo
+    m.estimado = envio.usd + envio.cambio
+  }
+  const antes = familiaDe(plan.usada.modelo)
+  const ahora = familiaDe(envio.modelo)
+  if (antes !== ahora) {
+    if (antes !== undefined) ruta.mensajesEn[antes] = Math.max(0, (ruta.mensajesEn[antes] ?? 0) - 1)
+    if (ahora !== undefined) ruta.mensajesEn[ahora] = (ruta.mensajesEn[ahora] ?? 0) + 1
+  }
+  // El historial y el aviso dicen lo que de verdad se aplicó.
+  const vieja = plan.entrada
+  const avisoViejo = vieja !== undefined && ruta.aviso?.deshacer === vieja.antes
+  if (!cambia) {
+    plan.entrada = undefined
+    if (vieja !== undefined) ruta.historial = ruta.historial.filter(h => h !== vieja)
+    if (avisoViejo) ruta.aviso = undefined
+  } else {
+    const momento = await $.clock.now()
+    const nueva: DecisionRuta = { cuando: vieja?.cuando ?? momento, nivel: plan.nivel, motivo: plan.motivo, antes: { modelo: p.actual.modelo, esfuerzo: real }, despues: { modelo: envio.modelo, esfuerzo: envio.esfuerzo }, como, dif }
+    ruta.historial = vieja !== undefined ? ruta.historial.map(h => (h === vieja ? nueva : h)) : [...ruta.historial, nueva].slice(-12)
+    plan.entrada = nueva
+    ruta.aviso = { texto: textoAviso(nueva), hasta: momento + 12_000, deshacer: nueva.antes }
+    if (!avisoViejo) sonar($, 'aviso')
+  }
+  plan.supuesto = real
+  plan.usada = envio
+  plan.como = como
+  $.ui.invalidate('ui.render')
+}
+
+/** Otro hook frenó tu mensaje: lo que Toki planeó para él no pasa al siguiente. */
+function descartarPlan(): void {
+  const plan = ruta.plan
+  ruta.plan = undefined
+  ruta.pendiente = undefined
+  if (ruta.medicion?.turno === undefined) ruta.medicion = undefined
+  modeloPorContar.pendiente = false
+  if (plan === undefined) return
+  const familia = familiaDe(plan.usada.modelo)
+  if (familia !== undefined) ruta.mensajesEn[familia] = Math.max(0, (ruta.mensajesEn[familia] ?? 0) - 1)
+  const entrada = plan.entrada
+  if (entrada === undefined) return
+  ruta.historial = ruta.historial.filter(h => h !== entrada)
+  ruta.modeloPrincipal = plan.modelo === vivo.modelo ? undefined : plan.modelo
+  if (ruta.aviso?.deshacer === entrada.antes) ruta.aviso = undefined
+}
+
 /** Lee el mensaje antes de mandarlo y decide (o te pregunta) con qué modelo y esfuerzo va. */
 async function planearTurno($: $, textoCrudo: string, silenciar = false): Promise<void> {
+  ruta.plan = undefined
   const texto = quitarEtiquetasDeSistema(textoCrudo)
   if (ruta.modo === 'no' || texto === '' || texto.startsWith('/')) return
   // Antes de elegir: ¿cambiaste de modelo desde el último mensaje?
   await revisarModelo($)
   const tuModelo = vivo.modelo
   if (tuModelo === undefined) return
+  // ¿Y el esfuerzo? /effort, el selector de /model u otra sesión pueden haberlo cambiado en tu configuración.
+  await refrescarEsfuerzo($, tuModelo)
   const actual = eleccionActual()
   // Haiku no tiene esfuerzo, y no hay nada más barato a qué bajar.
   if (actual === undefined || familiaDe(actual.modelo) === 'haiku') return
@@ -2269,10 +2505,9 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   const comienzo = vivo.prefijoSistema ?? COMIENZO_TIPICO
   const reanudada = ruta.alIniciar && (vivo.usoCache?.tokens ?? 0) >= Math.max(CONTEXTO_RELEVANTE, 2 * comienzo)
   const reescribe = ruta.soloComienzo && !reanudada ? Math.min(contexto, comienzo) : undefined
-  const p = proponer({
+  const propuesta: PlanTurno['propuesta'] = {
     nivel,
     modelo: actual.modelo,
-    esfuerzo: actual.esfuerzo,
     contexto,
     ttl1h,
     // Tras un cierre no se sabe qué viene: cambiar de modelo por un mensaje no se paga.
@@ -2281,51 +2516,21 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
     reescribe,
     sonnetPrimero: base !== undefined,
     atascado,
-  })
-  let modo = decidirInterfaz(ruta.modo, p, ruta.silenciado || silenciar, base)
-  // Modo ahorro por límite (lo elegiste al 90 %): la opción barata, sin preguntar, hasta que se renueve.
-  const enAhorro = guardia.ahorroHasta > (await $.clock.now()) || tarea.p?.ahorro === true
-  const ahorro = enAhorro ? p.opciones.find(o => o.tipo === 'ahorro') : undefined
-  if (enAhorro) modo = ahorro !== undefined && !igual(ahorro, p.actual) && !daIgual(ahorro, p.actual) && ahorro.usd <= p.actual.usd ? 'auto' : 'nada'
-  // Lo que elegiste antes para este nivel se repite solo, si no reescribe el caché.
-  const recordada = ruta.preferencias[nivel]
-  let elegida: Opcion = ahorro ?? p.recomendada
-  let como: DecisionRuta['como'] = 'auto'
-  if (modo === 'preguntar' && recordada !== undefined && ruta.modo !== 'siempre') {
-    const o = recordada === 'actual' ? p.actual : p.opciones.find(op => op.tipo === recordada)
-    if (o !== undefined && o.reescribe < REESCRITURA_QUE_PREGUNTA) {
-      elegida = o
-      modo = 'auto'
-      como = 'recordado'
-    }
   }
-  // Sin nadie que responda (claude -p, un mensaje del SDK): solo lo que ahorra.
-  if (modo === 'preguntar' && !ruta.interactivo) modo = decidirInterfaz('preguntar', p, true, base)
-  // Callado o sin nadie que responda: si lo recomendado reescribe el caché, al menos baja el esfuerzo en tu modelo.
-  const sinCache = modo === 'nada' && !enAhorro && (ruta.silenciado || silenciar || !ruta.interactivo) ? ahorroSinCache(p) : undefined
-  if (sinCache !== undefined) {
-    elegida = sinCache
-    modo = 'auto'
+  const p = proponer({ ...propuesta, esfuerzo: actual.esfuerzo })
+  const estado: EstadoRuta = {
+    modo: ruta.modo,
+    silenciado: ruta.silenciado || silenciar,
+    interactivo: ruta.interactivo,
+    base,
+    // Modo ahorro por límite (lo elegiste al 90 %) o por presupuesto: la opción barata, sin preguntar.
+    enAhorro: guardia.ahorroHasta > (await $.clock.now()) || tarea.p?.ahorro === true,
+    recordada: ruta.preferencias[nivel],
+    deshecha: ruta.deshechos[nivel],
   }
-  // Lo que deshiciste para este nivel no vuelve solo (si te pregunta, decides tú).
-  const deshecha = ruta.deshechos[nivel]
-  const yaLoDeshiciste = modo === 'auto' && como === 'auto' && !enAhorro && deshecha !== undefined && igual(elegida, deshecha)
-  if (yaLoDeshiciste) modo = 'nada'
-  // Bajar el esfuerzo sin que cambie el costo (lo simple, de medio a bajo) no se toca: da igual.
-  const decision: DecisionMensaje =
-    modo === 'nada'
-      ? igual(elegida, p.actual)
-        ? 'ya-va-asi'
-        : daIgual(elegida, p.actual)
-          ? 'da-igual'
-          : yaLoDeshiciste
-            ? 'deshecho'
-            : 'callado'
-      : modo === 'preguntar'
-        ? 'preguntar'
-        : igual(elegida, p.actual)
-          ? 'callado'
-          : 'auto'
+  const d = decidirRuta(p, estado)
+  const { modo, elegida, decision, sinCache } = d
+  let como: DecisionRuta['como'] = d.como
   // En /toki-modelo, lo que de verdad se aplicó (o se habría aplicado).
   ruta.ultima = { nivel, motivo, actual: p.actual, recomendada: elegida, decision }
   const soloEsfuerzo = sinCache !== undefined ? `, sin tocar el caché: ${sinCache.esfuerzo} ${textoDiferencia(diferencia(sinCache, p.actual), xr())}` : ''
@@ -2357,9 +2562,12 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   // Cada mensaje cuenta: también los que siguen en el modelo que Toki eligió antes.
   const familia = familiaDe(usada.modelo)
   if (familia !== undefined) ruta.mensajesEn[familia] = (ruta.mensajesEn[familia] ?? 0) + 1
+  // Si Claude Code pide otro esfuerzo que el supuesto, el primer pedido lo dice y el plan se corrige.
+  const plan: PlanTurno = { supuesto: actual.esfuerzo, modelo: actual.modelo, usada, como, preguntado: modo === 'preguntar', nivel, motivo, propuesta, estado }
+  ruta.plan = plan
   // Lo que ahorró (o costó de más) se mide pedido por pedido y se acredita al terminar el mensaje.
   if (igual(usada, p.actual)) return
-  await aplicarEleccion($, { nivel, motivo, antes: actual, despues: usada, como, dif: diferencia(usada, p.actual) })
+  plan.entrada = await aplicarEleccion($, { nivel, motivo, antes: actual, despues: usada, como, dif: diferencia(usada, p.actual) })
 }
 
 /** El diálogo de modelo y esfuerzo: lo que elijas, o como estaba si lo cierras o lo dejas. */
@@ -2408,17 +2616,24 @@ function interpretarRespuesta(texto: string, p: Propuesta): Opcion | undefined {
   return { tipo: 'equilibrio', modelo, esfuerzo: esfuerzo ?? p.actual.esfuerzo, usd: p.actual.usd, cambio: 0, reescribe: 0 }
 }
 
-async function aplicarEleccion($: $, d: Omit<DecisionRuta, 'cuando'>): Promise<void> {
+/** Aplica el cambio desde el próximo pedido, lo anota en el historial y avisa. Devuelve lo anotado. */
+async function aplicarEleccion($: $, d: Omit<DecisionRuta, 'cuando'>): Promise<DecisionRuta> {
   const ahora = await $.clock.now()
+  const entrada: DecisionRuta = { ...d, cuando: ahora }
   ruta.modeloPrincipal = d.despues.modelo === vivo.modelo ? undefined : d.despues.modelo
   ruta.pendiente = { nivel: d.nivel, esfuerzo: d.despues.esfuerzo !== d.antes.esfuerzo ? d.despues.esfuerzo : undefined }
-  ruta.historial = [...ruta.historial, { ...d, cuando: ahora }].slice(-12)
+  ruta.historial = [...ruta.historial, entrada].slice(-12)
   void anotarDiagnostico($, `ruta aplicada: ${d.antes.modelo}/${d.antes.esfuerzo} → ${d.despues.modelo}/${d.despues.esfuerzo} [${d.como}]`)
-  const x = xr()
-  const texto = x.cambio(nombreCorto(d.despues.modelo), x.esfuerzo[d.despues.esfuerzo], `${textoDiferencia(d.dif, x)}${d.como === 'recordado' ? `, ${x.comoAntes}` : ''}`)
-  ruta.aviso = { texto, hasta: ahora + 12_000, deshacer: d.antes }
+  ruta.aviso = { texto: textoAviso(entrada), hasta: ahora + 12_000, deshacer: d.antes }
   sonar($, 'aviso')
   $.ui.invalidate('ui.render')
+  return entrada
+}
+
+/** "⚡ Este mensaje va con … · esfuerzo … (−18 %)". */
+function textoAviso(d: Pick<DecisionRuta, 'despues' | 'dif' | 'como'>): string {
+  const x = xr()
+  return x.cambio(nombreCorto(d.despues.modelo), x.esfuerzo[d.despues.esfuerzo], `${textoDiferencia(d.dif, x)}${d.como === 'recordado' ? `, ${x.comoAntes}` : ''}`)
 }
 
 /**
@@ -3089,6 +3304,14 @@ export const register: Register = (on, options) => {
     } catch {
       // Sin preferencia guardada: la de /plugin.
     }
+    try {
+      const guardado: unknown = await $.store.get(CLAVE_ESFUERZO)
+      if (typeof guardado === 'object' && guardado !== null) {
+        ruta.defectos = Object.fromEntries(Object.entries(guardado).filter((par): par is [string, Esfuerzo] => esfuerzoGuardado(par[1]) !== undefined).slice(-MAX_DEFECTOS))
+      }
+    } catch {
+      // Sin dato: el de fábrica, hasta el primer pedido.
+    }
     // Animación de Toki: un cuadro cada 600 ms mientras la franja esté visible.
     if (config.acompanante) {
       $.clock.every(600, () => {
@@ -3230,8 +3453,11 @@ export const register: Register = (on, options) => {
     const base = texto === e.text ? e : { ...e, text: texto }
     // La instrucción va como contexto: Claude la lee junto a tu mensaje y tú no ves nada distinto.
     const r = await next(contexto === undefined ? base : { ...base, context: [...(e.context ?? []), contexto] })
-    // Otro hook lo frenó: no hay turno, y la entrevista no puede quedar para el turno de otro mensaje.
-    if ('drop' in r) entrevista.pendiente = undefined
+    // Otro hook lo frenó: no hay turno, y ni la entrevista ni el plan pueden quedar para el de otro mensaje.
+    if ('drop' in r) {
+      entrevista.pendiente = undefined
+      descartarPlan()
+    }
     return r
   })
 
@@ -3271,6 +3497,10 @@ export const register: Register = (on, options) => {
       const medicion = ruta.medicion
       if (medicion !== undefined && medicion.turno === undefined) medicion.turno = e.turnId
       else ruta.medicion = undefined
+      // El plan también: su primer pedido dirá con qué esfuerzo iba de verdad.
+      const plan = ruta.plan
+      if (plan !== undefined && plan.turno === undefined) plan.turno = e.turnId
+      else ruta.plan = undefined
       vivo.enTurno = true
       vivo.actividad = 'pensando'
       vivo.ultimoAhorro = undefined
@@ -3304,9 +3534,22 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     let pedido = e
     if (e.agentId === undefined) {
-      if (esEsfuerzo(e.effort)) ruta.esfuerzoSesion = e.effort
       // Solo sobre tu modelo: si Claude Code cayó a otro (sobrecarga), se respeta.
       const sobreTuModelo = familiaDe(e.model) !== undefined && familiaDe(e.model) === familiaDe(vivo.modelo)
+      // El primer pedido de tu mensaje trae el esfuerzo de la sesión (antes de que una skill lo cambie):
+      // si Toki supuso otro al planear, el plan se corrige antes de que salga.
+      const plan = ruta.plan
+      if (e.index === 0 && plan !== undefined && plan.turno === e.turnId && plan.revisado !== true && sobreTuModelo && esEsfuerzo(e.effort)) {
+        plan.revisado = true
+        const f = ruta.fuenteEsfuerzo
+        if (f?.fuente === 'defecto' && vivo.modelo !== undefined && f.modelo === modeloCanonico(vivo.modelo)) recordarDefecto($, f.modelo, e.effort)
+        ruta.esfuerzoSesion = e.effort
+        try {
+          await corregirPlan($, plan, e.effort, e.turnId)
+        } catch (err) {
+          $.ui.log(`Toki, corregir el plan: ${String(err)}`, { to: 'debug' })
+        }
+      }
       const modelo = ruta.modeloPrincipal !== undefined && !ruta.modeloRoto && sobreTuModelo ? ruta.modeloPrincipal : e.model
       const esfuerzo = ruta.esfuerzo !== undefined && ruta.turno === e.turnId && e.effort !== undefined ? ruta.esfuerzo : e.effort
       if (modelo !== e.model || esfuerzo !== e.effort) {
@@ -3748,6 +3991,17 @@ export const register: Register = (on, options) => {
     await revisarModelo($)
     if (vivo.modelo !== undefined) elegisteModelo(vivo.modelo)
     $.ui.invalidate('ui.render')
+    return r
+  })
+
+  // /effort: Toki planea tu próximo mensaje con el esfuerzo que elegiste.
+  on('command.run', { command: 'effort' }, async ($, e, next) => {
+    const r = await next(e)
+    try {
+      await alElegirEsfuerzo($, e.args)
+    } catch {
+      // Lo dirá el primer pedido del próximo mensaje.
+    }
     return r
   })
 

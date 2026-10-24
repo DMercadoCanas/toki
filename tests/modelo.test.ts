@@ -9,18 +9,25 @@ import {
   costoSinToki,
   daIgual,
   decidirInterfaz,
+  decidirRuta,
   deltaRuteo,
+  esfuerzoDeFabrica,
+  esfuerzoGuardado,
   etiquetas,
   familiaDe,
   hermano,
+  leerEsfuerzo,
   leerModo,
   limpiarPrompt,
+  modeloCanonico,
   modeloSubagente,
   nivelHeuristico,
   proponer,
   terminaEnPregunta,
   textosRuta,
+  usaEsfuerzoHeredado,
 } from '../hooks/modelo'
+import type { EstadoRuta } from '../hooks/modelo'
 import { claveDia } from '../hooks/historial'
 
 // Qué modelo y esfuerzo merece cada mensaje: primero lo puro, después con el motor simulado.
@@ -266,6 +273,14 @@ function mundo(
     uso?: (e: { turnId: string; index: number; model: string; agentId?: string }) => UsoFalso
     /** El store, para leerlo desde la prueba. */
     guardado?: Map<string, unknown>
+    /** Las variables de entorno (`CLAUDE_CODE_EFFORT_LEVEL`…); se pueden cambiar durante la prueba. */
+    entorno?: Record<string, string>
+    /** Tu configuración por fuente (`user`, `project`…), como la guarda Claude Code; se puede cambiar durante la prueba. */
+    ajustes?: Record<string, Record<string, unknown>>
+    /** Otro hook frena el mensaje (devuelve `drop`). */
+    descartar?: (texto: string) => boolean
+    /** Tu modelo (el de `/model`); por defecto Opus 5.5. */
+    modelo?: string
   } = {},
 ): { vistos: Visto[]; toasts: string[] } {
   const vistos: Visto[] = []
@@ -289,7 +304,10 @@ function mundo(
     })
     on('store.keys', () => ({ value: [...guardado.keys()] }))
   }
-  on('env.get', () => ({ value: undefined }))
+  on('env.get', ($, e) => ({ value: opciones.entorno?.[e.name] }))
+  // Sin `ajustes`, leer la configuración falla (como en el motor de pruebas) y Toki usa lo de fábrica.
+  const ajustes = opciones.ajustes
+  if (ajustes !== undefined) on('settings.read', ($, e) => ({ value: ajustes[e.source ?? 'user'] ?? {} }) as never)
   on('env.set', () => ({ value: {} }))
   on('fs.exists', ($, e) => ({ value: archivos?.has(clave(e.path)) ?? false }))
   on('fs.write', ($, e) => {
@@ -312,12 +330,12 @@ function mundo(
   on('ui.status', () => ({ value: undefined }) as never)
   on('audio.play', () => ({ value: undefined }) as never)
   on('command.register', ($, e) => ({ value: { command: e.name } }) as never)
-  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.model', () => ({ value: opciones.modelo ?? 'claude-opus-5-5' }))
   on('session.surfaces', () => ({ value: [] }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 30_000, window: 200_000, percent: 15 }, rateLimits: [] } }) as never)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
-  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.submit', ($, e) => (opciones.descartar?.(e.text) === true ? { drop: 'frenado por otro hook' } : { text: e.text }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('model.classify', () => ({ value: undefined }) as never)
@@ -344,21 +362,23 @@ function mundo(
   on('agent.spawn', ($, e) => ({ model: e.model ?? e.parentModel, agentId: 'a1' }))
   // /model del motor: aquí no cambia nada (eliges el mismo modelo que ya tenías).
   on('command.run', { command: 'model' }, () => ({ text: '' }) as never)
+  // /effort del motor: lo que guarda en tu configuración lo pone cada prueba en `ajustes`.
+  on('command.run', { command: 'effort' }, () => ({ text: '' }) as never)
   return { vistos, toasts }
 }
 
 type Motor = Parameters<TestBody>[0]
 
-async function mensaje($: Motor, turnId: string, texto: string, pedidos = 2, respuesta = 'Listo.', esfuerzo = 'medium'): Promise<void> {
+async function mensaje($: Motor, turnId: string, texto: string, pedidos = 2, respuesta = 'Listo.', esfuerzo = 'medium', modelo = 'claude-opus-5-5'): Promise<void> {
   await $.prompt.submit({ text: texto, wait: false, origin: { kind: 'composer' } } as never)
-  await correr($, turnId, texto, pedidos, respuesta, esfuerzo)
+  await correr($, turnId, texto, pedidos, respuesta, esfuerzo, modelo)
 }
 
 /** El turno de un mensaje ya enviado: sus pedidos al modelo (con el esfuerzo de la sesión) y el final. */
-async function correr($: Motor, turnId: string, texto: string, pedidos = 2, respuesta = 'Listo.', esfuerzo = 'medium'): Promise<void> {
+async function correr($: Motor, turnId: string, texto: string, pedidos = 2, respuesta = 'Listo.', esfuerzo = 'medium', modelo = 'claude-opus-5-5'): Promise<void> {
   await $.turn.start({ text: texto, turnId })
   for (let i = 0; i < pedidos; i++) {
-    const stream = $.turn.step({ turnId, index: i, model: 'claude-opus-5-5', effort: esfuerzo, messageCount: 10 + i } as never)
+    const stream = $.turn.step({ turnId, index: i, model: modelo, effort: esfuerzo, messageCount: 10 + i } as never)
     for await (const _ of stream) {
       // Sin trozos.
     }
@@ -962,5 +982,293 @@ describe('una sola cifra en dólares con el motor', () => {
     await $.session.end({ reason: 'other', sessionId: 's1', resume: {} } as never)
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
     expect(cerca(guardado.get('ahorroUsdTotal'), 0.35)).toBe(true)
+  })
+})
+
+// ---------- El esfuerzo con que pide Claude Code ----------
+
+const FABLE = 'claude-fable-5-1'
+
+/** Las líneas que Toki anotó en .claude/toki/diagnostico.txt, sin la hora, cuando terminan de escribirse. */
+async function diagnostico(reloj: ReturnType<typeof mock.clock>, archivos: Map<string, string>): Promise<string[]> {
+  await reloj.settle()
+  return (archivos.get('.claude/toki/diagnostico.txt') ?? '')
+    .trimEnd()
+    .split('\n')
+    .map(l => l.replace(/^\S+ /, ''))
+}
+
+/** De cada mensaje, con qué esfuerzo Toki supuso que iba: lo que dice la línea `ruta:` antes de la flecha. */
+function supuestos(diag: string[]): string[] {
+  return diag.filter(l => l.startsWith('ruta: ')).map(l => /^ruta: \S+ \([^)]*\) (\S+) →/.exec(l)?.[1] ?? l)
+}
+
+describe('el esfuerzo con que pide Claude Code', () => {
+  test('el nombre con que guarda el esfuerzo de un modelo', () => {
+    expect(modeloCanonico('claude-opus-5-5[1m]')).toBe(OPUS)
+    expect(modeloCanonico('claude-opus-5-5-20261001')).toBe(OPUS)
+    expect(modeloCanonico('us.anthropic.claude-opus-5-5-v1:0')).toBe(OPUS)
+    expect(modeloCanonico('arn:aws:bedrock:us-east-1:123:inference-profile/global.anthropic.claude-opus-5-5-v1:0')).toBe(OPUS)
+    expect(modeloCanonico('claude-sonnet-5-5@20261001')).toBe(SONNET)
+    expect(modeloCanonico('Claude-Opus-5-5-latest')).toBe(OPUS)
+  })
+
+  test('lo de fábrica, los niveles que acepta y a qué modelos les vale el effortLevel de arriba', () => {
+    expect(esfuerzoDeFabrica(OPUS)).toBe('medium')
+    expect(esfuerzoDeFabrica('claude-opus-5-5[1m]')).toBe('medium')
+    expect(esfuerzoDeFabrica('claude-opus-4-7')).toBe('xhigh')
+    expect(esfuerzoDeFabrica(FABLE)).toBe('high')
+    expect(usaEsfuerzoHeredado(OPUS)).toBe(false)
+    expect(usaEsfuerzoHeredado(SONNET)).toBe(false)
+    expect(usaEsfuerzoHeredado(FABLE)).toBe(true)
+    expect(usaEsfuerzoHeredado('claude-opus-4-7-20260301')).toBe(true)
+    expect(usaEsfuerzoHeredado('gpt-x')).toBe(true)
+    expect(leerEsfuerzo('med')).toBe('medium')
+    expect(leerEsfuerzo('MAX')).toBe('max')
+    expect(leerEsfuerzo('auto')).toBe(undefined)
+    expect(leerEsfuerzo(3)).toBe(undefined)
+    // `max` vale solo para la sesión: no se guarda.
+    expect(esfuerzoGuardado('max')).toBe(undefined)
+    expect(esfuerzoGuardado('xhigh')).toBe('xhigh')
+  })
+
+  test('la misma regla al planear y al corregir el plan', () => {
+    const base = { modelo: OPUS, contexto: 35_000, ttl1h: true, permitirModelo: true, cacheFrio: true, reescribe: 20_000 }
+    const estado: EstadoRuta = { modo: 'preguntar', silenciado: false, interactivo: true, enAhorro: false }
+    // Bajar lo que va alto: se aplica solo.
+    const alto = proponer({ ...base, nivel: 'normal', esfuerzo: 'xhigh' })
+    expect(decidirRuta(alto, estado)).toMatchObject({ modo: 'auto', decision: 'auto', como: 'auto', elegida: { modelo: OPUS, esfuerzo: 'medium' } })
+    // Subir cuesta más: pregunta. Sin nadie que responda (o al corregir, ya sin preguntar), no sube.
+    const bajo = proponer({ ...base, nivel: 'normal', esfuerzo: 'low' })
+    expect(decidirRuta(bajo, estado)).toMatchObject({ modo: 'preguntar', decision: 'preguntar' })
+    expect(decidirRuta(bajo, { ...estado, interactivo: false })).toMatchObject({ modo: 'nada', decision: 'callado' })
+    // Lo que elegiste antes para ese nivel se repite sin preguntar.
+    expect(decidirRuta(bajo, { ...estado, recordada: 'calidad' })).toMatchObject({ modo: 'auto', como: 'recordado', elegida: { modelo: OPUS, esfuerzo: 'high' } })
+    // Lo que deshiciste no vuelve solo.
+    expect(decidirRuta(alto, { ...estado, deshecha: { modelo: OPUS, esfuerzo: 'medium' } })).toMatchObject({ modo: 'nada', decision: 'deshecho' })
+    // Modo ahorro: la opción barata, sin preguntar.
+    expect(decidirRuta(bajo, { ...estado, enAhorro: true })).toMatchObject({ modo: 'auto', elegida: { tipo: 'ahorro' } })
+    // Sin nada más en juego, lo mismo que decidirInterfaz.
+    for (const p of [alto, bajo]) {
+      for (const modo of ['preguntar', 'siempre', 'automatico', 'no'] as const) expect(decidirRuta(p, { ...estado, modo }).modo).toBe(decidirInterfaz(modo, p, false))
+    }
+  })
+
+  test('la sesión va en muy alto y Toki supuso medio: el primer pedido lo dice y el plan se corrige antes de salir', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const guardado = new Map<string, unknown>()
+    const preguntas: string[] = []
+    const { vistos } = mundo(on, { archivos, guardado, preguntas })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    // Al planear, con medio, lo normal ya iba así.
+    await mensaje($, 't0', BOTON, 2, 'Listo.', 'xhigh')
+    expect(vistos.filter(v => v.turnId === 't0').map(v => v.effort)).toEqual(['medium', 'medium'])
+    expect(preguntas.length).toBe(0)
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag).toContain('ruta: normal (tarea-normal) claude-opus-5-5/medium → claude-opus-5-5/medium igual [ya-va-asi]')
+    expect(diag.some(l => /^ruta corregida: esfuerzo xhigh, Toki supuso medium → claude-opus-5-5\/medium −\d+ ?%$/.test(l))).toBe(true)
+    expect(diag).toContain('pedido: claude-opus-5-5/xhigh → claude-opus-5-5/medium')
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toMatch(/Último mensaje: normal \(tarea normal\) · Opus · muy alto → Opus · medio \(−\d+ ?%\) · aplicado/)
+    expect(estado).toMatch(/• normal \(tarea normal\) → Opus · medio \(−\d+ ?%\)/)
+    // Nadie lo fijó: es el por defecto de tu cuenta. Se recuerda para la próxima sesión.
+    expect(guardado.get('esfuerzoPorDefecto')).toEqual({ [OPUS]: 'xhigh' })
+    // El siguiente ya se planea con el esfuerzo de verdad: nada que corregir.
+    await mensaje($, 't1', COLUMNA, 1, 'Listo.', 'xhigh')
+    expect(vistos.find(v => v.turnId === 't1')?.effort).toBe('medium')
+    const diag2 = await diagnostico(reloj, archivos)
+    expect(diag2.filter(l => l.startsWith('ruta corregida')).length).toBe(1)
+    expect(supuestos(diag2)).toEqual(['claude-opus-5-5/medium', 'claude-opus-5-5/xhigh'])
+  })
+
+  test('va en bajo: lo normal no se sube sin preguntar, y el siguiente sí pregunta', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const preguntas: string[] = []
+    const { vistos } = mundo(on, { archivos, preguntas, respuesta: ls => ls[ls.length - 1] ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 2, 'Listo.', 'low')
+    expect(vistos.filter(v => v.turnId === 't0').map(v => v.effort)).toEqual(['low', 'low'])
+    expect(preguntas.length).toBe(0)
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag).toContain('ruta corregida: esfuerzo low, Toki supuso medium → claude-opus-5-5/low sin cambio')
+    expect(diag.some(l => l.startsWith('pedido:'))).toBe(false)
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toMatch(/Último mensaje: normal \(tarea normal\) · Opus · bajo → Opus · medio \(\+\d+ ?%\) · sin cambio \(no lo aplico sin preguntar\)/)
+    expect(estado).toContain('Aún no hubo cambios de modelo o esfuerzo.')
+    await mensaje($, 't1', COLUMNA, 1, 'Listo.', 'low')
+    expect(preguntas.length).toBe(1)
+    expect(vistos.find(v => v.turnId === 't1')?.effort).toBe('low')
+  })
+
+  test('lo que elegiste en la pregunta vale aunque el esfuerzo de verdad sea otro', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const preguntas: string[] = []
+    const { vistos } = mundo(on, { archivos, preguntas, respuesta: ls => ls.find(l => l.includes('— equilibrio')) ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', PROFUNDO, 2, 'Listo.', 'high')
+    expect(preguntas.length).toBe(1)
+    expect(vistos.filter(v => v.turnId === 't0').map(v => v.effort)).toEqual(['xhigh', 'xhigh'])
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag.some(l => /^ruta corregida: esfuerzo high, Toki supuso medium → claude-opus-5-5\/xhigh \+\d+ ?%$/.test(l))).toBe(true)
+  })
+
+  test('"dejar como está" deja el esfuerzo de verdad, no el que Toki supuso', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const preguntas: string[] = []
+    const { vistos } = mundo(on, { archivos, preguntas, respuesta: ls => ls.find(l => l.startsWith('Dejar como está')) ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', PROFUNDO, 2, 'Listo.', 'high')
+    expect(preguntas.length).toBe(1)
+    expect(vistos.filter(v => v.turnId === 't0').map(v => v.effort)).toEqual(['high', 'high'])
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag).toContain('ruta corregida: esfuerzo high, Toki supuso medium → claude-opus-5-5/high sin cambio')
+    expect(diag.some(l => l.startsWith('pedido:'))).toBe(false)
+  })
+
+  test('en automático, lo simple pasa a Sonnet igual; el historial dice desde dónde bajó de verdad', { options: { recomendarModelo: 'automatico' } }, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const { vistos, toasts } = mundo(on, { archivos })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'renombra la variable foo a bar en utils', 2, 'Listo.', 'xhigh')
+    expect(vistos.filter(v => v.turnId === 't0')).toEqual([
+      { turnId: 't0', model: SONNET, effort: 'low' },
+      { turnId: 't0', model: SONNET, effort: 'low' },
+    ])
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag.some(l => /^ruta corregida: esfuerzo xhigh, Toki supuso medium → claude-sonnet-5-5\/low −\d+ ?%$/.test(l))).toBe(true)
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toContain('Último mensaje: simple (tarea mecánica) · Opus · muy alto → Sonnet · bajo')
+    // Una sola entrada: la del plan, corregida.
+    expect(estado.split('\n').filter(l => l.trim().startsWith('•')).length).toBe(1)
+    // Un solo aviso con sonido; el texto, el corregido.
+    expect(toasts.filter(t => t.includes('Sonnet')).length).toBeLessThanOrEqual(1)
+  })
+
+  test('/effort: lo que elijas vale desde el próximo mensaje; max (que no se guarda) también, aunque sea antes del primero', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const ajustes: Record<string, Record<string, unknown>> = {}
+    const { vistos } = mundo(on, { archivos, ajustes, respuesta: ls => ls[ls.length - 1] ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await $.command.run({ command: 'effort', args: 'max' } as never)
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'max')
+    // Como Claude Code: /effort low lo guarda para tu modelo en tu configuración.
+    ajustes.user = { modelSettings: { [OPUS]: { effortLevel: 'low' } } }
+    await $.command.run({ command: 'effort', args: 'low' } as never)
+    await mensaje($, 't1', COLUMNA, 1, 'Listo.', 'low')
+    // auto: Claude Code lo borra y vuelve al por defecto.
+    delete ajustes.user
+    await $.command.run({ command: 'effort', args: 'auto' } as never)
+    await mensaje($, 't2', FILTRO, 1)
+    expect(vistos.map(v => v.effort)).toEqual(['medium', 'low', 'medium'])
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag.filter(l => l.startsWith('ruta corregida'))).toEqual([])
+    expect(supuestos(diag)).toEqual(['claude-opus-5-5/max', 'claude-opus-5-5/low', 'claude-opus-5-5/medium'])
+  })
+
+  test('tu configuración, como la junta Claude Code: el nombre exacto gana y lo del proyecto pisa lo tuyo', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const ajustes: Record<string, Record<string, unknown>> = {
+      user: { effortLevel: 'low', modelSettings: { 'claude-opus-5-5-20261001': { effortLevel: 'low' }, [OPUS]: { effortLevel: 'xhigh' } } },
+    }
+    mundo(on, { archivos, ajustes })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'xhigh')
+    // El effortLevel de arriba de tu configuración personal no vale para los 5.5.
+    ajustes.user = { effortLevel: 'high' }
+    await mensaje($, 't1', COLUMNA, 1)
+    // Lo del proyecto, también el de arriba, pisa lo que fijaste para el modelo en tu configuración.
+    ajustes.user = { modelSettings: { [OPUS]: { effortLevel: 'xhigh' } } }
+    ajustes.project = { effortLevel: 'high' }
+    await mensaje($, 't2', FILTRO, 1, 'Listo.', 'high')
+    // Y lo de la empresa, sobre todo.
+    ajustes.policy = { modelSettings: { [OPUS]: { effortLevel: 'low' } } }
+    await mensaje($, 't3', BOTON, 1, 'Listo.', 'low')
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag.filter(l => l.startsWith('ruta corregida'))).toEqual([])
+    expect(supuestos(diag)).toEqual(['claude-opus-5-5/xhigh', 'claude-opus-5-5/medium', 'claude-opus-5-5/high', 'claude-opus-5-5/low'])
+  })
+
+  test('en un modelo de antes (Fable 5.1) sí vale el effortLevel de arriba de tu configuración personal', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const ajustes: Record<string, Record<string, unknown>> = { user: { effortLevel: 'low' } }
+    mundo(on, { archivos, ajustes, modelo: FABLE, respuesta: ls => ls[ls.length - 1] ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'low', FABLE)
+    delete ajustes.user
+    await mensaje($, 't1', COLUMNA, 1, 'Listo.', 'high', FABLE)
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag.filter(l => l.startsWith('ruta corregida'))).toEqual([])
+    expect(supuestos(diag)).toEqual(['claude-fable-5-1/low', 'claude-fable-5-1/high'])
+  })
+
+  test('CLAUDE_CODE_EFFORT_LEVEL manda sobre todo; con auto, lo de fábrica aunque tu configuración diga otro', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const entorno: Record<string, string> = { CLAUDE_CODE_EFFORT_LEVEL: 'HIGH' }
+    const ajustes: Record<string, Record<string, unknown>> = { user: { modelSettings: { [OPUS]: { effortLevel: 'low' } } } }
+    const { vistos } = mundo(on, { archivos, entorno, ajustes })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    // Con la variable puesta, /effort no cambia lo que se pide.
+    await $.command.run({ command: 'effort', args: 'max' } as never)
+    await mensaje($, 't1', COLUMNA, 1, 'Listo.', 'high')
+    entorno.CLAUDE_CODE_EFFORT_LEVEL = 'auto'
+    await mensaje($, 't2', FILTRO, 1)
+    expect(vistos.map(v => v.effort)).toEqual(['medium', 'medium', 'medium'])
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag.filter(l => l.startsWith('ruta corregida'))).toEqual([])
+    expect(supuestos(diag)).toEqual(['claude-opus-5-5/high', 'claude-opus-5-5/high', 'claude-opus-5-5/medium'])
+  })
+
+  test('el por defecto de tu cuenta se recuerda entre sesiones, y se olvida si vuelve al de fábrica', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    // Uno de otra versión dejó un `max`: no es un por defecto y no se carga.
+    const guardado = new Map<string, unknown>([['esfuerzoPorDefecto', { [OPUS]: 'high', [SONNET]: 'max' }]])
+    const { vistos } = mundo(on, { archivos, guardado })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 2, 'Listo.', 'high')
+    // Supuso alto desde el comienzo: lo bajó al planear, sin corregir nada.
+    expect(vistos.filter(v => v.turnId === 't0').map(v => v.effort)).toEqual(['medium', 'medium'])
+    const diag = await diagnostico(reloj, archivos)
+    expect(supuestos(diag)).toEqual(['claude-opus-5-5/high'])
+    expect(diag.some(l => l.startsWith('ruta corregida'))).toBe(false)
+    expect(guardado.get('esfuerzoPorDefecto')).toEqual({ [OPUS]: 'high', [SONNET]: 'max' })
+    // Otra sesión: tu cuenta volvió a medio (el de fábrica).
+    await $.session.end({ reason: 'other', sessionId: 's1', resume: {} } as never)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't1', COLUMNA, 2, 'Listo.', 'medium')
+    expect(vistos.filter(v => v.turnId === 't1').map(v => v.effort)).toEqual(['medium', 'medium'])
+    const diag2 = await diagnostico(reloj, archivos)
+    expect(diag2).toContain('ruta corregida: esfuerzo medium, Toki supuso high → claude-opus-5-5/medium sin cambio')
+    expect(guardado.get('esfuerzoPorDefecto')).toEqual({})
+    // El cambio que se había aplicado al planear ya no está: nada cambió.
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toContain('Último mensaje: normal (tarea normal) · Opus · medio → Opus · medio (igual) · ya iba así')
+  })
+
+  test('si otro hook frena tu mensaje, lo que Toki planeó para él no queda para el siguiente', { options: { recomendarModelo: 'automatico' } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const { vistos } = mundo(on, { descartar: t => t.startsWith('renombra') })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    // Lo simple pasaría a Sonnet en bajo: Toki lo aplica al planear, y otro hook frena el mensaje.
+    const r = await $.prompt.submit({ text: 'renombra la variable foo a bar en utils', wait: false, origin: { kind: 'composer' } } as never)
+    expect(r).toEqual({ drop: 'frenado por otro hook' })
+    await mensaje($, 't1', COLUMNA, 2)
+    expect(vistos).toEqual([
+      { turnId: 't1', model: OPUS, effort: 'medium' },
+      { turnId: 't1', model: OPUS, effort: 'medium' },
+    ])
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toContain('Aún no hubo cambios de modelo o esfuerzo.')
+    expect(estado.includes('Sonnet por Toki')).toBe(false)
   })
 })

@@ -374,6 +374,152 @@ export function ahorroSinCache(p: Propuesta): Opcion | undefined {
     .sort((a, b) => a.usd - b.usd || ESFUERZOS.indexOf(a.esfuerzo) - ESFUERZOS.indexOf(b.esfuerzo))[0]
 }
 
+/** Cómo está la sesión cuando Toki decide: lo que decide su respuesta, aparte de los costos. */
+export type EstadoRuta = {
+  modo: ModoRuta
+  /** Callado: dijiste "dejar como está" varias veces, o el mensaje viene pegado. */
+  silenciado: boolean
+  /** Hay alguien que responda una pregunta. */
+  interactivo: boolean
+  /** Sonnet primero: el modelo al que se vuelve. */
+  base?: string
+  /** Modo ahorro (por límite o presupuesto): la opción barata, sin preguntar. */
+  enAhorro: boolean
+  /** Lo que elegiste antes para este nivel. */
+  recordada?: TipoOpcion
+  /** Lo que deshiciste para este nivel. */
+  deshecha?: Pick<Opcion, 'modelo' | 'esfuerzo'>
+}
+
+export type ResultadoRuta = {
+  modo: 'nada' | 'auto' | 'preguntar'
+  /** Lo que se aplica (o se aplicaría, o se recomienda al preguntar). */
+  elegida: Opcion
+  como: 'auto' | 'recordado'
+  decision: Decision
+  /** Callado o sin nadie que responda: solo bajar el esfuerzo, sin tocar el caché. */
+  sinCache?: Opcion
+}
+
+/**
+ * Lo que Toki hace con el mensaje: nada, cambiarlo solo (y avisar) o preguntarte.
+ * La misma regla al planear y al corregir el plan con el esfuerzo de verdad.
+ */
+export function decidirRuta(p: Propuesta, s: EstadoRuta): ResultadoRuta {
+  let modo = decidirInterfaz(s.modo, p, s.silenciado, s.base)
+  // Modo ahorro por límite (lo elegiste al 90 %): la opción barata, sin preguntar, hasta que se renueve.
+  const ahorro = s.enAhorro ? p.opciones.find(o => o.tipo === 'ahorro') : undefined
+  if (s.enAhorro) modo = ahorro !== undefined && !igual(ahorro, p.actual) && !daIgual(ahorro, p.actual) && ahorro.usd <= p.actual.usd ? 'auto' : 'nada'
+  let elegida: Opcion = ahorro ?? p.recomendada
+  let como: ResultadoRuta['como'] = 'auto'
+  // Lo que elegiste antes para este nivel se repite solo, si no reescribe el caché.
+  if (modo === 'preguntar' && s.recordada !== undefined && s.modo !== 'siempre') {
+    const o = s.recordada === 'actual' ? p.actual : p.opciones.find(op => op.tipo === s.recordada)
+    if (o !== undefined && o.reescribe < REESCRITURA_QUE_PREGUNTA) {
+      elegida = o
+      modo = 'auto'
+      como = 'recordado'
+    }
+  }
+  // Sin nadie que responda (claude -p, un mensaje del SDK): solo lo que ahorra.
+  if (modo === 'preguntar' && !s.interactivo) modo = decidirInterfaz('preguntar', p, true, s.base)
+  // Callado o sin nadie que responda: si lo recomendado reescribe el caché, al menos baja el esfuerzo en tu modelo.
+  const sinCache = modo === 'nada' && !s.enAhorro && (s.silenciado || !s.interactivo) ? ahorroSinCache(p) : undefined
+  if (sinCache !== undefined) {
+    elegida = sinCache
+    modo = 'auto'
+  }
+  // Lo que deshiciste para este nivel no vuelve solo (si te pregunta, decides tú).
+  const yaLoDeshiciste = modo === 'auto' && como === 'auto' && !s.enAhorro && s.deshecha !== undefined && igual(elegida, s.deshecha)
+  if (yaLoDeshiciste) modo = 'nada'
+  // Bajar el esfuerzo sin que cambie el costo (lo simple, de medio a bajo) no se toca: da igual.
+  const decision: Decision =
+    modo === 'nada'
+      ? igual(elegida, p.actual)
+        ? 'ya-va-asi'
+        : daIgual(elegida, p.actual)
+          ? 'da-igual'
+          : yaLoDeshiciste
+            ? 'deshecho'
+            : 'callado'
+      : modo === 'preguntar'
+        ? 'preguntar'
+        : igual(elegida, p.actual)
+          ? 'callado'
+          : 'auto'
+  return { modo, elegida, como, decision, sinCache }
+}
+
+// ---------- El esfuerzo que pide Claude Code ----------
+
+/**
+ * El nombre con que Claude Code guarda el esfuerzo de un modelo: sin la ventana
+ * (`[1m]`), la ruta, el prefijo de Bedrock ni la fecha o la versión del final.
+ */
+export function modeloCanonico(modelo: string): string {
+  let m = modelo.trim().toLowerCase().replace(/\[[12]m\]$/, '')
+  m = m.slice(m.lastIndexOf('/') + 1).replace(/^(?:[a-z-]+\.)?anthropic\./, '')
+  return m.replace(/(?:-fast|-latest)?(?:-v\d{1,3}@\d{8}|[-@]\d{8})?(?:-v\d{1,3}(?::\d{1,3})?)?$/, '')
+}
+
+/** Lo que Claude Code usa si nadie fijó un esfuerzo (su tabla de modelos, 2.1.310); los demás van en alto. */
+const ESFUERZO_DE_FABRICA: Readonly<Record<string, Esfuerzo>> = {
+  'claude-opus-5-5': 'medium',
+  'claude-sonnet-5-5': 'medium',
+  'claude-haiku-5-5': 'medium',
+  'claude-opus-4-7': 'xhigh',
+}
+
+export function esfuerzoDeFabrica(modelo: string): Esfuerzo {
+  return ESFUERZO_DE_FABRICA[modeloCanonico(modelo)] ?? 'high'
+}
+
+/** Los modelos de antes: a ellos sí les vale el `effortLevel` de arriba de tu configuración personal. */
+const MODELOS_DE_ANTES = new Set([
+  'claude-3-5-haiku',
+  'claude-3-5-sonnet',
+  'claude-3-7-sonnet',
+  'claude-haiku-4-5',
+  'claude-sonnet-4-0',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-6',
+  'claude-sonnet-5',
+  'claude-opus-4-0',
+  'claude-opus-4-1',
+  'claude-opus-4-5',
+  'claude-opus-4-6',
+  'claude-opus-4-7',
+  'claude-opus-4-8',
+  'claude-opus-5',
+  'claude-fable-5',
+  'claude-fable-5-1',
+  'claude-mythos-5',
+  'claude-mythos-5-1',
+])
+
+/**
+ * ¿Claude Code le aplica a este modelo el `effortLevel` de arriba de tu
+ * configuración personal? A los de antes y a los que no reconoce; a los
+ * nuevos (los 5.5) solo el que guarda `/effort` para cada modelo.
+ */
+export function usaEsfuerzoHeredado(modelo: string): boolean {
+  const c = modeloCanonico(modelo)
+  return MODELOS_DE_ANTES.has(c) || !/^claude-(?:haiku|sonnet|opus|fable|mythos)-\d+(?:-\d+)?$/.test(c)
+}
+
+/** Un nivel escrito como lo acepta Claude Code en `/effort` y en `CLAUDE_CODE_EFFORT_LEVEL` (`med` es medio). */
+export function leerEsfuerzo(v: unknown): Esfuerzo | undefined {
+  if (typeof v !== 'string') return undefined
+  const t = v.toLowerCase()
+  const e = t === 'med' ? 'medium' : t
+  return esEsfuerzo(e) ? e : undefined
+}
+
+/** Un nivel guardado en la configuración: `max` no se guarda (vale solo para la sesión). */
+export function esfuerzoGuardado(v: unknown): Exclude<Esfuerzo, 'max'> | undefined {
+  return v === 'low' || v === 'medium' || v === 'high' || v === 'xhigh' ? v : undefined
+}
+
 /**
  * El modelo de un subagente. Empieza con el contexto vacío: cambiarlo no
  * reescribe nada, es ahorro puro. Solo los generales (heredan el modelo del
