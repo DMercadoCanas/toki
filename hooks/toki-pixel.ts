@@ -1,9 +1,9 @@
 // Toki en pixel art: cada cuadro se dibuja en una cuadrícula de 32×32 y se serializa
 // como SVG (un <path> por color, con bordes nítidos). Sin dependencias ni imágenes.
 //
-// Diseño "Cápsula visera · escoba": cuerpo bajo y compacto con visor de banda completa y
+// Diseño "Cápsula visera · aspiradora": cuerpo bajo y compacto con visor de banda completa y
 // ojos anchos, orugas tipo WALL-E vistas de frente, brazos finos con hombro articulado y
-// manos de mitón, hoja en el pecho, brote fijo en la cabeza y audífonos discretos.
+// manos de garra de dos pinzas, hoja en el pecho, brote fijo en la cabeza y audífonos discretos.
 // Cada parte se pega con su propio contorno de 1 px para que se lea a 64 px.
 import type { Actividad } from './mascota'
 
@@ -37,7 +37,7 @@ const C = {
 } as const
 
 type Ojos = 'normal' | 'parpadeo' | 'feliz' | 'cerrados' | 'apretados' | 'grandes'
-type Pose = 'abajo' | 'dormido' | 'medio' | 'arriba' | 'cabeza' | 'barbilla' | 'caja' | 'escoba'
+type Pose = 'abajo' | 'dormido' | 'medio' | 'arriba' | 'cabeza' | 'barbilla' | 'caja' | 'aspiradora'
 
 export interface Cuadro {
   /** Desplazamiento horizontal del cuerpo (temblor o paso al lado). */
@@ -183,22 +183,34 @@ function caja(l: Lienzo, x: number, y: number, w: number, nivel: number): void {
   }
 }
 
-/** Escoba: mango diagonal desde la mano hasta el suelo, cepillo que barre tokens hacia un montoncito. */
-function escoba(l: Lienzo, hx: number, hy: number, paso: number): void {
-  const sway = [0, 1, 2, 2, 1, 0][paso % 6] ?? 0
-  const n = SUELO - 3 - hy
-  const bx = hx + Math.round((n - 1) * 0.35) + sway - 3
+/** Aspiradora: manguera anillada desde la mano hasta la boquilla, que chupa tokens del suelo. */
+function aspiradora(l: Lienzo, hx: number, hy: number, paso: number): void {
+  const n = SUELO - 2 - (hy + 3)
   parte(l, (k) => {
-    for (let i = 0; i < n; i++) k.rect(hx + Math.round(i * 0.35) + Math.round((sway * i) / n), hy + i, 2, 1, i % 3 === 2 ? C.cafeO : C.cafe)
-    k.rect(bx, SUELO - 3, 8, 1, C.cafeO)
-    k.rect(bx, SUELO - 2, 8, 2, C.naranjaC)
-    for (let i = 0; i < 8; i += 2) k.px(bx + i, SUELO - 1, C.naranja)
+    k.rect(hx, hy, 2, 3, C.grisO)
+    k.px(hx, hy, C.gris)
+    for (let i = 0; i < n; i++) {
+      const t = i / Math.max(1, n - 1)
+      const dx = -Math.round(Math.sin(t * Math.PI) * 2.2)
+      k.rect(hx + dx, hy + 3 + i, 2, 1, i % 2 ? C.azulO : C.azul)
+    }
   })
-  for (let i = 0; i < 3; i++) l.px(bx - 2 - i * 2 + (paso % 2), SUELO - 1 - (i % 2), C.humo)
-  token(l, bx - 6 - sway, SUELO - 2)
+  const bx = hx - 5 + (paso % 3 === 1 ? 1 : 0)
+  parte(l, (k) => {
+    k.rect(bx, SUELO - 3, 8, 3, C.azulO)
+    k.rect(bx + 1, SUELO - 3, 6, 1, C.azul)
+    k.px(bx + 1, SUELO - 3, C.azulC)
+    k.rect(bx - 1, SUELO, 10, 1, C.grisO)
+    for (let i = 0; i < 10; i += 2) k.px(bx - 1 + i, SUELO, C.gris)
+  })
+  // Rachas de aire que entran a la boquilla
+  for (let j = 0; j < 3; j++) {
+    const f = (paso + j * 2) % 6
+    l.rect(bx - 3 - f, SUELO - 3 + j, 2, 1, C.humo)
+  }
+  token(l, bx - 8 + ((paso * 2) % 7), SUELO - 2)
   l.px(bx - 9, SUELO - 1, C.amarilloO)
-  l.px(bx - 11, SUELO - 1, C.amarillo)
-  l.px(bx - 10, SUELO - 2, C.amarilloO)
+  l.px(bx - 11, SUELO - 1, C.amarilloO)
 }
 
 // ---- Partes del cuerpo ----
@@ -248,12 +260,23 @@ function hoja(l: Lienzo, cx: number, py: number): void {
   l.px(cx - 3, py + 5, C.verdeO)
   l.px(cx - 4, py + 6, C.verdeO)
 }
-/** Mano de mitón (4×3 redondeada). dir: hacia dónde apunta. */
-function miton(k: Lienzo, x: number, y: number, dir: 'abajo' | 'arriba' | 'der' | 'izq'): void {
-  k.redondo(x, y, 4, 3, C.gris, 1)
-  k.px(x + 1, y, C.humo)
-  k.rect(x + 1, y + 2, 2, 1, C.grisO)
-  if (dir === 'abajo' || dir === 'arriba') k.px(dir === 'abajo' ? x + 3 : x, y + 1, C.grisO)
+/** Mano de garra de dos pinzas (4×3 o 3×4). dir: hacia dónde apunta. */
+function garra(k: Lienzo, x: number, y: number, dir: 'abajo' | 'arriba' | 'der' | 'izq'): void {
+  const c = C.gris
+  const o = C.grisO
+  if (dir === 'abajo') {
+    k.rect(x + 1, y, 2, 1, c); k.rect(x, y + 1, 1, 2, c); k.rect(x + 3, y + 1, 1, 2, c)
+    k.px(x, y + 2, o); k.px(x + 3, y + 2, o); k.px(x + 1, y, C.humo)
+  } else if (dir === 'arriba') {
+    k.rect(x + 1, y + 2, 2, 1, c); k.rect(x, y, 1, 2, c); k.rect(x + 3, y, 1, 2, c)
+    k.px(x, y, o); k.px(x + 3, y, o); k.px(x + 1, y + 2, C.humo)
+  } else if (dir === 'der') {
+    k.rect(x, y + 1, 1, 2, c); k.rect(x + 1, y, 2, 1, c); k.rect(x + 1, y + 3, 2, 1, c)
+    k.px(x + 2, y, o); k.px(x + 2, y + 3, o); k.px(x, y + 1, C.humo)
+  } else {
+    k.rect(x + 2, y + 1, 1, 2, c); k.rect(x, y, 2, 1, c); k.rect(x, y + 3, 2, 1, c)
+    k.px(x, y, o); k.px(x, y + 3, o); k.px(x + 2, y + 1, C.humo)
+  }
 }
 /** Brazos finos con hombro articulado. Las poses de trabajo dibujan su herramienta. */
 function brazos(l: Lienzo, c: Cuadro, x: number, y: number): void {
@@ -271,19 +294,19 @@ function brazos(l: Lienzo, c: Cuadro, x: number, y: number): void {
     }
     const abajo = (k: Lienzo, extra = 0): void => {
       brazo(k, bx, hombroY + extra, 7)
-      miton(k, bx - 1, hombroY + 7 + extra, 'abajo')
+      garra(k, bx - 1, hombroY + 7 + extra, 'abajo')
     }
     const sostener = (k: Lienzo): void => {
       brazo(k, bx, hombroY - 2, 3)
       k.rect(bx + 2, hombroY - 3, 3, 2, C.gris)
       k.px(bx + 3, hombroY - 2, C.grisO)
-      miton(k, bx + 4, hombroY - 3, 'abajo')
+      garra(k, bx + 4, hombroY - 3, 'abajo')
     }
     const arriba = (k: Lienzo): void => {
       brazo(k, bx, hombroY - 1, 2)
       k.rect(bx + s * 2, hombroY - 6, 2, 6, C.gris)
       k.rect(bx + s * 2 + (s > 0 ? 1 : 0), hombroY - 6, 1, 6, C.grisO)
-      miton(k, bx + s * 2 - 1, hombroY - 9, 'arriba')
+      garra(k, bx + s * 2 - 1, hombroY - 9, 'arriba')
     }
     parte(l, (k) => {
       switch (pose) {
@@ -296,7 +319,7 @@ function brazos(l: Lienzo, c: Cuadro, x: number, y: number): void {
         case 'medio':
           brazo(k, bx, hombroY, 3)
           k.rect(bx + s * 2, hombroY + 1, 2, 2, C.gris)
-          miton(k, lado === 'izq' ? bx - 5 : bx + 4, hombroY, lado === 'izq' ? 'izq' : 'der')
+          garra(k, lado === 'izq' ? bx - 5 : bx + 4, hombroY, lado === 'izq' ? 'izq' : 'der')
           break
         case 'arriba':
         case 'cabeza':
@@ -306,7 +329,7 @@ function brazos(l: Lienzo, c: Cuadro, x: number, y: number): void {
           if (lado === 'izq') {
             brazo(k, bx, hombroY, 2)
             k.rect(bx + 2, hombroY - 1, 2, 2, C.gris)
-            miton(k, x + 1, barbillaY - 1, 'arriba')
+            garra(k, x + 1, barbillaY - 1, 'arriba')
           } else abajo(k)
           break
         case 'caja': {
@@ -315,14 +338,14 @@ function brazos(l: Lienzo, c: Cuadro, x: number, y: number): void {
           brazo(k, bx, hombroY, 2)
           if (lado === 'izq') {
             k.rect(bx, hombroY + 2, cxx - 3 - bx + 1, 2, C.gris)
-            miton(k, cxx - 3, hombroY + 1, 'der')
+            garra(k, cxx - 3, hombroY + 1, 'der')
           } else {
             k.rect(cxx + cw + 2, hombroY + 2, bx - (cxx + cw + 2) + 2, 2, C.gris)
-            miton(k, cxx + cw, hombroY + 1, 'izq')
+            garra(k, cxx + cw, hombroY + 1, 'izq')
           }
           break
         }
-        case 'escoba':
+        case 'aspiradora':
           if (lado === 'izq') abajo(k)
           else sostener(k)
           break
@@ -334,7 +357,7 @@ function brazos(l: Lienzo, c: Cuadro, x: number, y: number): void {
     caja(l, cx - cw / 2, hombroY, cw, c.caja ?? 0)
   }
   uno('izq')
-  if (pose === 'escoba') escoba(l, x + G.w + 5, hombroY, paso)
+  if (pose === 'aspiradora') aspiradora(l, x + G.w + 5, hombroY, paso)
   uno('der')
 }
 
@@ -381,7 +404,7 @@ export function dibujar(c: Cuadro): string {
   if (c.zzz !== undefined) zetas(l, x + w + 1, y + 2, c.zzz)
   if (c.confeti !== undefined) confeti(l, c.confeti)
   if (c.burbuja === true) burbuja(l, x + w, y + 3)
-  orugas(l, x, y, c.pose === 'escoba' ? (c.paso ?? 0) : 0)
+  orugas(l, x, y, c.pose === 'aspiradora' ? (c.paso ?? 0) : 0)
   parte(l, (k) => {
     k.redondo(x, y, w, h, c.alerta === true ? C.rojo : C.azul, 3)
     k.rect(x + w - 2, y + 3, 1, h - 6, C.azulO)
@@ -447,7 +470,7 @@ const celebrar = (): Cuadro[] =>
   ].map(({ dy, c }, i): Cuadro => ({ ojos: 'feliz', confeti: c, dy, pose: i < 4 ? 'arriba' : 'medio' }))
 const compactar = (): Cuadro[] =>
   [{ caja: 0 }, { caja: 1, dy: 1 }, { caja: 2, dy: 1, sudor: true }, { caja: 2, sudor: true }, { caja: 1 }, { caja: 0 }].map((c): Cuadro => ({ ...c, ojos: c.caja === 0 ? 'normal' : 'apretados', pose: 'caja' }))
-const barrer = (dy = 0): Cuadro[] => [0, 1, 2, 3, 4, 5].map((i): Cuadro => ({ pose: 'escoba', paso: i, dx: -4, dy: i % 2 ? dy : 0, mx: 1, my: 1, ojos: i === 4 ? 'parpadeo' : 'normal' }))
+const aspirar = (dy = 0): Cuadro[] => [0, 1, 2, 3, 4, 5].map((i): Cuadro => ({ pose: 'aspiradora', paso: i, dx: -4, dy: i % 2 ? dy : 0, mx: 1, my: 1, ojos: i === 4 ? 'parpadeo' : 'normal' }))
 const mirar = (ojos: Ojos, puntos: [number, number][]): Cuadro[] => puntos.map(([mx, my], i): Cuadro => ({ mx, my, ojos: i === puntos.length - 1 && ojos === 'normal' ? 'parpadeo' : ojos }))
 
 export const ANIMACIONES: Record<Actividad, Animacion> = {
@@ -456,8 +479,8 @@ export const ANIMACIONES: Record<Actividad, Animacion> = {
   pensando: { ms: 300, cuadros: pensar() },
   leyendo: { ms: 180, cuadros: mirar('normal', [[-2, 0], [-1, 0], [0, 0], [1, 0], [2, 0], [2, 1], [-2, 1]]) },
   buscando: { ms: 120, cuadros: mirar('grandes', [[-2, 0], [-1, -1], [1, -1], [2, 0], [1, 1], [-1, 1]]) },
-  ejecutando: { ms: 160, cuadros: barrer() },
-  editando: { ms: 160, cuadros: barrer(-1) },
+  ejecutando: { ms: 160, cuadros: aspirar() },
+  editando: { ms: 160, cuadros: aspirar(-1) },
   compactando: { ms: 200, cuadros: compactar() },
   listo: {
     ms: 220,

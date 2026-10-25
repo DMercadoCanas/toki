@@ -122,7 +122,8 @@ describe('Toki en pixel art', () => {
     expect(tokiSvg('tranquilo')).toContain('#f39a3d') // audífonos naranjas
     expect(tokiSvg('alerta')).toContain('#ff5c5c') // cuerpo rojo
     expect(tokiSvg('compactando')).toContain('#b85f14') // la caja
-    expect(tokiSvg('ejecutando')).toContain('#8a5a2b') // la escoba
+    expect(tokiSvg('ejecutando')).toContain('#ffd84d') // los tokens que chupa la aspiradora
+    expect(tokiSvg('tranquilo')).not.toContain('#ffd84d')
     expect(tokiSvg('tranquilo')).toContain('#3cc46a') // hoja y brote
   })
 })
