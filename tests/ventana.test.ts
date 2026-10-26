@@ -140,6 +140,25 @@ describe('ventana y gasto', () => {
     expect(texto.text).toContain('la elegiste tú')
   })
 
+  test('si la variable es de Toki pero no quedó guardada la nativa, muestra la ventana a la que compacta y no el millón', async ($, on) => {
+    const reloj = mock.clock(on, { now: 6_500_000 })
+    mock.store(on, { ventanaPuestaPorToki: '300000' })
+    const archivos = disco(on, [])
+    const vars = entorno(on, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' })
+    contexto(on, vars, { tokens: 30_000, nativa: 967_000, fuente: 'model-default' })
+    on('session.model', () => ({ value: 'claude-opus-5-5' }))
+    on('session.surfaces', () => ({ value: [] }))
+    motor(on, () => ({ cache_read_input_tokens: 30_000, cache_creation_input_tokens: 100 }))
+
+    await $.session.start({ cwd: '/proyecto', surface: null, isInteractive: true })
+    await reloj.advance(2_000)
+    await $.turn.start({ text: 'revisa los componentes de los medicamentos', turnId: 't1' })
+    expect(vars['CLAUDE_CODE_AUTO_COMPACT_WINDOW']).toBe('300000')
+    // La barra usa la ventana que Toki anota: la de compactación, no el millón del modelo.
+    const diagnostico = [...archivos.entries()].find(([ruta]) => ruta.endsWith('diagnostico.txt'))?.[1] ?? ''
+    expect(diagnostico).toContain('ventana: sin-datos, compacta a 300000')
+  })
+
   test('una salida idéntica a la de hace un rato llega como una línea con la ruta de la copia', async ($, on) => {
     mock.clock(on, { now: 7_000_000 })
     mock.store(on)

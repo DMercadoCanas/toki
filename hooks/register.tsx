@@ -1175,8 +1175,9 @@ async function ajustarVentana($: $, avisar: boolean): Promise<void> {
         vivo.ventanaNativa = vivo.ventana
         vivo.ventanaFuente = 'nativa'
       } else if (decision.motivo === 'sin-datos') {
-        // Aún sin desglose: se reintenta al empezar el próximo turno.
-        vivo.ventana = ctx.window
+        // Aún sin desglose, o la variable es de Toki y no quedó guardada la nativa:
+        // se reintenta al empezar el próximo turno. Se muestra a cuánto compacta, no el millón del modelo.
+        vivo.ventana = b?.rawMaxTokens ?? ctx.window
         vivo.ventanaFuente = undefined
       } else {
         vivo.ventana = b?.rawMaxTokens ?? ctx.window
