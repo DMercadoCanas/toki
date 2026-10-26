@@ -8,7 +8,7 @@
 
 Habla español e inglés. Lo único fijo que agrega a tu contexto son ~200 tokens (en el caché) para pedir respuestas breves, y lo que cuestan se resta de lo que ahorran.
 
-> Versión 0.17.2. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+> Versión 0.17.3. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
 ## Instalación
 
@@ -35,6 +35,7 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 - El chip del modelo lleva ✓ cuando la API confirma qué modelo respondió.
 - **0.17.1: el esfuerzo de verdad.** Toki suponía esfuerzo «medio» al abrir la sesión y no se enteraba de `/effort`: si ibas en «muy alto», planeaba como si fueras en medio y no bajaba nada. Ahora, antes de cada mensaje, lo lee como Claude Code: `CLAUDE_CODE_EFFORT_LEVEL`, lo que `/effort` guardó en tu configuración o en la del proyecto, y el por defecto de cada modelo. `/effort` (también `max`) cuenta desde el mensaje siguiente. Si aun así el primer pedido trae otro, Toki decide de nuevo antes de que salga y sin preguntar: aplica lo que ahorra, no sube lo que cuesta más y respeta lo que elegiste en la pregunta. Si tu cuenta trae otro por defecto que el de fábrica, lo recuerda para la próxima sesión. El diagnóstico lo anota como `ruta corregida`. Y si otro hook frena tu mensaje, lo que Toki planeó para él ya no pasa al siguiente.
 - **0.17.2: Toki pasa la aspiradora.** El Toki en píxeles dejó la escoba: ahora trabaja con una aspiradora de manguera anillada que chupa los tokens del suelo, y tiene manos de garra de dos pinzas.
+- **0.17.3: la barra muestra a cuánto compacta.** Al cambiar de modelo, la barra podía saltar a «de 1.0M» aunque Claude Code siguiera compactando a los 300k. Ahora muestra siempre la ventana a la que de verdad se compacta.
 
 ## Lo nuevo en 0.16
 
@@ -315,6 +316,7 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **The interview is enforced (0.17).** On a big request with an interview, until Claude asks you, Toki blocks (and says why) tools that change things and subagents; reading to prepare the questions is allowed. At most 3 times per message, never a loop. "With" or "without interview" is counted at the end, by whether Claude really asked; if you interrupt before it asks, it doesn't count. Asking why something fails is never interviewed: Claude investigates first.
 - **The real effort (0.17.1).** Toki assumed medium effort when a session opened and didn't notice `/effort`: on extra-high it planned as if you were on medium and lowered nothing. Before each message it now reads the effort the way Claude Code does: `CLAUDE_CODE_EFFORT_LEVEL`, what `/effort` saved in your settings or the project's, and each model's default. `/effort` (`max` too) counts from the next message. If the first request still carries a different effort, Toki decides again before it goes out, without asking: it applies what saves, doesn't raise what costs more, and keeps what you picked in the question. If your account's default differs from the factory one, Toki remembers it for the next session. The log records it as `ruta corregida`. And if another hook drops your message, what Toki planned for it no longer carries over to the next one.
 - **Toki vacuums (0.17.2).** The pixel Toki put the broom away: it now works with a vacuum with a ribbed hose that sucks the tokens off the floor, and has two-pincer claw hands.
+- **The bar shows where it compacts (0.17.3).** After a model switch, the bar could jump to "of 1.0M" while Claude Code kept compacting at 300k. It now always shows the window it really compacts at.
 - Measured with `claude plugin eval` on Opus: a mechanical rename cost **55% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 - On Team and Enterprise accounts, a Claude Code guard stops plugins from adding to the system prompt, so brief replies don't apply there and aren't counted: `/output-style` → `toki:conciso` does the same.
