@@ -22,6 +22,7 @@ import {
   modeloCanonico,
   modeloSubagente,
   nivelHeuristico,
+  PEDIDOS_PARA_SUBIR,
   proponer,
   terminaEnPregunta,
   textosRuta,
@@ -1278,5 +1279,46 @@ describe('el esfuerzo con que pide Claude Code', () => {
     const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
     expect(estado).toContain('Aún no hubo cambios de modelo o esfuerzo.')
     expect(estado.includes('Sonnet por Toki')).toBe(false)
+  })
+})
+
+describe('la red de seguridad del esfuerzo', () => {
+  test(`lo que Toki bajó de esfuerzo y pasa de ${PEDIDOS_PARA_SUBIR} pedidos sigue con tu esfuerzo, y el "dale" de después ya no baja`, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const { vistos, toasts } = mundo(on, { archivos })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', 'renombra la variable foo a bar en utils', PEDIDOS_PARA_SUBIR + 2, 'Listo.', 'high')
+    const t0 = vistos.filter(v => v.turnId === 't0').map(v => v.effort)
+    expect(t0).toEqual([...Array<string>(PEDIDOS_PARA_SUBIR).fill('low'), 'high', 'high'])
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag).toContain(`esfuerzo restaurado: low → high (${PEDIDOS_PARA_SUBIR} pedidos)`)
+    expect(toasts.some(t => t.includes('más largo de lo que parecía') && t.includes('alto'))).toBe(true)
+    // Ya no era simple: seguir con la misma tarea no vuelve a bajo.
+    await mensaje($, 't1', 'dale', 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't1')?.effort).not.toBe('low')
+  })
+
+  test('un mensaje corto que Toki no bajó no se toca, por largo que sea', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const { vistos } = mundo(on, { archivos })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', 'renombra la variable foo a bar en utils', PEDIDOS_PARA_SUBIR + 2, 'Listo.', 'low')
+    expect(vistos.filter(v => v.turnId === 't0').every(v => v.effort === 'low')).toBe(true)
+    expect((await diagnostico(reloj, archivos)).some(l => l.startsWith('esfuerzo restaurado'))).toBe(false)
+  })
+
+  test('una corrección no va en simple aunque lo anterior lo fuera: cuenta como atascado', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const { vistos } = mundo(on, { archivos })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', 'renombra la variable foo a bar en utils', 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't0')?.effort).toBe('low')
+    await mensaje($, 't1', 'no era eso', 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't1')?.effort).not.toBe('low')
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag.some(l => l.startsWith('ruta: normal (seguimiento, atascado)') && l.endsWith('· corrige el anterior'))).toBe(true)
   })
 })

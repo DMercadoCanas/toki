@@ -172,6 +172,11 @@ export const SALIDA_POR_PEDIDO: Record<Esfuerzo, number> = { low: 250, medium: 6
 export const SALIDA_SIMPLE: Record<Esfuerzo, number> = { low: 150, medium: 150, high: 300, xhigh: 500, max: 800 }
 /** Pedidos al modelo por mensaje (cada herramienta es otro pedido). Aproximado. */
 export const PEDIDOS_POR_NIVEL: Record<Nivel, number> = { trivial: 2, normal: 4, complejo: 9, profundo: 12 }
+/**
+ * Un mensaje que Toki bajó de esfuerzo y ya va por este pedido (o entró en bucle)
+ * no era tan simple: lo que queda del turno va con tu esfuerzo.
+ */
+export const PEDIDOS_PARA_SUBIR = 8
 /** Lo que crece la conversación por pedido (resultados de herramientas, respuestas). */
 const CRECE_POR_PEDIDO = 3_000
 
@@ -563,6 +568,7 @@ export type TextosRuta = {
   callado: string
   subagentes: string
   modeloNoDisponible: (m: string) => string
+  esfuerzoRestaurado: (esfuerzo: string) => string
   porToki: string
   titulo: string
   cmd: string
@@ -633,6 +639,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     callado: 'Toki ya no preguntará por el modelo en esta sesión. Solo ajustará lo que ahorra sin tocar el caché. /toki-modelo preguntar lo vuelve a activar.',
     subagentes: 'Toki: los subagentes con encargos simples van en Sonnet (la mitad de precio; empiezan sin contexto, así que no se pierde caché).',
     modeloNoDisponible: m => `Toki: ${m} no respondió en esta cuenta; sigo con tu modelo y solo ajusto el esfuerzo.`,
+    esfuerzoRestaurado: e => `Toki: esto resultó más largo de lo que parecía; lo que falta va con tu esfuerzo (${e}).`,
     porToki: 'por Toki',
     titulo: 'Modelo y esfuerzo',
     cmd: 'Toki: cómo elige modelo y esfuerzo para cada mensaje (preguntar, siempre, automatico, no)',
@@ -707,6 +714,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     callado: 'Toki will stop asking about the model this session. It will only make changes that save without touching the cache. /toki-modelo preguntar turns it back on.',
     subagentes: 'Toki: subagents with simple tasks run on Sonnet (half the price; they start with no context, so no cache is lost).',
     modeloNoDisponible: m => `Toki: ${m} did not answer on this account; keeping your model and only adjusting effort.`,
+    esfuerzoRestaurado: e => `Toki: this turned out bigger than it looked; the rest goes with your effort (${e}).`,
     porToki: 'by Toki',
     titulo: 'Model and effort',
     cmd: 'Toki: how it picks model and effort for each message (preguntar, siempre, automatico, no)',

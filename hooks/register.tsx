@@ -47,6 +47,7 @@ import {
   decidirRuta,
   diferencia,
   esEsfuerzo,
+  ESFUERZOS,
   esfuerzoDeFabrica,
   esfuerzoGuardado,
   etiquetas,
@@ -61,6 +62,7 @@ import {
   modeloSubagente,
   nivelHeuristico,
   nombreCorto,
+  PEDIDOS_PARA_SUBIR,
   PEDIDOS_POR_NIVEL,
   proponer,
   terminaEnPregunta,
@@ -2487,12 +2489,16 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   const actual = eleccionActual()
   // Haiku no tiene esfuerzo, y no hay nada más barato a qué bajar.
   if (actual === undefined || familiaDe(actual.modelo) === 'haiku') return
-  const { nivel, motivo } = await leerNivel($, texto)
+  const leido = await leerNivel($, texto)
+  // "No era eso", "sigue fallando": lo anterior no salió. Una corrección no va en simple y cuenta como atascado.
+  const corrige = esCorreccion(texto)
+  const nivel: Nivel = corrige && leido.nivel === 'trivial' ? 'normal' : leido.nivel
+  const motivo = leido.motivo
   // Un "gracias" no es una tarea: el "dale" que venga después sigue con la de antes.
   const cierre = motivo === 'cierre'
   if (!cierre) ruta.nivelPrevio = nivel
   // "Dale", "sigue": si lo anterior no funcionaba, esto sigue con lo mismo.
-  const atascado = motivo === 'atascado' || (motivo === 'seguimiento' && ruta.atascadoPrevio)
+  const atascado = corrige || motivo === 'atascado' || (motivo === 'seguimiento' && ruta.atascadoPrevio)
   if (!cierre) ruta.atascadoPrevio = atascado
   const tuFamilia = familiaDe(tuModelo)
   const base = sonnetActivo() && (tuFamilia === 'opus' || tuFamilia === 'sonnet') ? hermano(tuModelo, 'sonnet') : undefined
@@ -2537,7 +2543,7 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   const soloEsfuerzo = sinCache !== undefined ? `, sin tocar el caché: ${sinCache.esfuerzo} ${textoDiferencia(diferencia(sinCache, p.actual), xr())}` : ''
   void anotarDiagnostico(
     $,
-    `ruta: ${nivel} (${motivo}${atascado && motivo !== 'atascado' ? ', atascado' : ''}) ${actual.modelo}/${actual.esfuerzo} → ${p.recomendada.modelo}/${p.recomendada.esfuerzo} ${textoDiferencia(diferencia(p.recomendada, p.actual), xr())} [${decision}${soloEsfuerzo}${base !== undefined ? ', sonnet primero' : ''}]${esCorreccion(texto) ? ' · corrige el anterior' : ''}`,
+    `ruta: ${nivel} (${motivo}${atascado && motivo !== 'atascado' ? ', atascado' : ''}) ${actual.modelo}/${actual.esfuerzo} → ${p.recomendada.modelo}/${p.recomendada.esfuerzo} ${textoDiferencia(diferencia(p.recomendada, p.actual), xr())} [${decision}${soloEsfuerzo}${base !== undefined ? ', sonnet primero' : ''}]${corrige ? ' · corrige el anterior' : ''}`,
   )
   let usada: Opcion = modo === 'nada' ? p.actual : elegida
   if (modo === 'preguntar') usada = await preguntarRuta($, p, nivel, motivo)
@@ -3550,6 +3556,15 @@ export const register: Register = (on, options) => {
         } catch (err) {
           $.ui.log(`Toki, corregir el plan: ${String(err)}`, { to: 'debug' })
         }
+      }
+      // Red de seguridad: si lo que Toki bajó de esfuerzo se alarga o entra en bucle, no era simple.
+      // Lo que queda del turno va con tu esfuerzo (el modelo sigue: cambiarlo a mitad reescribiría el caché).
+      const bajado = ruta.esfuerzo
+      if (bajado !== undefined && ruta.turno === e.turnId && esEsfuerzo(e.effort) && ESFUERZOS.indexOf(bajado) < ESFUERZOS.indexOf(e.effort) && (e.index >= PEDIDOS_PARA_SUBIR || vivo.bucleReciente)) {
+        ruta.esfuerzo = undefined
+        if (ruta.nivelPrevio === 'trivial') ruta.nivelPrevio = 'normal'
+        void anotarDiagnostico($, `esfuerzo restaurado: ${bajado} → ${e.effort} (${vivo.bucleReciente ? 'bucle' : `${e.index} pedidos`})`)
+        $.ui.toast(xr().esfuerzoRestaurado(xr().esfuerzo[e.effort]), { timeoutMs: 6000 })
       }
       const modelo = ruta.modeloPrincipal !== undefined && !ruta.modeloRoto && sobreTuModelo ? ruta.modeloPrincipal : e.model
       const esfuerzo = ruta.esfuerzo !== undefined && ruta.turno === e.turnId && e.effort !== undefined ? ruta.esfuerzo : e.effort
