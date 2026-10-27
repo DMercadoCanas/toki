@@ -241,3 +241,64 @@ describe('respuestas breves con el motor', () => {
     expect(await panel($)).toContain(`  Respuestas breves: ${cifraUsd(usd)} `)
   })
 })
+
+describe('respuestas breves sin prompt.compose (Claude Code administrado por tu organización)', () => {
+  /** Las notas que Toki le deja a Claude en la conversación. */
+  function notas(on: On): string[] {
+    const vistas: string[] = []
+    on('session.append', ($, e, next) => {
+      const c = (e as unknown as { message: { content: { text?: string }[] } }).message.content
+      vistas.push(c.map(p => p.text ?? '').join(''))
+      return next(e)
+    })
+    return vistas
+  }
+  const NOTA = '[Toki] Responde de forma concisa'
+  const SUGIERE = '/output-style → toki:conciso'
+
+  test('sin la sección, lo mismo va como nota desde el primer mensaje, una sola vez, y sin contar ahorro', SIN_RUTEO, async ($, on) => {
+    mock.clock(on, { now: 50 * H })
+    const m = mundo(on, { tokens: 30_000, salida: 5_000 })
+    const vistas = notas(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'explícame cómo funciona agendar en src/turnos.ts')
+    expect(vistas.filter(n => n.startsWith(NOTA)).length).toBe(1)
+    expect(m.toasts.filter(t => t.includes(SUGIERE)).length).toBe(1)
+    await mensaje($, 't1', 'y ahora explícame los casos borde de agendar')
+    expect(vistas.filter(n => n.startsWith(NOTA)).length).toBe(1)
+    expect(m.toasts.filter(t => t.includes(SUGIERE)).length).toBe(1)
+    // La nota no se puede medir contra la sección: no suma ahorro.
+    expect(await panel($)).not.toContain('  Respuestas breves: ')
+  })
+
+  test('la sugerencia del estilo se da una vez desde siempre; la nota va en cada sesión', SIN_RUTEO, async ($, on) => {
+    mock.clock(on, { now: 50 * H })
+    const m = mundo(on, { tokens: 30_000, salida: 5_000, store: { avisoSinSeccionDado: true } })
+    const vistas = notas(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'explícame cómo funciona agendar en src/turnos.ts')
+    expect(vistas.filter(n => n.startsWith(NOTA)).length).toBe(1)
+    expect(m.toasts.some(t => t.includes(SUGIERE))).toBe(false)
+  })
+
+  test('con un estilo elegido en tu configuración (o el de tu organización), no va la nota', SIN_RUTEO, async ($, on) => {
+    mock.clock(on, { now: 50 * H })
+    const m = mundo(on, { tokens: 30_000, salida: 5_000 })
+    const vistas = notas(on)
+    on('settings.read', ($, e) => ({ value: e.source === 'policy' ? { outputStyle: 'Explanatory' } : {} }) as never)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'explícame cómo funciona agendar en src/turnos.ts')
+    expect(vistas.some(n => n.startsWith(NOTA))).toBe(false)
+    expect(m.toasts.some(t => t.includes(SUGIERE))).toBe(false)
+  })
+
+  test('si prompt.compose corre, no hace falta la nota', SIN_RUTEO, async ($, on) => {
+    mock.clock(on, { now: 50 * H })
+    mundo(on, { tokens: 30_000, salida: 5_000 })
+    const vistas = notas(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await $.prompt.compose(PROMPT)
+    await mensaje($, 't0', 'explícame cómo funciona agendar en src/turnos.ts')
+    expect(vistas.some(n => n.startsWith(NOTA))).toBe(false)
+  })
+})

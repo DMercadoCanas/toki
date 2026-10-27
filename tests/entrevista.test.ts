@@ -148,7 +148,8 @@ function mundo(on: On, o: { tokens?: number; respuesta?: (etiquetas: string[]) =
   const m: Mundo = { toasts: [], preguntas: [], etiquetas: [], contextos: [], entrados: [], fills: [], comandos: [], diagnostico: [] }
   // Se lee en cada pedido: una prueba puede cambiarlo (por ejemplo, tras /clear).
   const tokens = (): number => o.tokens ?? 30_000
-  mock.store(on)
+  // Aquí no corre prompt.compose: el aviso de las respuestas breves por nota ya se dio (no es de la entrevista).
+  mock.store(on, { avisoSinSeccionDado: true })
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
   on('fs.exists', () => ({ value: false }))

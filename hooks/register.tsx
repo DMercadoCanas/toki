@@ -165,14 +165,13 @@ const CLAVE_VENTANA = 'ventanaPuestaPorToki'
 const CLAVE_VENTANA_NATIVA = 'ventanaNativa'
 /** Ya se avisó (una vez, desde siempre) que Toki pide respuestas breves. */
 const CLAVE_AVISO_BREVE = 'avisoBreveDado'
+const CLAVE_AVISO_SIN_SECCION = 'avisoSinSeccionDado'
 const RANURAS = 40
 /** Lo que Claude Code entrega de una salida exitosa sin ayuda: 30 KB. */
 const LIMITE_CLAUDE_CODE = 30_000
 const HORAS_MAPA_VIGENTE = 24
 /** Por debajo de esto, una compactación o un cambio de modelo cuestan poco: Toki no avisa. */
 const CONTEXTO_RELEVANTE = 20_000
-/** Desde aquí cada mensaje relee mucho: Toki le pide a Claude respuestas más concisas. */
-const UMBRAL_CONCISO = 150_000
 /** Cuánto menos escribe Claude con respuestas breves, medido, para decirlo: 12. */
 const PCT_BREVE = Math.round((1 - SALIDA_BREVE) * 100)
 
@@ -963,6 +962,41 @@ async function avisarBreve($: $): Promise<void> {
   }
 }
 
+/**
+ * prompt.compose no corrió (Claude Code lo administra tu organización, u otro plugin lo frenó):
+ * sin la sección, lo mismo va como nota a Claude desde el primer mensaje, y otra vez tras compactar.
+ * Si elegiste un estilo, se respeta. Una vez (desde siempre) sugiere el estilo de Toki, que no
+ * depende de hooks. Lo que ahorre la nota no se cuenta: no se puede medir contra la sección.
+ */
+async function respaldoBreve($: $): Promise<void> {
+  vivo.nudgeConciso = true
+  const estilo = await estiloDeConfiguracion($)
+  void anotarDiagnostico($, `respuestas breves: sin prompt.compose, ${estilo === undefined ? 'van como nota' : `estilo ${estilo}`}`)
+  if (estilo !== undefined) return
+  const x = tx()
+  await notaParaClaude($, x.notaConciso)
+  try {
+    if ((await $.store.get(CLAVE_AVISO_SIN_SECCION)) === true) return
+    await $.store.set(CLAVE_AVISO_SIN_SECCION, true)
+    $.ui.toast(x.toastConciso, { timeoutMs: 10_000 })
+  } catch {
+    // Sin store: no se avisa, para no repetirlo en cada sesión.
+  }
+}
+
+/** El estilo de respuesta que elegiste (/output-style lo guarda en tu configuración), si no es el de siempre. */
+async function estiloDeConfiguracion($: $): Promise<string | undefined> {
+  try {
+    for (const source of FUENTES_DE_CONFIGURACION) {
+      const estilo: unknown = (await $.settings.read({ source })).outputStyle
+      if (typeof estilo === 'string' && estilo !== '') return estilo.toLowerCase() === 'default' ? undefined : estilo
+    }
+  } catch {
+    // Sin configuración: como si no hubiera estilo.
+  }
+  return undefined
+}
+
 /** La familia que habría hecho este trabajo sin Toki: la de tu modelo o la que habría tenido el subagente. */
 function familiaSin(agente: string | undefined): Familia {
   const delAgente = agente === undefined ? undefined : vivo.familiaSinDeAgente.get(agente)
@@ -1371,6 +1405,8 @@ async function registrarCompactacion($: $, origen: 'marca' | 'turno' | 'resumen'
   const desde = vivo.ultimoTurnoCompleto
   vivo.ultimaCompactacion = ahora
   vivo.compactaciones += 1
+  // Si las respuestas breves iban como nota, la nota se fue con lo compactado: se manda otra.
+  vivo.nudgeConciso = false
   // Tras compactar, del caché solo sigue sirviendo el comienzo: cambiar de modelo ahí cuesta solo eso.
   vivo.trasLimpiar = true
   ruta.soloComienzo = true
@@ -3671,14 +3707,8 @@ export const register: Register = (on, options) => {
       if (uso !== undefined && ahora - uso.inicio > 3 * 3_600_000) {
         vivo.lecciones = agregarLeccion(vivo.lecciones, { clave: 'sesion-larga', texto: x.leccionSesionLarga })
       }
-      // Por tamaño, no por % de la ventana: con 1M de ventana el 50% llegaba tarde o nunca.
-      const umbralConciso = Math.min(UMBRAL_CONCISO, Math.round((vivo.ventana ?? uso?.ventana ?? 200_000) * 0.5))
-      // Solo si el motor no dejó poner las respuestas breves en el system prompt.
-      if (config.conciso && vivo.breve === undefined && !vivo.nudgeConciso && (uso?.tokens ?? 0) >= umbralConciso) {
-        vivo.nudgeConciso = true
-        await notaParaClaude($, x.notaConciso)
-        $.ui.toast(x.toastConciso, { timeoutMs: 6000 })
-      }
+      // Hubo pedidos y prompt.compose no corrió: las respuestas breves van por otro lado.
+      if (config.conciso && vivo.breve === undefined && !vivo.nudgeConciso && vivo.pedidoPrevio !== undefined) await respaldoBreve($)
       $.clock.after(12_000, () => {
         if (vivo.actividad === 'listo') {
           vivo.actividad = 'tranquilo'
