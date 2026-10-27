@@ -55,6 +55,9 @@ const COMPLEJO =
   conAcentos(/\b(arquitectura|architect\w*|diseñ[aeo]\w*|design\w*|refactori[zc]\w*|refactor\w*|migra(r|ción|cion|te|tion)\w*|causa ra[ií]z|root cause|por qu[eé] (falla|no funciona|se rompe|pasa)|why (does|is|doesn'?t|isn'?t)|investig\w*|debug\w*|depur\w*|seguridad|security|vulnerab\w*|trade-?offs?|compar[ae]\w*|optimi[zs]\w*|rendimiento|performance|concurren\w*|race condition|en todo el (proyecto|repo|c[oó]digo|sistema)|across the (codebase|repo|project)|end[- ]to[- ]end|estrategia|strategy|planifica\w*|integraci[oó]n|integrat\w*|escalab\w*|recom(ie|e)nd\w*|flujo|workflow|automati[zc]\w*|mejor (manera|forma|pr[aá]ctica|opci[oó]n)|best (way|practice|option|approach)|c[oó]mo (deber[ií]a|conviene|se debe)|how should)\b/i)
 const TRIVIAL =
   conAcentos(/\b(renombra\w*|rename\w*|typo|errata|formatea\w*|reformat\w*|corre (los |las )?(tests?|pruebas)|run (the )?tests|git (status|add|commit|push|pull|log|diff|stash)|haz (el |un )?commit|commitea|haz push|lint\w*|instala\w*|install\w*|bump|cambia (el|la|este|esta) (texto|nombre|color|t[ií]tulo|label|etiqueta)|qu[eé] hora|lista (los )?archivos|list (the )?files|traduce|translate|corrige (la )?ortograf[ií]a|fix (the )?typo)\b/i)
+/** "Corrige", "agrega", "implementa": una orden corta que cambia código no es trivial. */
+const CAMBIO =
+  conAcentos(/\b(corrig\w*|corrige\w*|arregl\w*|agreg\w*|añad\w*|a[ñn]ade\w*|quit\w*|elimin\w*|borr\w*|cambi(a|ar|alo|ala|ale|en)|c[aá]mbia\w*|modific\w*|actualiz\w*|implement\w*|crea\w*|haz(lo|la|los|las)?|hacer|pon(lo|la|le)?|mueve\w*|ajust\w*|aplic\w*|reemplaz\w*|valid\w*|separ\w*|agrup\w*|calcul\w*|fix\w*|add\w*|remov\w*|delet\w*|chang\w*|updat\w*|implement\w*|creat\w*|make|mov\w*|replac\w*|adjust\w*|apply)\b/i)
 /** "Sí", "dale", "sigue": la tarea de antes, con el nivel de antes. */
 const SEGUIMIENTO =
   conAcentos(/^(s[ií]|si,?|no|dale|sigue|contin[uú]a|adelante|hazlo|h[aá]galo|implem[eé]ntalo|procede|go( ahead)?|yes|yep|sure|ship it|do it|continue|proceed|next)\b[\s.!,]*(por favor|please|gracias|thanks)?[\s.!]*$/i)
@@ -100,7 +103,8 @@ export function nivelHeuristico(textoCrudo: string, previo?: Nivel, preguntoAnte
   else if (palabras > 120) puntos += 1
   if ((texto.match(/\?/g) ?? []).length >= 3) puntos += 1
   if (TRIVIAL.test(texto)) puntos -= 3
-  if (palabras <= 8 && !texto.includes('?') && complejas === 0) puntos -= 1
+  // Corto y sin pregunta suele ser poca cosa, salvo que pida cambiar algo: "corrige lo de las líneas" es trabajo.
+  if (palabras <= 8 && !texto.includes('?') && complejas === 0 && !CAMBIO.test(texto)) puntos -= 1
   if (puntos >= 3) return { nivel: 'complejo', seguro: puntos >= 4 || complejas >= 2, motivo: complejas > 0 ? 'tarea-compleja' : 'mensaje-largo' }
   if (puntos <= -2) return { nivel: 'trivial', seguro: true, motivo: 'tarea-mecanica' }
   if (puntos === -1) return { nivel: 'trivial', seguro: false, motivo: 'mensaje-corto' }

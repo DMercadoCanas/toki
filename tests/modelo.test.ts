@@ -61,6 +61,14 @@ describe('leer el mensaje', () => {
     expect(nivelHeuristico('corre los tests').nivel).toBe('trivial')
   })
 
+  test('una orden corta que cambia código no es trivial', () => {
+    for (const t of ['corrige lo de las líneas', 'agrega el campo cups', 'implementa lo del pago parcial', 'quita el botón crear', 'pon no_create en la vista', 'ahora hazlo para salud también', 'make it work for health too']) {
+      expect(nivelHeuristico(t, 'normal').nivel).toBe('normal')
+    }
+    // Lo corto sin orden de cambio sigue siendo poca cosa.
+    expect(nivelHeuristico('listo, sube los cambios').nivel).toBe('trivial')
+  })
+
   test('un "sí, dale" sigue con el nivel de antes', () => {
     expect(nivelHeuristico('sí, dale', 'complejo')).toEqual({ nivel: 'complejo', seguro: true, motivo: 'seguimiento' })
     expect(nivelHeuristico('Implementalo', 'profundo').nivel).toBe('profundo')
