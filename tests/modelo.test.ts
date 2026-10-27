@@ -29,6 +29,7 @@ import {
   usaEsfuerzoHeredado,
 } from '../hooks/modelo'
 import type { EstadoRuta } from '../hooks/modelo'
+import { CADA_TESTIGO, factorCalibrado, TESTIGOS_META } from '../hooks/ahorro'
 import { claveDia } from '../hooks/historial'
 
 // Qué modelo y esfuerzo merece cada mensaje: primero lo puro, después con el motor simulado.
@@ -838,9 +839,9 @@ describe('ahorro medido con el motor', () => {
     await mensaje($, 't1', 'renombra la variable foo a bar en utils')
     await reloj.settle()
     const diag = archivos.get('.claude/toki/diagnostico.txt') ?? ''
-    // Real: 30k escritos en Sonnet ($0.075) y el pedido de siempre. Sin Toki, Opus leía
-    // esos 30k del caché y respondía en medio (salida ×1/0.73): $0.0115 + $0.0163.
-    expect(diag).toContain(' · 2 pedidos · entrada 4 · salida 400 · caché escrito 30998 · leído 29000 · $0.0844 · sin Toki $0.0278 · ')
+    // Real: 30k escritos en Sonnet ($0.075) y el pedido de siempre. Sin Toki, Opus leía esos 30k
+    // del caché y respondía en medio: salida ×1.18 (sin testigos, la mitad de lo que dice la tabla, ×1/0.73).
+    expect(diag).toContain(' · 2 pedidos · entrada 4 · salida 400 · caché escrito 30998 · leído 29000 · $0.0844 · sin Toki $0.0263 · ')
     const estado = (await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }
     expect(estado.text).toContain('· costó de más: ~$0.06 (más esfuerzo o reescribir el caché)')
   })
@@ -1320,5 +1321,72 @@ describe('la red de seguridad del esfuerzo', () => {
     expect(vistos.find(v => v.turnId === 't1')?.effort).not.toBe('low')
     const diag = await diagnostico(reloj, archivos)
     expect(diag.some(l => l.startsWith('ruta: normal (seguimiento, atascado)') && l.endsWith('· corrige el anterior'))).toBe(true)
+  })
+})
+
+describe('calibrar lo que ahorra bajar el esfuerzo', () => {
+  const RENOMBRA = 'renombra la variable foo a bar en utils'
+  const CLAVE = 'claude-opus-5-5|trivial|high>low'
+
+  test(`1 de cada ${CADA_TESTIGO} mensajes que Toki baja de esfuerzo va con el tuyo, de testigo; lo medido se guarda y se ve en /toki-modelo`, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const guardado = new Map<string, unknown>()
+    const { vistos } = mundo(on, { archivos, guardado })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    // Algo normal primero: la conversación queda en el caché de Opus y lo simple solo baja el esfuerzo.
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    for (let i = 1; i <= CADA_TESTIGO; i++) await mensaje($, `t${i}`, RENOMBRA, 1, 'Listo.', 'high')
+    const simples = vistos.filter(v => v.turnId !== 't0')
+    expect(simples.every(v => v.model === 'claude-opus-5-5')).toBe(true)
+    expect(simples.map(v => v.effort)).toEqual([...Array<string>(CADA_TESTIGO - 1).fill('low'), 'high'])
+    const diag = await diagnostico(reloj, archivos)
+    expect(diag.filter(l => l.startsWith('ruta: ') && l.includes('[testigo')).length).toBe(1)
+    expect((guardado.get('calibracionEsfuerzo') as Record<string, unknown>)[CLAVE]).toEqual({
+      candidatos: CADA_TESTIGO,
+      bajados: { mensajes: CADA_TESTIGO - 1, pedidos: CADA_TESTIGO - 1, salida: (CADA_TESTIGO - 1) * 200 },
+      testigos: { mensajes: 1, pedidos: 1, salida: 200 },
+    })
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toContain('· sin cambio (testigo: mide cuánto ahorra bajar el esfuerzo)')
+    expect(estado).toContain(`1 de cada ${CADA_TESTIGO} mensajes va con tu esfuerzo, de testigo, hasta juntar ${TESTIGOS_META}`)
+    // Aquí bajar el esfuerzo no cambió la salida (el motor de prueba siempre escribe 200): el factor baja hacia 1.
+    expect(estado).toContain('• Opus · simple, alto → bajo: ×1.17 · medido ×1.00 con 1 testigo y 9 bajados · pedidos por mensaje: 1.0 con tu esfuerzo, 1.0 bajado')
+  })
+
+  test('lo medido vale entre sesiones, y lo que Toki cuenta como ahorrado ya usa el factor calibrado', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const guardado = new Map<string, unknown>([['calibracionEsfuerzo', { [CLAVE]: { candidatos: 9, bajados: { mensajes: 9, pedidos: 9, salida: 1_800 }, testigos: { mensajes: 0, pedidos: 0, salida: 0 } } }]])
+    // t2 escribe mucho: así se distingue el factor calibrado de la mitad de la tabla.
+    const { vistos } = mundo(on, { archivos, guardado, uso: e => (e.turnId === 't2' ? { output_tokens: 20_000 } : {}) })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    // El décimo candidato, aunque sea el primero de esta sesión: testigo.
+    await mensaje($, 't1', RENOMBRA, 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't1')?.effort).toBe('high')
+    await mensaje($, 't2', RENOMBRA, 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't2')?.effort).toBe('low')
+    const celda = { candidatos: 10, bajados: { mensajes: 9, pedidos: 9, salida: 1_800 }, testigos: { mensajes: 1, pedidos: 1, salida: 200 } }
+    expect((guardado.get('calibracionEsfuerzo') as Record<string, unknown>)[CLAVE]).toEqual({ ...celda, candidatos: 11, bajados: { mensajes: 10, pedidos: 10, salida: 21_800 } })
+    // t2: la salida que no se escribió, con el factor de un testigo que escribió lo mismo (×1.17; no ×1.18, la mitad de la tabla, ni ×1/0.73), a $20 el millón.
+    const uso = (await diagnostico(reloj, archivos)).filter(l => l.startsWith('uso: trivial claude-opus-5-5/low')).pop() ?? ''
+    const [, real, sin] = /· \$([\d.]+) · sin Toki \$([\d.]+) ·/.exec(uso) ?? []
+    const esperado = (20_000 * (factorCalibrado('high', 'low', celda) - 1) * 20) / 1_000_000
+    expect(Math.abs(Number(sin) - Number(real) - esperado)).toBeLessThan(0.00015)
+  })
+
+  test('lo que bajas tú cuando Toki pregunta no cuenta: ni candidato ni testigo', { options: { recomendarModelo: 'siempre' } }, async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const guardado = new Map<string, unknown>()
+    const preguntas: string[] = []
+    const { vistos } = mundo(on, { guardado, preguntas, respuesta: ls => ls.find(l => l.includes('Opus') && l.includes('· bajo —')) ?? '' })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    for (let i = 1; i <= CADA_TESTIGO; i++) await mensaje($, `t${i}`, RENOMBRA, 1, 'Listo.', 'high')
+    expect(preguntas.length).toBeGreaterThanOrEqual(CADA_TESTIGO)
+    expect(vistos.filter(v => v.turnId !== 't0').map(v => v.effort)).toEqual(Array<string>(CADA_TESTIGO).fill('low'))
+    // t0 sí cuenta: Toki lo bajó solo al ver que ibas en alto. Lo simple, que bajaste tú, no.
+    expect(Object.keys(guardado.get('calibracionEsfuerzo') ?? {})).toEqual(['claude-opus-5-5|normal|high>medium'])
   })
 })

@@ -2,21 +2,30 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   ahorroNeto,
+  CADA_TESTIGO,
   cifraUsd,
   cifraUsdDia,
   cifraUsdFirmada,
   costoClasificador,
+  claveEsfuerzo,
+  contarCandidato,
   costoSinTokiPedido,
   esPedidoPrevio,
   estimarAhorroPrevio,
+  factorCalibrado,
   factorSalida,
+  leerCalibracion,
   leidoSinToki,
   porcentajeAhorro,
   resumenAhorro,
+  salidaMedida,
+  sumarACalibracion,
+  TESTIGOS_META,
+  tocaTestigo,
   valorEscritura,
   valorLectura,
 } from '../hooks/ahorro'
-import type { PedidoPrevio } from '../hooks/ahorro'
+import type { CalibracionEsfuerzo, CeldaEsfuerzo, PedidoPrevio } from '../hooks/ahorro'
 import { costoMedido } from '../hooks/modelo'
 
 /** Igual salvo redondeo. */
@@ -46,6 +55,72 @@ describe('ahorro medido', () => {
     expect(factorSalida('high', 'medium')).toBe(1)
     expect(factorSalida(undefined, 'low')).toBe(1)
     expect(factorSalida(30, 'low')).toBe(1)
+  })
+
+  test('al bajar el esfuerzo, sin testigos cuenta la mitad de la tabla; al subirlo, la tabla entera', async () => {
+    const tabla = 1.37 / 0.73
+    cerca(factorCalibrado('xhigh', 'low'), 1 + (tabla - 1) / 2)
+    cerca(factorCalibrado('medium', 'low'), 1 + (1 / 0.73 - 1) / 2)
+    // Lo que costó de más se cuenta completo.
+    cerca(factorCalibrado('low', 'xhigh'), 0.73 / 1.37)
+    expect(factorCalibrado('high', 'high')).toBe(1)
+    expect(factorCalibrado(undefined, 'low')).toBe(1)
+  })
+
+  test('con testigos, lo medido pesa más cuantos más hay; nunca más que la tabla ni menos de 1', async () => {
+    const tabla = 1.37 / 0.73
+    const previo = 1 + (tabla - 1) / 2
+    const celda = (testigos: number, porTestigo: number, bajados: number, porBajado: number): CeldaEsfuerzo => ({
+      candidatos: testigos * CADA_TESTIGO,
+      bajados: { mensajes: bajados, pedidos: bajados * 3, salida: bajados * porBajado },
+      testigos: { mensajes: testigos, pedidos: testigos * 3, salida: testigos * porTestigo },
+    })
+    // Los testigos escriben 1.5 veces lo que los bajados: con 10, lo medido pesa la mitad.
+    cerca(salidaMedida(celda(10, 1_500, 20, 1_000)) ?? 0, 1.5)
+    cerca(factorCalibrado('xhigh', 'low', celda(10, 1_500, 20, 1_000)), previo + (1.5 - previo) / 2)
+    // Con 30, tres cuartos.
+    cerca(factorCalibrado('xhigh', 'low', celda(30, 1_500, 60, 1_000)), previo + ((1.5 - previo) * 3) / 4)
+    // Más que la tabla no se cree; si bajar no redujo la salida, no hay ahorro que contar.
+    cerca(factorCalibrado('xhigh', 'low', celda(300, 5_000, 600, 1_000)), tabla)
+    expect(factorCalibrado('xhigh', 'low', celda(300, 500, 600, 1_000))).toBe(1)
+    // Sin testigos todavía (solo bajados), la mitad de la tabla.
+    cerca(factorCalibrado('xhigh', 'low', celda(0, 0, 20, 1_000)), previo)
+    // Subir el esfuerzo no se calibra: la tabla entera.
+    cerca(factorCalibrado('low', 'xhigh', celda(30, 1_500, 60, 1_000)), 0.73 / 1.37)
+  })
+
+  test('1 de cada 10 candidatos va de testigo, hasta juntar 30', async () => {
+    const clave = claveEsfuerzo('claude-opus-5-5', 'trivial', 'xhigh', 'low')
+    expect(clave).toBe('claude-opus-5-5|trivial|xhigh>low')
+    let cal: CalibracionEsfuerzo = {}
+    const testigos: number[] = []
+    for (let i = 1; i <= 25; i++) {
+      if (tocaTestigo(cal[clave])) testigos.push(i)
+      cal = contarCandidato(cal, clave)
+    }
+    expect(testigos).toEqual([10, 20])
+    const llena = { candidatos: 9, bajados: { mensajes: 0, pedidos: 0, salida: 0 }, testigos: { mensajes: TESTIGOS_META, pedidos: 0, salida: 0 } }
+    expect(tocaTestigo(llena)).toBe(false)
+  })
+
+  test('la calibración se suma por grupo, se guarda y se lee; lo raro se descarta y recuerda 24 tipos', async () => {
+    const clave = claveEsfuerzo('claude-opus-5-5', 'trivial', 'xhigh', 'low')
+    let cal = contarCandidato({}, clave)
+    cal = sumarACalibracion(cal, clave, 'bajados', { pedidos: 3, salida: 900 })
+    cal = sumarACalibracion(cal, clave, 'testigos', { pedidos: 4, salida: 1_500 })
+    cal = sumarACalibracion(cal, clave, 'bajados', { pedidos: 2, salida: 1_100 })
+    expect(cal[clave]).toEqual({ candidatos: 1, bajados: { mensajes: 2, pedidos: 5, salida: 2_000 }, testigos: { mensajes: 1, pedidos: 4, salida: 1_500 } })
+    // Como pasa por el store: JSON.
+    expect(leerCalibracion(JSON.parse(JSON.stringify(cal)))).toEqual(cal)
+    expect(leerCalibracion({ [clave]: { candidatos: -1, bajados: {}, testigos: {} }, otra: 'x' })).toEqual({})
+    expect(leerCalibracion(null)).toEqual({})
+    // La que se toca pasa al final; al pasar de 24 se van las que hace más que no se usan.
+    for (let i = 0; i < 30; i++) cal = contarCandidato(cal, `m${i}|trivial|xhigh>low`)
+    cal = contarCandidato(cal, 'm5|trivial|xhigh>low')
+    const claves = Object.keys(cal)
+    expect(claves.length).toBe(24)
+    expect(claves).not.toContain(clave)
+    expect(claves[claves.length - 1]).toBe('m5|trivial|xhigh>low')
   })
 
   test('reconoce el último pedido guardado', async () => {

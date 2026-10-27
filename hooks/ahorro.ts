@@ -17,6 +17,107 @@ export function factorSalida(sinToki: unknown, usado: unknown): number {
   return SALIDA_RELATIVA[sinToki] / SALIDA_RELATIVA[usado]
 }
 
+/** Mensajes enteros de un grupo, sus pedidos al modelo y la salida que escribieron. */
+export type GrupoMedido = { mensajes: number; pedidos: number; salida: number }
+
+/**
+ * Lo medido de un tipo de mensaje que Toki baja de esfuerzo solo, en el mismo modelo
+ * (`claude-opus-5-5|trivial|xhigh>low`): los que bajó y los testigos, que habría
+ * bajado y dejó con tu esfuerzo para comparar. `candidatos`: cuántos pudo bajar.
+ */
+export type CeldaEsfuerzo = { candidatos: number; bajados: GrupoMedido; testigos: GrupoMedido }
+export type CalibracionEsfuerzo = Record<string, CeldaEsfuerzo>
+
+/** 1 de cada tantos mensajes que Toki bajaría de esfuerzo va con el tuyo, de testigo... */
+export const CADA_TESTIGO = 10
+/** ...hasta juntar estos por tipo de mensaje: ahí lo medido ya pesa 3/4 y no hace falta apartar más. */
+export const TESTIGOS_META = 30
+/** Lo medido con n testigos pesa n / (n + PESO_PREVIO) frente al punto de partida. */
+const PESO_PREVIO = 10
+/** Cuántos tipos de mensaje recuerda (los modelos cambian de versión): los más nuevos. */
+const MAX_CELDAS = 24
+
+export function claveEsfuerzo(modelo: string, nivel: string, desde: Esfuerzo, hacia: Esfuerzo): string {
+  return `${modelo}|${nivel}|${desde}>${hacia}`
+}
+
+function celdaVacia(): CeldaEsfuerzo {
+  return { candidatos: 0, bajados: { mensajes: 0, pedidos: 0, salida: 0 }, testigos: { mensajes: 0, pedidos: 0, salida: 0 } }
+}
+
+/** Al próximo mensaje que Toki pueda bajar en esta celda le toca ir de testigo. */
+export function tocaTestigo(celda: CeldaEsfuerzo | undefined): boolean {
+  const c = celda ?? celdaVacia()
+  return c.testigos.mensajes < TESTIGOS_META && c.candidatos % CADA_TESTIGO === CADA_TESTIGO - 1
+}
+
+/** Cuántas veces más salida escribe un testigo que un mensaje bajado, por mensaje. Sin datos de los dos, nada. */
+export function salidaMedida(celda: CeldaEsfuerzo | undefined): number | undefined {
+  if (celda === undefined || celda.testigos.mensajes === 0 || celda.bajados.mensajes === 0 || !(celda.bajados.salida > 0)) return undefined
+  return celda.testigos.salida / celda.testigos.mensajes / (celda.bajados.salida / celda.bajados.mensajes)
+}
+
+/**
+ * La salida de tu esfuerzo frente a la del que usó Toki, para contar lo ahorrado.
+ * Si Toki subió el esfuerzo, la tabla entera: lo que costó de más se cuenta completo.
+ * Si lo bajó, sin testigos la mitad de lo que dice la tabla (sale de una sola prueba de
+ * 7 mensajes); con testigos, lo medido pesa más cuantos más hay. Nunca más que la
+ * tabla ni menos de 1.
+ */
+export function factorCalibrado(sinToki: unknown, usado: unknown, celda?: CeldaEsfuerzo): number {
+  const tabla = factorSalida(sinToki, usado)
+  if (tabla <= 1) return tabla
+  const previo = 1 + (tabla - 1) / 2
+  const medido = salidaMedida(celda)
+  if (medido === undefined || celda === undefined) return previo
+  const peso = celda.testigos.mensajes / (celda.testigos.mensajes + PESO_PREVIO)
+  return Math.min(tabla, Math.max(1, previo + (medido - previo) * peso))
+}
+
+function conCelda(cal: CalibracionEsfuerzo, clave: string, cambiar: (c: CeldaEsfuerzo) => CeldaEsfuerzo): CalibracionEsfuerzo {
+  const { [clave]: vieja, ...otras } = cal
+  // La que se toca pasa al final: al recortar se van las que hace más que no se usan.
+  return Object.fromEntries([...Object.entries(otras), [clave, cambiar(vieja ?? celdaVacia())] as const].slice(-MAX_CELDAS))
+}
+
+/** Un mensaje más que Toki pudo bajar en esta celda (vaya bajado o de testigo). */
+export function contarCandidato(cal: CalibracionEsfuerzo, clave: string): CalibracionEsfuerzo {
+  return conCelda(cal, clave, c => ({ ...c, candidatos: c.candidatos + 1 }))
+}
+
+/** Un mensaje terminado, a su grupo. */
+export function sumarACalibracion(cal: CalibracionEsfuerzo, clave: string, grupo: 'bajados' | 'testigos', m: { pedidos: number; salida: number }): CalibracionEsfuerzo {
+  return conCelda(cal, clave, c => {
+    const g = c[grupo]
+    const suma = { mensajes: g.mensajes + 1, pedidos: g.pedidos + m.pedidos, salida: g.salida + m.salida }
+    return grupo === 'bajados' ? { ...c, bajados: suma } : { ...c, testigos: suma }
+  })
+}
+
+/** Lo guardado, celda por celda: lo que no tenga la forma se descarta. */
+export function leerCalibracion(v: unknown): CalibracionEsfuerzo {
+  if (typeof v !== 'object' || v === null) return {}
+  const n = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : undefined)
+  const grupo = (g: unknown): GrupoMedido | undefined => {
+    if (typeof g !== 'object' || g === null) return undefined
+    const r = g as Record<string, unknown>
+    const mensajes = n(r['mensajes'])
+    const pedidos = n(r['pedidos'])
+    const salida = n(r['salida'])
+    return mensajes === undefined || pedidos === undefined || salida === undefined ? undefined : { mensajes, pedidos, salida }
+  }
+  const celdas: [string, CeldaEsfuerzo][] = []
+  for (const [clave, c] of Object.entries(v)) {
+    if (typeof c !== 'object' || c === null) continue
+    const r = c as Record<string, unknown>
+    const candidatos = n(r['candidatos'])
+    const bajados = grupo(r['bajados'])
+    const testigos = grupo(r['testigos'])
+    if (candidatos !== undefined && bajados !== undefined && testigos !== undefined) celdas.push([clave, { candidatos, bajados, testigos }])
+  }
+  return Object.fromEntries(celdas.slice(-MAX_CELDAS))
+}
+
 /**
  * Salida con respuestas breves frente a sin ellas, medida: los mismos guiones sin
  * Toki en Opus 5.5, tres corridas por brazo (oct 2026, evals/modo-breve). Con

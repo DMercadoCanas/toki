@@ -6,8 +6,35 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderNode, ResolveInput, ToolCallResult, TurnStepInput, TurnUsage } from 'claude-code'
 
 import type { Sesion } from '../types'
-import { ahorroBreve, CENTAVO, cifraUsd, cifraUsdDia, cifraUsdFirmada, COMIENZO_TIPICO, costoClasificador, costoSeccionBreve, costoSinTokiPedido, esPedidoPrevio, estimarAhorroPrevio, factorSalida, leidoSinToki as leidoCacheSinToki, resumenAhorro, SALIDA_BREVE, salidaEvitadaBreve, valorEscritura, valorLectura } from './ahorro'
-import type { PedidoPrevio, UsoMedido } from './ahorro'
+import {
+  ahorroBreve,
+  CADA_TESTIGO,
+  CENTAVO,
+  cifraUsd,
+  cifraUsdDia,
+  cifraUsdFirmada,
+  claveEsfuerzo,
+  COMIENZO_TIPICO,
+  contarCandidato,
+  costoClasificador,
+  costoSeccionBreve,
+  costoSinTokiPedido,
+  esPedidoPrevio,
+  estimarAhorroPrevio,
+  factorCalibrado,
+  leerCalibracion,
+  leidoSinToki as leidoCacheSinToki,
+  resumenAhorro,
+  SALIDA_BREVE,
+  salidaEvitadaBreve,
+  salidaMedida,
+  sumarACalibracion,
+  TESTIGOS_META,
+  tocaTestigo,
+  valorEscritura,
+  valorLectura,
+} from './ahorro'
+import type { CalibracionEsfuerzo, CeldaEsfuerzo, GrupoMedido, PedidoPrevio, UsoMedido } from './ahorro'
 import { breveActivo, decidirBreve, ID_BREVE, SECCION_BREVE } from './breve'
 import type { DecisionBreve } from './breve'
 import { avisoBucle, registrar, UMBRAL_FALLOS } from './bucles'
@@ -60,6 +87,7 @@ import {
   limpiarPrompt,
   modeloCanonico,
   modeloSubagente,
+  NIVELES,
   nivelHeuristico,
   nombreCorto,
   PEDIDOS_PARA_SUBIR,
@@ -71,7 +99,7 @@ import {
   usaEsfuerzoHeredado,
   usd as usdTexto,
 } from './modelo'
-import type { Decision as DecisionMensaje, Esfuerzo, EstadoRuta, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, Propuesta, TextosRuta, TipoOpcion } from './modelo'
+import type { Decision as DecisionMensaje, Esfuerzo, EstadoRuta, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, Propuesta, ResultadoRuta, TextosRuta, TipoOpcion } from './modelo'
 import {
   alCompactar,
   contarLimpio,
@@ -1066,7 +1094,8 @@ function medirPedido(e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, sin:
     comienzo: vivo.prefijoSistema ?? COMIENZO_TIPICO,
     conPings: vivo.conPings,
   })
-  const fSalida = factorSalida(e.effort, pedido.effort)
+  // Al bajar el esfuerzo: cuánta más salida habría escrito el tuyo, con lo que miden los testigos de ese tipo de mensaje.
+  const fSalida = factorCalibrado(e.effort, pedido.effort, celdaDelPedido(e, pedido))
   const c = { real: costoMedido(familia, uso, ttl1h), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h, factorSalida: fSalida, leido }) }
   sumarCuenta(c.real, c.sin)
   // Con respuestas breves, la salida que Claude no escribió (en tu modelo y con tu esfuerzo habría sido más),
@@ -2105,6 +2134,8 @@ const CLAVE_MODO_RUTA = 'modoModeloEsfuerzo'
 const CLAVE_SONNET = 'sonnetPrimero'
 /** El esfuerzo que Claude Code usó para cada modelo sin que nadie lo fijara (el de tu organización), si no es el de fábrica. */
 const CLAVE_ESFUERZO = 'esfuerzoPorDefecto'
+/** Lo medido al bajar el esfuerzo, con sus testigos (`hooks/ahorro.ts`): vale entre sesiones. */
+const CLAVE_CALIBRACION = 'calibracionEsfuerzo'
 /** Cuántos modelos recuerda con un esfuerzo por defecto distinto del de fábrica. */
 const MAX_DEFECTOS = 8
 /** Del más fuerte al más débil, como los junta Claude Code. */
@@ -2138,6 +2169,8 @@ type PlanTurno = {
   /** El turno del mensaje: se ata en `turn.start`. */
   turno?: string
   revisado?: boolean
+  /** Va de testigo (su celda): Toki lo habría bajado de esfuerzo y lo deja con el tuyo para comparar. */
+  testigo?: string
 }
 
 /**
@@ -2195,6 +2228,8 @@ const ruta: {
   vistoEsfuerzo?: { modelo: string; entorno: Esfuerzo | null | undefined; config: Esfuerzo | undefined }
   /** Lo que Claude Code usó sin que nadie fijara un esfuerzo, por modelo, si no es el de fábrica (lo fija tu organización). */
   defectos: Record<string, Esfuerzo>
+  /** Lo que escriben los mensajes que Toki baja de esfuerzo y sus testigos, por tipo de mensaje. */
+  calibracion: CalibracionEsfuerzo
   plan?: PlanTurno
   /** Lo que elegiste antes para cada nivel: la próxima vez se aplica solo. */
   preferencias: Partial<Record<Nivel, TipoOpcion>>
@@ -2251,6 +2286,7 @@ const ruta: {
   mensajesEn: {},
   cambioEsfuerzo: false,
   defectos: {},
+  calibracion: {},
 }
 
 function xr(): TextosRuta {
@@ -2434,6 +2470,81 @@ async function alElegirEsfuerzo($: $, args: string): Promise<void> {
   // Sin nivel (el selector): si lo guarda en tu configuración, se nota antes del próximo mensaje; si no, en su primer pedido.
 }
 
+// ---------- Calibrar lo que ahorra bajar el esfuerzo ----------
+
+/** La celda de un mensaje que Toki baja solo de esfuerzo, en el mismo modelo; si cambia otra cosa, ninguna. */
+function celdaBajada(nivel: Nivel, actual: Pick<Opcion, 'modelo' | 'esfuerzo'>, elegida: Pick<Opcion, 'modelo' | 'esfuerzo'>): string | undefined {
+  if (elegida.modelo !== actual.modelo || ESFUERZOS.indexOf(elegida.esfuerzo) >= ESFUERZOS.indexOf(actual.esfuerzo)) return undefined
+  return claveEsfuerzo(modeloCanonico(actual.modelo), nivel, actual.esfuerzo, elegida.esfuerzo)
+}
+
+/** Cambia la calibración guardada. Relee antes: otra sesión pudo sumar lo suyo. */
+async function cambiarCalibracion($: $, cambiar: (c: CalibracionEsfuerzo) => CalibracionEsfuerzo): Promise<void> {
+  let guardada = ruta.calibracion
+  try {
+    guardada = leerCalibracion(await $.store.get(CLAVE_CALIBRACION))
+  } catch {
+    // Sin store: lo de esta sesión.
+  }
+  ruta.calibracion = cambiar(guardada)
+  try {
+    await $.store.set(CLAVE_CALIBRACION, ruta.calibracion)
+  } catch {
+    // Sin store: solo en esta sesión.
+  }
+}
+
+/**
+ * Si Toki va a bajar solo el esfuerzo por su cuenta (no lo elegiste tú ni es el modo
+ * ahorro), el mensaje cuenta como candidato; a uno de cada CADA_TESTIGO le toca ir con
+ * tu esfuerzo, de testigo. Devuelve su celda.
+ */
+async function elegirTestigo($: $, nivel: Nivel, actual: Opcion, d: ResultadoRuta, estado: EstadoRuta): Promise<string | undefined> {
+  if (d.modo !== 'auto' || d.como !== 'auto' || estado.enAhorro) return undefined
+  const clave = celdaBajada(nivel, actual, d.elegida)
+  if (clave === undefined) return undefined
+  let toca = false
+  await cambiarCalibracion($, c => {
+    toca = tocaTestigo(c[clave])
+    return contarCandidato(c, clave)
+  })
+  return toca ? clave : undefined
+}
+
+/** Un mensaje entero que Toki bajó de esfuerzo solo, o su testigo: su salida va a la calibración. */
+async function registrarCalibracion($: $, plan: PlanTurno | undefined, m: Medicion, turnId: string): Promise<void> {
+  if (plan === undefined || plan.turno !== turnId || m.pedidos === 0) return
+  const bajado = plan.como === 'auto' && !plan.preguntado && !plan.estado.enAhorro ? celdaBajada(plan.nivel, { modelo: plan.modelo, esfuerzo: plan.supuesto }, plan.usada) : undefined
+  const clave = plan.testigo ?? bajado
+  if (clave === undefined) return
+  const grupo = plan.testigo !== undefined ? 'testigos' : 'bajados'
+  await cambiarCalibracion($, c => sumarACalibracion(c, clave, grupo, m))
+}
+
+/** La celda de un pedido del hilo principal al que Toki bajó el esfuerzo, con el tipo de su mensaje. */
+function celdaDelPedido(e: TurnStepInput, pedido: TurnStepInput): CeldaEsfuerzo | undefined {
+  const m = ruta.medicion
+  if (m === undefined || m.turno !== e.turnId || !esEsfuerzo(e.effort) || !esEsfuerzo(pedido.effort)) return undefined
+  return ruta.calibracion[claveEsfuerzo(modeloCanonico(pedido.model), m.nivel, e.effort, pedido.effort)]
+}
+
+/** /toki-modelo: al bajar el esfuerzo, cuánta salida cuenta Toki como ahorrada y con cuántos testigos. */
+function lineasCalibracion(x: TextosRuta): string[] {
+  const lineas: string[] = []
+  const pedidos = (g: GrupoMedido) => (g.mensajes > 0 ? (g.pedidos / g.mensajes).toFixed(1) : '–')
+  for (const [clave, c] of Object.entries(ruta.calibracion).reverse()) {
+    if (c.bajados.mensajes + c.testigos.mensajes === 0 || lineas.length >= 6) continue
+    const [modelo = '', nivel, cambio = ''] = clave.split('|')
+    const [desde, hacia] = cambio.split('>')
+    const n = NIVELES.find(v => v === nivel)
+    if (n === undefined || !esEsfuerzo(desde) || !esEsfuerzo(hacia)) continue
+    const medido = salidaMedida(c)
+    const detalle = medido === undefined ? x.sinTestigos(c.testigos.mensajes, TESTIGOS_META) : x.conTestigos(medido.toFixed(2), c.testigos.mensajes, c.bajados.mensajes, pedidos(c.testigos), pedidos(c.bajados))
+    lineas.push(`    ${x.celdaCalibracion(nombreCorto(modelo), x.nivel[n], x.esfuerzo[desde], x.esfuerzo[hacia], factorCalibrado(desde, hacia, c).toFixed(2), detalle)}`)
+  }
+  return lineas.length === 0 ? [] : [`  ${x.calibracion(CADA_TESTIGO, TESTIGOS_META)}`, ...lineas]
+}
+
 /**
  * El primer pedido de tu mensaje trae el esfuerzo de verdad. Si no es el que Toki
  * supuso al planear, decide de nuevo con la misma regla, ya sin preguntar (lo que
@@ -2450,9 +2561,11 @@ async function corregirPlan($: $, plan: PlanTurno, real: Esfuerzo, turnId: strin
     if (ruta.ultima !== undefined) ruta.ultima = { ...ruta.ultima, actual: p.actual }
   } else {
     const d = decidirRuta(p, { ...plan.estado, interactivo: false })
-    envio = d.modo === 'auto' ? d.elegida : p.actual
+    // Un testigo sigue siéndolo si, con el esfuerzo de verdad, Toki también lo bajaría solo.
+    if (plan.testigo !== undefined) plan.testigo = d.modo === 'auto' && d.como === 'auto' && !plan.estado.enAhorro ? celdaBajada(plan.nivel, p.actual, d.elegida) : undefined
+    envio = d.modo === 'auto' && plan.testigo === undefined ? d.elegida : p.actual
     como = d.como
-    ruta.ultima = { nivel: plan.nivel, motivo: plan.motivo, actual: p.actual, recomendada: d.elegida, decision: d.decision }
+    ruta.ultima = { nivel: plan.nivel, motivo: plan.motivo, actual: p.actual, recomendada: d.elegida, decision: plan.testigo !== undefined ? 'testigo' : d.decision }
   }
   const cambia = !igual(envio, p.actual)
   const dif = diferencia(envio, p.actual)
@@ -2572,7 +2685,12 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
     deshecha: ruta.deshechos[nivel],
   }
   const d = decidirRuta(p, estado)
-  const { modo, elegida, decision, sinCache } = d
+  // Testigo: si Toki iba a bajar solo el esfuerzo, 1 de cada CADA_TESTIGO mensajes va con el tuyo, hasta juntar
+  // TESTIGOS_META por tipo de mensaje. Lo que escriben unos y otros mide cuánto ahorra de verdad bajarlo.
+  const testigo = await elegirTestigo($, nivel, p.actual, d, estado)
+  const { elegida, sinCache } = d
+  const modo = testigo !== undefined ? 'nada' : d.modo
+  const decision: DecisionMensaje = testigo !== undefined ? 'testigo' : d.decision
   let como: DecisionRuta['como'] = d.como
   // En /toki-modelo, lo que de verdad se aplicó (o se habría aplicado).
   ruta.ultima = { nivel, motivo, actual: p.actual, recomendada: elegida, decision }
@@ -2606,7 +2724,7 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
   const familia = familiaDe(usada.modelo)
   if (familia !== undefined) ruta.mensajesEn[familia] = (ruta.mensajesEn[familia] ?? 0) + 1
   // Si Claude Code pide otro esfuerzo que el supuesto, el primer pedido lo dice y el plan se corrige.
-  const plan: PlanTurno = { supuesto: actual.esfuerzo, modelo: actual.modelo, usada, como, preguntado: modo === 'preguntar', nivel, motivo, propuesta, estado }
+  const plan: PlanTurno = { supuesto: actual.esfuerzo, modelo: actual.modelo, usada, como, preguntado: modo === 'preguntar', nivel, motivo, propuesta, estado, testigo }
   ruta.plan = plan
   // Lo que ahorró (o costó de más) se mide pedido por pedido y se acredita al terminar el mensaje.
   if (igual(usada, p.actual)) return
@@ -2720,12 +2838,12 @@ function textoRuta(x: TextosRuta, s?: Pick<Sesion, 'ruteoAhorroUsd' | 'ruteoExtr
   } else {
     lineas.push(`  ${x.sinLectura}`)
   }
-  if (ruta.historial.length === 0) return [...lineas, `  ${x.sinDecisiones}`]
+  if (ruta.historial.length === 0) lineas.push(`  ${x.sinDecisiones}`)
   for (const d of [...ruta.historial].reverse().slice(0, 6)) {
     const elegido = `${nombreCorto(d.despues.modelo)} · ${x.esfuerzo[d.despues.esfuerzo]} (${textoDiferencia(d.dif, x)}${d.como === 'deshecho' ? `, ${x.deshecho}` : ''})`
     lineas.push(`  • ${x.linea(x.nivel[d.nivel], elegido, x.motivo[d.motivo])}`)
   }
-  return lineas
+  return [...lineas, ...lineasCalibracion(x)]
 }
 
 // ---------- Guardias: caché vencido y límites ----------
@@ -3355,6 +3473,11 @@ export const register: Register = (on, options) => {
     } catch {
       // Sin dato: el de fábrica, hasta el primer pedido.
     }
+    try {
+      ruta.calibracion = leerCalibracion(await $.store.get(CLAVE_CALIBRACION))
+    } catch {
+      // Sin dato: se empieza a medir.
+    }
     // Animación de Toki: un cuadro cada 600 ms mientras la franja esté visible.
     if (config.acompanante) {
       $.clock.every(600, () => {
@@ -3685,6 +3808,8 @@ export const register: Register = (on, options) => {
       if (medicion !== undefined && medicion.turno === e.turnId) {
         ruta.medicion = undefined
         void anotarDiagnostico($, lineaUso(medicion, e.isAborted))
+        // Un mensaje entero que Toki bajó de esfuerzo, o su testigo: a la calibración.
+        if (!e.isAborted && e.reason === 'answer') await registrarCalibracion($, ruta.plan, medicion, e.turnId)
       }
       // Lo que ahorró (o costó de más) este mensaje, medido, a la sesión, la semana y el total.
       await acreditar($)

@@ -569,6 +569,11 @@ export type TextosRuta = {
   subagentes: string
   modeloNoDisponible: (m: string) => string
   esfuerzoRestaurado: (esfuerzo: string) => string
+  /** Al bajar el esfuerzo, cuánta salida cuenta Toki como ahorrada, por tipo de mensaje. */
+  calibracion: (cada: number, meta: number) => string
+  celdaCalibracion: (modelo: string, nivel: string, desde: string, hacia: string, factor: string, detalle: string) => string
+  sinTestigos: (testigos: number, meta: number) => string
+  conTestigos: (medido: string, testigos: number, bajados: number, pedidosTestigo: string, pedidosBajado: string) => string
   porToki: string
   titulo: string
   cmd: string
@@ -592,7 +597,7 @@ export type TextosRuta = {
 }
 
 /** Lo que Toki hizo con el último mensaje (se ve en /toki-modelo). */
-export type Decision = 'ya-va-asi' | 'da-igual' | 'callado' | 'deshecho' | 'auto' | 'preguntar'
+export type Decision = 'ya-va-asi' | 'da-igual' | 'callado' | 'deshecho' | 'auto' | 'preguntar' | 'testigo'
 
 export type TextosSonnet = {
   titulo: string
@@ -640,6 +645,10 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     subagentes: 'Toki: los subagentes con encargos simples van en Sonnet (la mitad de precio; empiezan sin contexto, así que no se pierde caché).',
     modeloNoDisponible: m => `Toki: ${m} no respondió en esta cuenta; sigo con tu modelo y solo ajusto el esfuerzo.`,
     esfuerzoRestaurado: e => `Toki: esto resultó más largo de lo que parecía; lo que falta va con tu esfuerzo (${e}).`,
+    calibracion: (cada, meta) => `Al bajar el esfuerzo, la salida que Toki cuenta como ahorrada (1 de cada ${cada} mensajes va con tu esfuerzo, de testigo, hasta juntar ${meta}):`,
+    celdaCalibracion: (m, n, d, h, f, det) => `• ${m} · ${n}, ${d} → ${h}: ×${f} · ${det}`,
+    sinTestigos: (t, meta) => `${t} de ${meta} testigos; mientras tanto, la mitad de lo medido en pruebas`,
+    conTestigos: (m, t, b, pt, pb) => `medido ×${m} con ${t} ${t === 1 ? 'testigo' : 'testigos'} y ${b} ${b === 1 ? 'bajado' : 'bajados'} · pedidos por mensaje: ${pt} con tu esfuerzo, ${pb} bajado`,
     porToki: 'por Toki',
     titulo: 'Modelo y esfuerzo',
     cmd: 'Toki: cómo elige modelo y esfuerzo para cada mensaje (preguntar, siempre, automatico, no)',
@@ -666,6 +675,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
       deshecho: 'sin cambio (lo deshiciste antes)',
       auto: 'aplicado',
       preguntar: 'te pregunté',
+      testigo: 'sin cambio (testigo: mide cuánto ahorra bajar el esfuerzo)',
     },
     deshacerHecho: (m, e, n) => `Toki: deshecho. Vuelves a ${m} · ${e}, y no lo repito en esta sesión cuando el mensaje sea ${n}.`,
     nadaQueDeshacer: 'Toki: no hay ningún cambio de modelo o esfuerzo que deshacer.',
@@ -715,6 +725,10 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     subagentes: 'Toki: subagents with simple tasks run on Sonnet (half the price; they start with no context, so no cache is lost).',
     modeloNoDisponible: m => `Toki: ${m} did not answer on this account; keeping your model and only adjusting effort.`,
     esfuerzoRestaurado: e => `Toki: this turned out bigger than it looked; the rest goes with your effort (${e}).`,
+    calibracion: (cada, meta) => `When lowering effort, the output Toki counts as saved (1 in ${cada} messages keeps your effort as a control, until ${meta}):`,
+    celdaCalibracion: (m, n, d, h, f, det) => `• ${m} · ${n}, ${d} → ${h}: ×${f} · ${det}`,
+    sinTestigos: (t, meta) => `${t} of ${meta} controls; meanwhile, half of what tests measured`,
+    conTestigos: (m, t, b, pt, pb) => `measured ×${m} with ${t} ${t === 1 ? 'control' : 'controls'} and ${b} lowered · requests per message: ${pt} at your effort, ${pb} lowered`,
     porToki: 'by Toki',
     titulo: 'Model and effort',
     cmd: 'Toki: how it picks model and effort for each message (preguntar, siempre, automatico, no)',
@@ -741,6 +755,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
       deshecho: 'no change (you undid it before)',
       auto: 'applied',
       preguntar: 'asked you',
+      testigo: 'no change (control: measures what lowering effort saves)',
     },
     deshacerHecho: (m, e, n) => `Toki: undone. Back to ${m} · ${e}, and I won't repeat it this session for messages like this one (${n}).`,
     nadaQueDeshacer: 'Toki: there is no model or effort change to undo.',
