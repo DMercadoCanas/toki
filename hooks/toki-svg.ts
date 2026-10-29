@@ -6,13 +6,3 @@ export function tokiSvg(actividad: Actividad): string {
   return animacionSvg(actividad)
 }
 
-/** El anillo del contexto de la barra en la app: el arco crece con el %, y Toki va dentro. */
-export function anilloSvg(actividad: Actividad, pct: number | undefined): string {
-  const r = 25
-  const vuelta = 2 * Math.PI * r
-  const lleno = Math.max(0, Math.min(100, pct ?? 0)) / 100
-  const color = pct === undefined ? '#8f8d86' : pct >= 80 ? '#ef6a6a' : pct >= 50 ? '#e5a63d' : '#5fb37c'
-  const arco = lleno > 0 ? `<circle cx="28" cy="28" r="${r}" fill="none" stroke="${color}" stroke-width="4" stroke-linecap="round" stroke-dasharray="${(vuelta * lleno).toFixed(1)} ${vuelta.toFixed(1)}" transform="rotate(-90 28 28)"/>` : ''
-  const toki = tokiSvg(actividad).replace('<svg ', '<svg x="12" y="12" width="32" height="32" ')
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56"><title>Toki</title><circle cx="28" cy="28" r="${r}" fill="none" stroke="rgba(143,141,134,0.35)" stroke-width="4"/>${arco}${toki}</svg>`
-}
