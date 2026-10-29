@@ -16,9 +16,9 @@ Lista para el día que decidas enviarlo. Nada de esto se ha enviado.
 
 - [x] **Mascota decidida.** `.claude-plugin/icon.png` (1024×1024) y el banner del README (`assets/toki-banner.svg`) usan el Toki en píxeles de `hooks/toki-pixel.ts`, pasando la aspiradora. Ojo: el ícono del directorio se toma **una sola vez**, la primera vez que guardas o envías el plugin en el portal; cambiarlo después no cambia el del listado. Si la mascota cambia antes de enviar, regenera los dos.
 - [ ] Nombre permanente: `toki`. No se cambia nunca; para otra etiqueta se usa `displayName`.
-- [ ] `version` subida en `plugin.json` (ahora 0.17.3) y el mismo número en `VERSION` de `hooks/register.tsx`.
+- [ ] `version` subida en `plugin.json` (ahora 0.17.4) y el mismo número en `VERSION` de `hooks/register.tsx`.
 - [ ] `claude plugin validate --strict .` → `Validation passed` sin advertencias (hoy pasa).
-- [ ] `claude plugin test .` → todo verde (hoy 287/287).
+- [ ] `claude plugin test .` → todo verde (hoy 303/303).
 - [ ] Instalar desde el marketplace en una carpeta limpia y abrir una sesión: `claude plugin marketplace add DMercadoCanas/toki`, luego `claude plugin install toki@toki`.
 - [ ] Correr en el Mac los casos con Bash (necesitan el sandbox; el comando, con `-j 1`, está en `evals/README.md`), juntarlos con los demás (`python3 evals/benchmark.py evals/results/2026-10-22-sin-bash.json evals/results/bash.json`) y pegar la tabla en el README. Los casos sin Bash ya están medidos con 0.16.
 - [x] `homepage` y `repository` en `plugin.json` apuntan a `https://github.com/DMercadoCanas/toki`, igual que tu `origin` local.
