@@ -127,6 +127,8 @@ import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
 import type { TipoBusqueda } from './busquedas'
 import { conAcentos } from './palabras'
+import { anotarUsoMcp, armarDieta, cmdDieta, leerUsoMcp, textoDieta } from './dieta'
+import type { Dieta } from './dieta'
 import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
@@ -2134,6 +2136,8 @@ type DecisionRuta = {
 
 const CLAVE_MODO_RUTA = 'modoModeloEsfuerzo'
 const CLAVE_SONNET = 'sonnetPrimero'
+/** Cuándo se usó cada herramienta MCP, para /toki-dieta. */
+const CLAVE_USO_MCP = 'usoMcp'
 /** El esfuerzo que Claude Code usó para cada modelo sin que nadie lo fijara (el de tu organización), si no es el de fábrica. */
 const CLAVE_ESFUERZO = 'esfuerzoPorDefecto'
 /** Lo medido al bajar el esfuerzo, con sus testigos (`hooks/ahorro.ts`): vale entre sesiones. */
@@ -3490,6 +3494,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'toki-por-que', description: x.cmdPorQue })
     await $.command.register({ name: 'toki-modelo', description: xr().cmd, argumentHint: `preguntar | siempre | automatico | no | ${vivo.idioma === 'en' ? 'undo' : 'deshacer'}` })
     await $.command.register({ name: 'toki-sonnet', description: xr().sonnet.cmd, argumentHint: xr().sonnet.pista })
+    await $.command.register({ name: 'toki-dieta', description: cmdDieta(vivo.idioma) })
     await $.command.register({
       name: 'toki-semana',
       description: vivo.idioma === 'en' ? 'Toki: your weekly savings card' : 'Toki: tu tarjeta semanal de ahorro',
@@ -3509,6 +3514,12 @@ export const register: Register = (on, options) => {
       if (typeof guardado === 'boolean') ruta.sonnetPrimero = guardado
     } catch {
       // Sin preferencia guardada: la de /plugin.
+    }
+    try {
+      // El uso de MCP se cuenta desde la primera sesión con esta versión.
+      if ((await $.store.get(CLAVE_USO_MCP)) === undefined) await $.store.set(CLAVE_USO_MCP, leerUsoMcp(undefined, await $.clock.now()))
+    } catch {
+      // Sin store: /toki-dieta cuenta desde hoy.
     }
     try {
       const guardada = await $.store.get(CLAVE_ENTREVISTA)
@@ -4280,6 +4291,42 @@ export const register: Register = (on, options) => {
     }
     const s = (await read($, sesion)).entrevista ?? { con: 0, conCorr: 0, sin: 0, sinCorr: 0, consejos: 0 }
     return { text: [...x.estado(entrevista.modo, s), '', x.uso].join('\n') }
+  })
+
+  // Toda llamada a MCP, también de subagentes: /toki-dieta dice qué servidor no usaste.
+  on('tool.call', { tool: /^mcp__/ }, async ($, e, next) => {
+    try {
+      const ahora = await $.clock.now()
+      await $.store.set(CLAVE_USO_MCP, anotarUsoMcp(leerUsoMcp(await $.store.get(CLAVE_USO_MCP), ahora), String(e.tool), ahora))
+    } catch {
+      // Es solo estadística.
+    }
+    return next(e)
+  })
+
+  on('command.run', { command: 'toki-dieta' }, async $ => {
+    const ahora = await $.clock.now()
+    const uso = leerUsoMcp(await $.store.get(CLAVE_USO_MCP).catch(() => undefined), ahora)
+    let dieta: Dieta | undefined
+    try {
+      const desglose = (await $.session.usage({ breakdown: 'summary' })).context.breakdown
+      if (desglose !== undefined) dieta = armarDieta(desglose, uso)
+    } catch {
+      // Sin desglose: lo dice.
+    }
+    const modelo = ruta.modeloPrincipal ?? vivo.modelo
+    const familia = familiaDe(modelo) ?? 'opus'
+    const pedidosSemana = (await leerSemanasDe($).catch(() => ({}) as Semanas))[lunesDe(ahora)]?.pedidos ?? 0
+    const text = textoDieta(dieta, {
+      ahora,
+      idioma: vivo.idioma,
+      modelo: modelo !== undefined ? nombreCorto(modelo) : 'Opus',
+      desde: uso.desde,
+      pedidosSemana,
+      lectura: t => valorLectura(t, familia),
+      escritura: t => valorEscritura(t, familia, ttl1hSesion()),
+    })
+    return { text }
   })
 
   on('command.run', { command: 'toki-mapa' }, async $ => {
