@@ -4287,9 +4287,9 @@ export const register: Register = (on, options) => {
         {e.surface !== 'terminal' &&
           (() => {
             return (
-              <Box flexDirection="row" gap={2} alignItems="center" marginBottom={1}>
+              <Box flexDirection="row" flexWrap="nowrap" gap={2} alignItems="center" marginBottom={1}>
                 {mascotaGrafica($, e, actividad, 120)}
-                <Box flexDirection="column" flexGrow={1}>
+                <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
                   <Text color="claude" bold>
                     Toki
                   </Text>
@@ -4685,7 +4685,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
     const cuerpo = (
-      <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
         {cabecera}
         {filaAviso}
         {filaMedidas}
@@ -4695,8 +4695,9 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" borderStyle="round" borderColor={destello ? 'warning' : dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : 'claude'} paddingX={1}>
         {grafico
           ? (() => {
+              // Sin nowrap ni minWidth 0, la app de escritorio deja el texto debajo del robot.
               return (
-                <Box flexDirection="row" gap={2} alignItems="center">
+                <Box flexDirection="row" flexWrap="nowrap" gap={2} alignItems="center">
                   {mascotaGrafica($, e, actividad, 64)}
                   {cuerpo}
                 </Box>
