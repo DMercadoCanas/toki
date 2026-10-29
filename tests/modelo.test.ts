@@ -1390,3 +1390,24 @@ describe('calibrar lo que ahorra bajar el esfuerzo', () => {
     expect(Object.keys(guardado.get('calibracionEsfuerzo') ?? {})).toEqual(['claude-opus-5-5|normal|high>medium'])
   })
 })
+
+describe('costo por tarea resuelta', () => {
+  test('una tarea va de un pedido nuevo al siguiente: lo que costó y sus correcciones van a la semana', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const guardado = new Map<string, unknown>()
+    mundo(on, { guardado })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    await mensaje($, 't1', 'no, eso no funciona, sigue fallando', 1, 'Listo.', 'high')
+    await mensaje($, 't2', 'dale', 1, 'Listo.', 'high')
+    await mensaje($, 't3', COLUMNA, 1, 'Listo.', 'high')
+    await $.session.end({ reason: 'other', sessionId: 's1', resume: {} } as never)
+    const semanas = Object.values((guardado.get('semanas') ?? {}) as Record<string, { tareas: number; tareasUsd: number; tareasCorr: number; gastoUsd: number }>)
+    expect(semanas.length).toBe(1)
+    const [s] = semanas
+    expect(s?.tareas).toBe(2)
+    expect(s?.tareasCorr).toBe(1)
+    expect(s?.tareasUsd).toBeGreaterThan(0)
+    expect(Math.abs((s?.tareasUsd ?? 0) - (s?.gastoUsd ?? 0))).toBeLessThan(1e-9)
+  })
+})

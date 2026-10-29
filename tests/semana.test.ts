@@ -15,6 +15,16 @@ const semana = (r: Partial<ResumenSemana>): Semanas => ({ '2026-10-19': { ...SEM
 const HABITOS: Partial<ResumenSemana> = { pedidos: 34, pedidosLargos: 4, sesiones: 2, mensajes: 10, correcciones: 1, frios: 1 }
 
 describe('tarjeta semanal (puro)', () => {
+  test('costo por tarea: cuántas, lo que costó cada una y sus correcciones', () => {
+    let s = sumarSemana({}, MIE, { tarea: { usd: 0.3, correcciones: 0 } })
+    s = sumarSemana(s, MIE, { tarea: { usd: 0.5, correcciones: 3 } })
+    expect(s['2026-10-19']).toMatchObject({ tareas: 2, tareasUsd: 0.8, tareasCorr: 3 })
+    expect(leerSemanas(JSON.parse(JSON.stringify(s)))['2026-10-19']?.tareas).toBe(2)
+    expect(tarjetaSemana(s, '2026-10-19', MIE, {})).toContain('2 tareas: ~$0.40 por tarea · 1.5 correcciones por tarea')
+    expect(tarjetaSemana(s, '2026-10-19', MIE, {}, { idioma: 'en' })).toContain('2 tasks: ~$0.40 per task · 1.5 corrections per task')
+    expect(tarjetaSemana(semana({ mensajes: 3 }), '2026-10-19', MIE, {})).not.toContain('por tarea')
+  })
+
   test('la semana empieza el lunes, también un domingo', () => {
     expect(lunesDe(MIE)).toBe('2026-10-19')
     expect(lunesDe(MIE + 4 * DIA)).toBe('2026-10-19') // domingo 25

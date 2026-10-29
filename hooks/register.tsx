@@ -1132,6 +1132,7 @@ async function acreditar($: $): Promise<void> {
     if (real > 0) {
       await update($, sesion, s => ({ ...s, gastoMedidoUsd: (s.gastoMedidoUsd ?? 0) + real }))
       await alaSemana($, { gastoUsd: real })
+      if (tareaAbierta !== undefined) tareaAbierta.usd += real
     }
     await sumarRuteo($, sin - real)
   } catch {
@@ -3133,10 +3134,30 @@ async function mensajeFrio($: $): Promise<number | undefined> {
   return f === undefined ? undefined : vivo.ultimoUsoCache
 }
 
+/** La tarea en curso: desde un pedido nuevo hasta el siguiente (o el fin de la conversación). */
+let tareaAbierta: { usd: number; correcciones: number } | undefined
+
+/** Un pedido nuevo con sustancia, con la misma regla que la entrevista: ni seguimiento, ni corrección, ni algo simple. */
+function empiezaTarea(texto: string): boolean {
+  const l = nivelHeuristico(texto, 'normal')
+  return !esCorreccion(texto) && l.nivel !== 'trivial' && l.motivo !== 'seguimiento' && l.motivo !== 'cierre' && l.motivo !== 'atascado' && texto.split(/\s+/).length >= 8
+}
+
+/** La tarea en curso pasa a la tarjeta con lo que costó y sus correcciones. */
+async function cerrarTarea($: $): Promise<void> {
+  const t = tareaAbierta
+  tareaAbierta = undefined
+  if (t !== undefined) await alaSemana($, { tarea: t })
+}
+
 /** Un mensaje tuyo que sale hacia Claude: a la tarjeta, con si corregía lo anterior y si salió frío. */
 async function contarMensaje($: $, textoCrudo: string, frio?: number): Promise<void> {
   const texto = quitarEtiquetasDeSistema(textoCrudo)
   if (texto === '' || texto.startsWith('/')) return
+  if (empiezaTarea(texto)) {
+    await cerrarTarea($)
+    tareaAbierta = { usd: 0, correcciones: 0 }
+  } else if (tareaAbierta !== undefined && esCorreccion(texto)) tareaAbierta.correcciones += 1
   const contarFrio = frio !== undefined && frio !== guardia.frioContado
   if (contarFrio) guardia.frioContado = frio
   modeloPorContar.pendiente = true
@@ -3547,6 +3568,7 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     // Lo medido de esta conversación se acredita antes de olvidarla.
     await acreditar($)
+    await cerrarTarea($)
     await guardarUltimoPedido($)
     await terminarLimpio($, 'terminó la conversación')
     reiniciarSeguimiento()

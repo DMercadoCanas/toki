@@ -58,6 +58,10 @@ export type ResumenSemana = {
   consejos: number
   /** Mensajes que salieron con el caché vencido y mucho contexto: cada uno reescribe la conversación. */
   frios: number
+  /** Tareas cerradas (de un pedido nuevo al siguiente), lo que costaron y sus correcciones. */
+  tareas: number
+  tareasUsd: number
+  tareasCorr: number
 }
 
 export type Semanas = Record<string, ResumenSemana> // lunes 'AAAA-MM-DD' → resumen
@@ -87,6 +91,9 @@ export const SEMANA_VACIA: ResumenSemana = {
   entrevistas: { con: 0, conCorr: 0, sin: 0, sinCorr: 0 },
   consejos: 0,
   frios: 0,
+  tareas: 0,
+  tareasUsd: 0,
+  tareasCorr: 0,
 }
 
 /** Una semana vacía con sus propios objetos (SEMANA_VACIA no se toca nunca). */
@@ -149,6 +156,9 @@ function leerResumen(valor: unknown): ResumenSemana {
     entrevistas: { con: e.con ?? 0, conCorr: e.conCorr ?? 0, sin: e.sin ?? 0, sinCorr: e.sinCorr ?? 0 },
     consejos: Math.max(0, numero(v['consejos'])),
     frios: Math.max(0, numero(v['frios'])),
+    tareas: Math.max(0, numero(v['tareas'])),
+    tareasUsd: Math.max(0, numero(v['tareasUsd'])),
+    tareasCorr: Math.max(0, numero(v['tareasCorr'])),
   }
 }
 
@@ -189,6 +199,8 @@ export type Delta = {
   entrevista?: CampoEntrevista
   consejos?: number
   frios?: number
+  /** Una tarea cerrada: lo que costó y cuántas correcciones tuvo. */
+  tarea?: { usd: number; correcciones: number }
 }
 
 /** Suma a la semana de `ms` y guarda solo las últimas 12. */
@@ -221,6 +233,9 @@ export function sumarSemana(semanas: Semanas, ms: number, d: Delta): Semanas {
     entrevistas,
     consejos: s.consejos + numero(d.consejos),
     frios: s.frios + numero(d.frios),
+    tareas: s.tareas + (d.tarea !== undefined ? 1 : 0),
+    tareasUsd: s.tareasUsd + Math.max(0, numero(d.tarea?.usd)),
+    tareasCorr: s.tareasCorr + Math.max(0, numero(d.tarea?.correcciones)),
   }
   const siguiente: Semanas = { ...semanas, [clave]: nuevo }
   const claves = Object.keys(siguiente).sort()
@@ -347,6 +362,7 @@ const ES = {
   proporcion: (pct: string) => `Lo que Toki evitó equivale al ${pct}% de lo que Claude leyó.`,
   porModelo: (lista: string) => `Mensajes por modelo: ${lista}`,
   pedidosGrandes: (partes: string) => `Pedidos grandes: ${partes}`,
+  porTarea: (n: number, u: string, c: string) => `${n} ${n === 1 ? 'tarea' : 'tareas'}: ${u} por tarea · ${c} correcciones por tarea`,
   entrevistaCon: (n: number, r: string) => `${n} con preguntas antes (${r} correcciones por pedido)`,
   entrevistaSin: (n: number, r: string, ambos: boolean) => (ambos ? `${n} sin preguntas (${r} por pedido)` : `${n} sin preguntas antes (${r} correcciones por pedido)`),
   consejosDados: (n: number) => `${n} ${n === 1 ? 'consejo' : 'consejos'} para pedir mejor`,
@@ -415,6 +431,7 @@ const EN: Textos = {
   proporcion: pct => `What Toki avoided equals ${pct}% of what Claude read.`,
   porModelo: lista => `Messages per model: ${lista}`,
   pedidosGrandes: partes => `Big requests: ${partes}`,
+  porTarea: (n, u, c) => `${n} ${n === 1 ? 'task' : 'tasks'}: ${u} per task · ${c} corrections per task`,
   entrevistaCon: (n, r) => `${n} with questions first (${r} corrections each)`,
   entrevistaSin: (n, r, ambos) => (ambos ? `${n} without (${r} each)` : `${n} without questions first (${r} corrections each)`),
   consejosDados: n => `${n} ${n === 1 ? 'tip' : 'tips'} on asking better`,
@@ -599,6 +616,7 @@ function piezas(semanas: Semanas, lunes: string, ms: number, historial: Historia
   }
   const modelos = FAMILIAS.filter(f => (s.porModelo[f] ?? 0) > 0).sort((a, b) => (s.porModelo[b] ?? 0) - (s.porModelo[a] ?? 0))
   if (modelos.length > 0) uso.push(x.porModelo(modelos.map(f => `${NOMBRE_FAMILIA[f]} ${s.porModelo[f] ?? 0}`).join(' · ')))
+  if (s.tareas > 0) uso.push(x.porTarea(s.tareas, cifraUsd(s.tareasUsd / s.tareas), (s.tareasCorr / s.tareas).toFixed(1)))
   const entrevistas = lineaEntrevistas(s, x)
   if (entrevistas !== undefined) uso.push(entrevistas)
   // Mejor día de la semana, con el historial diario.
