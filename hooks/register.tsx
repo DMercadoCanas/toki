@@ -121,7 +121,7 @@ import {
   totalGasto,
 } from './gasto'
 import type { Gasto, Limpio, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
-import { tokiSvg } from './toki-svg'
+import { anilloSvg, tokiSvg } from './toki-svg'
 import { TRAMO_GENERADO, textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
@@ -3149,6 +3149,38 @@ async function compactarYReenviar($: $, texto: string, conMemoria: boolean): Pro
   })
 }
 
+/**
+ * El botón «Compactar ahora». Nuestro hook de session.compact no corre en nuestra propia llamada:
+ * la memoria y la mascota van aquí. Si un hook la veta o Claude está en un turno, lo dice y deja /compact en el cuadro.
+ */
+async function compactarDesdeBarra($: $): Promise<void> {
+  if (vivo.actividad === 'compactando') return
+  const anterior = vivo.actividad
+  vivo.actividad = 'compactando'
+  $.ui.invalidate('ui.render')
+  let motivo: string | undefined
+  try {
+    if (config.memoria) await guardarMemoria($)
+    const conMemoria = config.memoria && !estaVacia(vivo.memoria)
+    const r = await $.session.compact(conMemoria ? { instructions: instruccionesDeCompactacion(vivo.memoria, vivo.idioma) } : {})
+    if (!('skip' in r)) {
+      await registrarCompactacion($, 'resumen')
+      await refrescarUso($, true)
+      return
+    }
+    motivo = r.skip
+  } catch (err) {
+    $.ui.log(`Toki, compactar desde la barra: ${String(err)}`, { to: 'debug' })
+  } finally {
+    vivo.actividad = anterior === 'compactando' ? 'tranquilo' : anterior
+    $.ui.invalidate('ui.render')
+  }
+  void anotarDiagnostico($, `compactar desde la barra: no se pudo${motivo ? ` (${motivo})` : ''}`)
+  // El /compact de siempre, a mano: pasa por donde pasa el tuyo.
+  const enCuadro = await $.prompt.fill({ text: '/compact', mode: 'replace' }).then(r => r.isFilled, () => false)
+  $.ui.toast(tx().noCompactoBoton(motivo, enCuadro), { timeoutMs: 10_000 })
+}
+
 // ---------- Tarjeta semanal: tus mensajes ----------
 
 /** El modelo de cada mensaje tuyo se cuenta en su primer pedido: el que de verdad respondió. */
@@ -4713,7 +4745,7 @@ export const register: Register = (on, options) => {
         </Text>,
       ]),
       chip('cache', [
-        <Text dimColor>· {x.cache}</Text>,
+        <Text dimColor>{grafico ? '' : '· '}{x.cache}</Text>,
         <Text color={colorCache}>
           {relojCache(cacheRestante, ttl)} {cacheTexto}
         </Text>,
@@ -4742,7 +4774,7 @@ export const register: Register = (on, options) => {
           ])
         : null,
     ]
-    const botonCompactar = dicho.accion === 'compactar' ? <Button key="compactar" variant="primary" hotkey="c" label={x.compactarAhora} onPress={() => void $.session.compact({})} /> : null
+    const botonCompactar = dicho.accion === 'compactar' ? <Button key="compactar" variant="primary" hotkey="c" label={vivo.actividad === 'compactando' ? x.compactando : x.compactarAhora} onPress={() => void compactarDesdeBarra($)} /> : null
     const botonLuego =
       dicho.accion === 'compactar' && (pct ?? 0) < 70 ? (
         <Button
@@ -4762,51 +4794,58 @@ export const register: Register = (on, options) => {
         {botonOcultar}
       </Box>
     )
-    // En la app cada cosa va en su fila: la frase entera, los botones aparte y los controles arriba, sin chocar.
+    // En la app: Toki dentro del anillo del contexto; a su lado, título, frase, botones y las demás cifras.
+    const { Svg } = $.ui.resolve(e)
+    // La primera medida es el contexto: ya la dicen el anillo y el título.
+    const otrasMedidas = medidas.slice(1)
     const cuerpoGrafico = (
-      <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} rowGap="xs">
-        <Box flexDirection="row" flexWrap="nowrap" columnGap={1} alignItems="center">
-          <Box flexShrink={0}>
+      <Box flexDirection="row" flexWrap="nowrap" gap="md" alignItems="center">
+        <Box flexShrink={0}>
+          <Svg source={anilloSvg(actividad, pct)} alt={`${cuadro(actividad, 0)} ${pctTexto}`} width={56} height={56} />
+        </Box>
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} rowGap="xs">
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap="xs" alignItems="center">
             <Text color="claude" bold>
               Toki
             </Text>
-          </Box>
-          {chipTope !== undefined && (
-            <Box flexShrink={0}>
-              <Text color={chipTope.color}>· {chipTope.texto}</Text>
-            </Box>
-          )}
-          {chipModelo !== undefined && (
-            <Box flexShrink={1} minWidth={0}>
-              <Text dimColor wrap="truncate-end">
-                · {chipModelo}
-              </Text>
-            </Box>
-          )}
-          <Box flexGrow={1} />
-          {controles}
-        </Box>
-        <Text color={colorFrase} wrap="wrap">
-          {dicho.texto}
-        </Text>
-        {botonCompactar !== null && (
-          <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
-            {botonCompactar}
-            {botonLuego}
-          </Box>
-        )}
-        {avisoRuta !== undefined && (
-          <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
-            <Text color="warning" bold={destello} wrap="wrap">
-              {avisoRuta.texto}
+            <Text dimColor>
+              {x.contexto}{' '}
+              <Text color={colorDePorcentaje(pct)}>{pctTexto}</Text>
+              {uso !== undefined ? ` ${x.deVentana(formatearTokens(uso.ventana))}` : ''}
             </Text>
-            {botonDeshacer}
+            {chipTope !== undefined && <Text color={chipTope.color}>· {chipTope.texto}</Text>}
+            {chipModelo !== undefined && (
+              <Box flexShrink={1} minWidth={0}>
+                <Text dimColor wrap="truncate-end">
+                  · {chipModelo}
+                </Text>
+              </Box>
+            )}
           </Box>
-        )}
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap="xs" alignItems="center">
-          {medidas}
-          <Box flexGrow={1} />
-          <Button key="detalles" plain dimColor label={verDetalles ? x.menos : x.mas} onPress={() => update($, detalles, v => !v)} />
+          <Text color={dicho.tono === 'peligro' ? 'text' : colorFrase} wrap="wrap">
+            {dicho.texto}
+          </Text>
+          {botonCompactar !== null && (
+            <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
+              {botonCompactar}
+              {botonLuego}
+            </Box>
+          )}
+          {avisoRuta !== undefined && (
+            <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
+              <Text color="warning" bold={destello} wrap="wrap">
+                {avisoRuta.texto}
+              </Text>
+              {botonDeshacer}
+            </Box>
+          )}
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap="xs" alignItems="center">
+            {otrasMedidas}
+          </Box>
+        </Box>
+        <Box flexDirection="column" flexShrink={0} alignSelf="flex-start" alignItems="flex-end" rowGap="xs">
+          {controles}
+          <Button key="detalles" plain dimColor label={verDetalles ? '▴' : '▾'} onPress={() => update($, detalles, v => !v)} />
         </Box>
       </Box>
     )
@@ -4856,16 +4895,8 @@ export const register: Register = (on, options) => {
       </Box>
     )
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={destello ? 'warning' : dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : 'claude'} paddingX={1} paddingY={grafico ? 'xs' : 0}>
-        {grafico ? (
-          // Sin nowrap ni minWidth 0, la app de escritorio deja el texto debajo del robot.
-          <Box flexDirection="row" flexWrap="nowrap" gap="md" alignItems="flex-start">
-            <Box flexShrink={0}>{mascotaGrafica($, e, actividad, 56)}</Box>
-            {cuerpoGrafico}
-          </Box>
-        ) : (
-          cuerpo
-        )}
+      <Box flexDirection="column" borderStyle="round" borderColor={destello ? 'warning' : dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : grafico ? 'subtle' : 'claude'} paddingX={1} paddingY={grafico ? 'xs' : 0} rowGap={grafico ? 'xs' : 0}>
+        {grafico ? cuerpoGrafico : cuerpo}
         {verDetalles && (
           <Box flexDirection="row" gap={1}>
             <Text dimColor wrap="wrap">

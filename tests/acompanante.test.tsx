@@ -7,7 +7,7 @@ const BANDA = {
 } as const
 
 describe('acompañante', () => {
-  test('en la app, con el contexto alto: la frase entera en su fila, el botón aparte y los controles arriba', async ($, on) => {
+  test('en la app, con el contexto alto: Toki en el anillo, la frase entera, el botón debajo y los controles al final', async ($, on) => {
     mock.clock(on, { now: 1_000_000 })
     mock.store(on)
     on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 160_000, window: 200_000, percent: 80 }, rateLimits: [] } }) as never)
@@ -16,9 +16,48 @@ describe('acompañante', () => {
     expect(frase).toBeDefined()
     expect(JSON.stringify(frase)).toContain('"wrap":"wrap"')
     const arbol = JSON.stringify(await ui.drawn())
-    // Los controles van con el título, antes que la frase; el botón de compactar, después.
-    expect(arbol.indexOf('"tamano"')).toBeLessThan(arbol.indexOf('Contexto al'))
+    // El anillo marca el contexto en rojo; la frase, después el botón y al final los controles.
+    const anillo = await ui.find({ type: 'Svg' })
+    expect(JSON.stringify(anillo)).toContain('#ef6a6a')
     expect(arbol.indexOf('"compactar"')).toBeGreaterThan(arbol.indexOf('Contexto al'))
+    expect(arbol.indexOf('"tamano"')).toBeGreaterThan(arbol.indexOf('"compactar"'))
+    await ui.unmount()
+  })
+
+  test('«Compactar ahora» compacta; si un hook lo veta o falla, lo dice y deja /compact en el cuadro', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    mock.store(on)
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 160_000, window: 200_000, percent: 80 }, rateLimits: [] } }) as never)
+    let respuesta: 'compacta' | 'veta' | 'falla' = 'compacta'
+    let compactos = 0
+    on('session.compact', () => {
+      compactos += 1
+      if (respuesta === 'falla') throw new Error('hay un turno en curso')
+      return (respuesta === 'veta' ? { skip: 'lo bloquea la política de la empresa' } : { messages: [{ role: 'user', text: 'Resumen.', toolUses: [] }] }) as never
+    })
+    const cuadro: string[] = []
+    on('prompt.fill', ($, e) => {
+      cuadro.push(e.text)
+      return { isFilled: true } as never
+    })
+    const avisos: string[] = []
+    on('ui.toast', ($, e) => {
+      avisos.push(e.text)
+      return { value: undefined }
+    })
+    const ui = await $.ui.mount({ ...BANDA, surface: 'desktop' })
+    await ui.press({ key: 'compactar' })
+    expect(compactos).toBe(1)
+    expect(cuadro).toEqual([])
+    respuesta = 'veta'
+    await ui.press({ key: 'compactar' })
+    expect(compactos).toBe(2)
+    expect(cuadro).toEqual(['/compact'])
+    expect(avisos.at(-1)).toBe('Toki: no pude compactar desde la barra (lo bloquea la política de la empresa). Dejé /compact en el cuadro: pulsa Enter.')
+    respuesta = 'falla'
+    await ui.press({ key: 'compactar' })
+    expect(cuadro).toEqual(['/compact', '/compact'])
+    expect(avisos.at(-1)).toBe('Toki: no pude compactar desde la barra. Dejé /compact en el cuadro: pulsa Enter.')
     await ui.unmount()
   })
 
@@ -29,7 +68,8 @@ describe('acompañante', () => {
       const ui = await $.ui.mount({ ...BANDA, surface })
       expect(await ui.find({ type: 'Text', text: /Toki/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /Todo en orden/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /░/ })).toBeDefined()
+      // En la terminal el contexto es una barra de texto; en la app, el anillo alrededor de Toki.
+      if (surface === 'terminal') expect(await ui.find({ type: 'Text', text: /░/ })).toBeDefined()
       expect(await ui.find({ key: 'ocultar' })).toBeDefined()
       expect(await ui.find({ key: 'detalles' })).toBeDefined()
       if (surface === 'desktop') expect(await ui.find({ type: 'Svg' })).toBeDefined()

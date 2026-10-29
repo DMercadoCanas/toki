@@ -75,6 +75,8 @@ export type Textos = {
   menos: string
   en30min: string
   compactarAhora: string
+  compactando: string
+  noCompactoBoton: (motivo: string | undefined, enCuadro: boolean) => string
   sesion: string
   llamadas: string
   salidasCompactadas: string
@@ -255,6 +257,9 @@ const es: Textos = {
   menos: '▾ menos',
   en30min: 'en 30 min',
   compactarAhora: 'Compactar ahora',
+  compactando: 'Compactando…',
+  noCompactoBoton: (motivo, enCuadro) =>
+    `Toki: no pude compactar desde la barra${motivo ? ` (${motivo})` : ''}. ${enCuadro ? 'Dejé /compact en el cuadro: pulsa Enter.' : 'Escribe /compact.'}`,
   sesion: 'sesión',
   llamadas: 'llamadas',
   salidasCompactadas: 'salidas compactadas',
@@ -470,6 +475,9 @@ const en: Textos = {
   menos: '▾ less',
   en30min: 'in 30 min',
   compactarAhora: 'Compact now',
+  compactando: 'Compacting…',
+  noCompactoBoton: (motivo, enCuadro) =>
+    `Toki: couldn't compact from the band${motivo ? ` (${motivo})` : ''}. ${enCuadro ? '/compact is in the box: press Enter.' : 'Type /compact.'}`,
   sesion: 'session',
   llamadas: 'calls',
   salidasCompactadas: 'outputs compacted',
