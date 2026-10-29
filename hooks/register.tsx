@@ -121,7 +121,7 @@ import {
   totalGasto,
 } from './gasto'
 import type { Gasto, Limpio, Relecturas, Repetida, Temprana, UsoPedido } from './gasto'
-import { tokiSvg } from './toki-svg'
+import { anilloSvg, tokiSvg } from './toki-svg'
 import { TRAMO_GENERADO, textosGenerados, tipoGenerado } from './generados'
 import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
@@ -4745,7 +4745,7 @@ export const register: Register = (on, options) => {
         </Text>,
       ]),
       chip('cache', [
-        <Text dimColor>· {x.cache}</Text>,
+        <Text dimColor>{grafico ? '' : '· '}{x.cache}</Text>,
         <Text color={colorCache}>
           {relojCache(cacheRestante, ttl)} {cacheTexto}
         </Text>,
@@ -4794,67 +4794,58 @@ export const register: Register = (on, options) => {
         {botonOcultar}
       </Box>
     )
-    // En la app: una fila de estado que no se mueve, y arriba un aviso aparte solo cuando hay algo que hacer.
-    const hayAviso = botonCompactar !== null || avisoRuta !== undefined || dicho.tono === 'peligro' || dicho.tono === 'aviso'
-    const aviso = hayAviso ? (
-      <Box flexDirection="column" rowGap="xs" paddingX={1} paddingY="xs" backgroundColor={dicho.tono === 'peligro' ? 'diffRemovedDimmed' : undefined}>
-        <Box flexDirection="row" flexWrap="nowrap" columnGap={1} alignItems="flex-start">
-          <Box flexShrink={0}>
-            <Text color={dicho.tono === 'peligro' ? 'error' : 'warning'}>⚠</Text>
-          </Box>
-          <Box flexGrow={1} flexShrink={1} minWidth={0}>
-            <Text color="text" wrap="wrap">
-              {dicho.texto}
-            </Text>
-          </Box>
-        </Box>
-        {botonCompactar !== null && (
-          <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
-            {botonCompactar}
-            {botonLuego}
-          </Box>
-        )}
-        {avisoRuta !== undefined && (
-          <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
-            <Text color="warning" bold={destello} wrap="wrap">
-              {avisoRuta.texto}
-            </Text>
-            {botonDeshacer}
-          </Box>
-        )}
-      </Box>
-    ) : null
+    // En la app: Toki dentro del anillo del contexto; a su lado, título, frase, botones y las demás cifras.
+    const { Svg } = $.ui.resolve(e)
+    // La primera medida es el contexto: ya la dicen el anillo y el título.
+    const otrasMedidas = medidas.slice(1)
     const cuerpoGrafico = (
-      <Box flexDirection="column" rowGap="xs">
-        {aviso}
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap="xs" alignItems="center">
-          <Box flexDirection="row" flexWrap="nowrap" columnGap={1} alignItems="center" flexGrow={1} flexShrink={1} minWidth={0}>
-            <Box flexShrink={0}>{mascotaGrafica($, e, actividad, 22)}</Box>
-            <Box flexShrink={0}>
-              <Text color="claude" bold>
-                Toki
-              </Text>
-            </Box>
-            {!hayAviso && (
+      <Box flexDirection="row" flexWrap="nowrap" gap="md" alignItems="center">
+        <Box flexShrink={0}>
+          <Svg source={anilloSvg(actividad, pct)} alt={`${cuadro(actividad, 0)} ${pctTexto}`} width={84} height={84} />
+        </Box>
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} rowGap="xs">
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap="xs" alignItems="center">
+            <Text color="claude" bold>
+              Toki
+            </Text>
+            <Text dimColor>
+              {x.contexto} <Text color={colorDePorcentaje(pct)}>{pctTexto}</Text>
+              {uso !== undefined ? ` ${x.deVentana(formatearTokens(uso.ventana))}` : ''}
+            </Text>
+            {chipTope !== undefined && <Text color={chipTope.color}>· {chipTope.texto}</Text>}
+            {chipModelo !== undefined && (
               <Box flexShrink={1} minWidth={0}>
                 <Text dimColor wrap="truncate-end">
-                  {dicho.texto}
+                  · {chipModelo}
                 </Text>
               </Box>
             )}
           </Box>
-          {medidas}
-          {chipTope !== undefined && <Text color={chipTope.color}>· {chipTope.texto}</Text>}
-          <Box flexDirection="row" flexShrink={0} gap={1}>
-            <Button key="detalles" plain dimColor label={verDetalles ? '▴' : '▾'} onPress={() => update($, detalles, v => !v)} />
-            {controles}
+          <Text color={dicho.tono === 'peligro' ? 'text' : colorFrase} wrap="wrap">
+            {dicho.texto}
+          </Text>
+          {botonCompactar !== null && (
+            <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
+              {botonCompactar}
+              {botonLuego}
+            </Box>
+          )}
+          {avisoRuta !== undefined && (
+            <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
+              <Text color="warning" bold={destello} wrap="wrap">
+                {avisoRuta.texto}
+              </Text>
+              {botonDeshacer}
+            </Box>
+          )}
+          <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap="xs" alignItems="center">
+            {otrasMedidas}
           </Box>
         </Box>
-        {chipModelo !== undefined && !hayAviso && (
-          <Text dimColor wrap="truncate-end">
-            {chipModelo}
-          </Text>
-        )}
+        <Box flexDirection="column" flexShrink={0} alignSelf="flex-start" alignItems="flex-end" rowGap="xs">
+          {controles}
+          <Button key="detalles" plain dimColor label={verDetalles ? '▴' : '▾'} onPress={() => update($, detalles, v => !v)} />
+        </Box>
       </Box>
     )
     const cabecera = (
@@ -4903,7 +4894,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={destello ? 'warning' : dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : grafico ? 'subtle' : 'claude'} paddingX={1} paddingY={grafico ? 'xs' : 0} rowGap={grafico ? 'xs' : 0}>
+      <Box flexDirection="column" borderStyle={grafico ? undefined : 'round'} borderColor={destello ? 'warning' : dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : grafico ? 'subtle' : 'claude'} paddingX={grafico ? 0 : 1} paddingY={grafico ? 'xs' : 0} rowGap={grafico ? 'xs' : 0}>
         {grafico ? cuerpoGrafico : cuerpo}
         {verDetalles && (
           <Box flexDirection="row" gap={1}>

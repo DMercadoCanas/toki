@@ -7,7 +7,7 @@ const BANDA = {
 } as const
 
 describe('acompañante', () => {
-  test('en la app, con el contexto alto: el aviso aparte con la frase entera y el botón; la fila de estado debajo', async ($, on) => {
+  test('en la app, con el contexto alto: Toki en el anillo, la frase entera, el botón debajo y los controles al final', async ($, on) => {
     mock.clock(on, { now: 1_000_000 })
     mock.store(on)
     on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 160_000, window: 200_000, percent: 80 }, rateLimits: [] } }) as never)
@@ -16,7 +16,9 @@ describe('acompañante', () => {
     expect(frase).toBeDefined()
     expect(JSON.stringify(frase)).toContain('"wrap":"wrap"')
     const arbol = JSON.stringify(await ui.drawn())
-    // El aviso va primero (frase y botón); la fila de estado con los controles, después.
+    // El anillo marca el contexto en rojo; la frase, después el botón y al final los controles.
+    const anillo = await ui.find({ type: 'Svg' })
+    expect(JSON.stringify(anillo)).toContain('#ef6a6a')
     expect(arbol.indexOf('"compactar"')).toBeGreaterThan(arbol.indexOf('Contexto al'))
     expect(arbol.indexOf('"tamano"')).toBeGreaterThan(arbol.indexOf('"compactar"'))
     await ui.unmount()
@@ -66,7 +68,8 @@ describe('acompañante', () => {
       const ui = await $.ui.mount({ ...BANDA, surface })
       expect(await ui.find({ type: 'Text', text: /Toki/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /Todo en orden/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /░/ })).toBeDefined()
+      // En la terminal el contexto es una barra de texto; en la app, el anillo alrededor de Toki.
+      if (surface === 'terminal') expect(await ui.find({ type: 'Text', text: /░/ })).toBeDefined()
       expect(await ui.find({ key: 'ocultar' })).toBeDefined()
       expect(await ui.find({ key: 'detalles' })).toBeDefined()
       if (surface === 'desktop') expect(await ui.find({ type: 'Svg' })).toBeDefined()
