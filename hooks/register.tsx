@@ -4742,6 +4742,74 @@ export const register: Register = (on, options) => {
           ])
         : null,
     ]
+    const botonCompactar = dicho.accion === 'compactar' ? <Button key="compactar" variant="primary" hotkey="c" label={x.compactarAhora} onPress={() => void $.session.compact({})} /> : null
+    const botonLuego =
+      dicho.accion === 'compactar' && (pct ?? 0) < 70 ? (
+        <Button
+          key="luego"
+          plain
+          dimColor
+          label={x.en30min}
+          onPress={() => {
+            vivo.silencioPesadoHasta = ahora + 30 * 60_000
+            $.ui.invalidate('ui.render')
+          }}
+        />
+      ) : null
+    const controles = (
+      <Box flexDirection="row" gap={1} flexShrink={0}>
+        {botonTamano}
+        {botonOcultar}
+      </Box>
+    )
+    // En la app cada cosa va en su fila: la frase entera, los botones aparte y los controles arriba, sin chocar.
+    const cuerpoGrafico = (
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} rowGap="xs">
+        <Box flexDirection="row" flexWrap="nowrap" columnGap={1} alignItems="center">
+          <Box flexShrink={0}>
+            <Text color="claude" bold>
+              Toki
+            </Text>
+          </Box>
+          {chipTope !== undefined && (
+            <Box flexShrink={0}>
+              <Text color={chipTope.color}>· {chipTope.texto}</Text>
+            </Box>
+          )}
+          {chipModelo !== undefined && (
+            <Box flexShrink={1} minWidth={0}>
+              <Text dimColor wrap="truncate-end">
+                · {chipModelo}
+              </Text>
+            </Box>
+          )}
+          <Box flexGrow={1} />
+          {controles}
+        </Box>
+        <Text color={colorFrase} wrap="wrap">
+          {dicho.texto}
+        </Text>
+        {botonCompactar !== null && (
+          <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
+            {botonCompactar}
+            {botonLuego}
+          </Box>
+        )}
+        {avisoRuta !== undefined && (
+          <Box flexDirection="row" flexWrap="wrap" gap="sm" alignItems="center">
+            <Text color="warning" bold={destello} wrap="wrap">
+              {avisoRuta.texto}
+            </Text>
+            {botonDeshacer}
+          </Box>
+        )}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap="xs" alignItems="center">
+          {medidas}
+          <Box flexGrow={1} />
+          <Button key="detalles" plain dimColor label={verDetalles ? x.menos : x.mas} onPress={() => update($, detalles, v => !v)} />
+        </Box>
+      </Box>
+    )
     const cabecera = (
       <Box flexDirection="row" gap={1} alignItems="center">
         {!grafico && (
@@ -4756,24 +4824,12 @@ export const register: Register = (on, options) => {
         <Text color={colorFrase} wrap="truncate-end">
           {dicho.texto}
         </Text>
-        {dicho.accion === 'compactar' && <Button key="compactar" variant="primary" hotkey="c" label={x.compactarAhora} onPress={() => void $.session.compact({})} />}
-        {dicho.accion === 'compactar' && (pct ?? 0) < 70 && (
-          <Button
-            key="luego"
-            plain
-            dimColor
-            label={x.en30min}
-            onPress={() => {
-              vivo.silencioPesadoHasta = ahora + 30 * 60_000
-              $.ui.invalidate('ui.render')
-            }}
-          />
-        )}
+        {botonCompactar}
+        {botonLuego}
         <Box flexGrow={1} />
         {chipTope !== undefined && <Text color={chipTope.color}>{chipTope.texto}</Text>}
         {chipModelo !== undefined && <Text dimColor>{chipModelo}</Text>}
-        {botonTamano}
-        {botonOcultar}
+        {controles}
       </Box>
     )
     const filaAviso =
@@ -4800,18 +4856,16 @@ export const register: Register = (on, options) => {
       </Box>
     )
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={destello ? 'warning' : dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : 'claude'} paddingX={1}>
-        {grafico
-          ? (() => {
-              // Sin nowrap ni minWidth 0, la app de escritorio deja el texto debajo del robot.
-              return (
-                <Box flexDirection="row" flexWrap="nowrap" gap={2} alignItems="center">
-                  {mascotaGrafica($, e, actividad, 64)}
-                  {cuerpo}
-                </Box>
-              )
-            })()
-          : cuerpo}
+      <Box flexDirection="column" borderStyle="round" borderColor={destello ? 'warning' : dicho.tono === 'peligro' ? 'error' : dicho.tono === 'aviso' ? 'warning' : 'claude'} paddingX={1} paddingY={grafico ? 'xs' : 0}>
+        {grafico ? (
+          // Sin nowrap ni minWidth 0, la app de escritorio deja el texto debajo del robot.
+          <Box flexDirection="row" flexWrap="nowrap" gap="md" alignItems="flex-start">
+            <Box flexShrink={0}>{mascotaGrafica($, e, actividad, 56)}</Box>
+            {cuerpoGrafico}
+          </Box>
+        ) : (
+          cuerpo
+        )}
         {verDetalles && (
           <Box flexDirection="row" gap={1}>
             <Text dimColor wrap="wrap">

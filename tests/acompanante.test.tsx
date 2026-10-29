@@ -7,6 +7,21 @@ const BANDA = {
 } as const
 
 describe('acompañante', () => {
+  test('en la app, con el contexto alto: la frase entera en su fila, el botón aparte y los controles arriba', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    mock.store(on)
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 160_000, window: 200_000, percent: 80 }, rateLimits: [] } }) as never)
+    const ui = await $.ui.mount({ ...BANDA, surface: 'desktop' })
+    const frase = await ui.find({ type: 'Text', text: /Contexto al 80 ?%/ })
+    expect(frase).toBeDefined()
+    expect(JSON.stringify(frase)).toContain('"wrap":"wrap"')
+    const arbol = JSON.stringify(await ui.drawn())
+    // Los controles van con el título, antes que la frase; el botón de compactar, después.
+    expect(arbol.indexOf('"tamano"')).toBeLessThan(arbol.indexOf('Contexto al'))
+    expect(arbol.indexOf('"compactar"')).toBeGreaterThan(arbol.indexOf('Contexto al'))
+    await ui.unmount()
+  })
+
   test('la franja se dibuja en la terminal y en la app de escritorio', async ($, on) => {
     mock.clock(on, { now: 1_000_000 })
     mock.store(on)
