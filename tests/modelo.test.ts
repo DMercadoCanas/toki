@@ -1411,3 +1411,44 @@ describe('costo por tarea resuelta', () => {
     expect(Math.abs((s?.tareasUsd ?? 0) - (s?.gastoUsd ?? 0))).toBeLessThan(1e-9)
   })
 })
+
+describe('planear en Opus, ejecutar en Sonnet', () => {
+  /** Claude Code responde la herramienta: aquí solo importa que Toki la vea pasar. */
+  const herramientas = (on: On): void => {
+    on('tool.call', () => ({ result: 'ok' }) as never)
+  }
+
+  test('con el plan listo, el siguiente mensaje ofrece seguir en Sonnet una sola vez; el sí vale solo en esta sesión', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const guardado = new Map<string, unknown>()
+    const preguntas: string[] = []
+    mundo(on, { guardado, preguntas, respuesta: ls => ls.find(l => l.startsWith('Sí, ejecutar en Sonnet')) ?? '' })
+    herramientas(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    await $.tool.call({ tool: 'ExitPlanMode', plan: '1. agregar el botón' } as never)
+    const antes = preguntas.length
+    await mensaje($, 't1', 'dale, impleméntalo', 1, 'Listo.', 'high')
+    expect(preguntas.slice(antes).filter(p => p.includes('el plan está listo'))).toHaveLength(1)
+    const estado = ((await $.command.run({ command: 'toki-sonnet', args: '' } as never)) as { text: string }).text
+    expect(estado).toContain('activado')
+    expect(guardado.has('sonnetPrimero')).toBe(false)
+    // Otro plan en la misma conversación: ya no pregunta.
+    await $.tool.call({ tool: 'Write', file_path: '/p/.claude/toki/spec.md', content: 'x' } as never)
+    await mensaje($, 't2', 'dale', 1, 'Listo.', 'high')
+    expect(preguntas.filter(p => p.includes('el plan está listo'))).toHaveLength(1)
+  })
+
+  test('sin plan no pregunta, y una corrección después del plan tampoco', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const preguntas: string[] = []
+    mundo(on, { preguntas, respuesta: () => '' })
+    herramientas(on)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    await mensaje($, 't1', 'dale', 1, 'Listo.', 'high')
+    await $.tool.call({ tool: 'ExitPlanMode', plan: 'x' } as never)
+    await mensaje($, 't2', 'no, eso no es lo que pedí', 1, 'Listo.', 'high')
+    expect(preguntas.filter(p => p.includes('el plan está listo'))).toHaveLength(0)
+  })
+})

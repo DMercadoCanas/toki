@@ -609,6 +609,8 @@ export type TextosSonnet = {
   conteo: (sonnet: number, opus: number) => string
   activado: string
   apagado: (vuelvesA: string | undefined) => string
+  /** Con el plan listo: ejecutarlo en Sonnet. */
+  plan: { pregunta: string; si: string; no: string; activado: string }
   sinRuteo: string
   soloEsfuerzo: (modelo: string) => string
   uso: string
@@ -689,6 +691,12 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
       pausa: 'en pausa en esta sesión: elegiste otro modelo con /model (/toki-sonnet sí lo reanuda)',
       conteo: (s, o) => `Esta sesión: ${s} ${s === 1 ? 'mensaje' : 'mensajes'} en Sonnet, ${o} en Opus`,
       activado: 'Toki: Solo Sonnet hasta que haga falta — activado, desde el próximo mensaje.',
+      plan: {
+        pregunta: 'Toki: el plan está listo. ¿Lo ejecuto en Sonnet? Cuesta la mitad que Opus, y si algo falla vuelvo a Opus solo.',
+        si: 'Sí, ejecutar en Sonnet',
+        no: 'No, sigo en Opus',
+        activado: 'Toki: Sonnet hasta que haga falta, en esta sesión. Cambia cuando el caché lo permita. Para apagarlo: /toki-sonnet no.',
+      },
       apagado: m => `Toki: Solo Sonnet hasta que haga falta — apagado.${m ? ` Desde el próximo mensaje vuelves a ${m}.` : ''}`,
       sinRuteo: 'Ojo: el modelo y esfuerzo por mensaje está apagado (/toki-modelo no). No hará nada hasta que lo prendas con /toki-modelo preguntar.',
       soloEsfuerzo: m => `Con ${m} no cambia de modelo: solo ajusta el esfuerzo.`,
@@ -769,6 +777,12 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
       pausa: 'paused this session: you picked another model with /model (/toki-sonnet on resumes it)',
       conteo: (s, o) => `This session: ${s} ${s === 1 ? 'message' : 'messages'} on Sonnet, ${o} on Opus`,
       activado: 'Toki: Sonnet first, Opus when needed — on, from the next message.',
+      plan: {
+        pregunta: 'Toki: the plan is ready. Run it on Sonnet? It costs half of Opus, and if something fails I go back to Opus on my own.',
+        si: 'Yes, run on Sonnet',
+        no: 'No, stay on Opus',
+        activado: 'Toki: Sonnet when possible, this session. It switches when the cache allows; /toki-sonnet off turns it off.',
+      },
       apagado: m => `Toki: Sonnet first, Opus when needed — off.${m ? ` From the next message you are back on ${m}.` : ''}`,
       sinRuteo: 'Note: model and effort per message is off (/toki-modelo no). It will do nothing until you turn it on with /toki-modelo preguntar.',
       soloEsfuerzo: m => `With ${m} it does not switch models: it only adjusts effort.`,

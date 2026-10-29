@@ -144,6 +144,7 @@ import {
   frenaAntesDePreguntar,
   leerModoEntrevista,
   retomaLoAnterior,
+  RUTA_SPEC,
   SALTOS_PARA_CALLAR,
   textosEntrevista,
 } from './entrevista'
@@ -2337,6 +2338,35 @@ function lineaUso(m: Medicion, interrumpido: boolean): string {
   ].join(' · ')
 }
 
+/** Claude terminó un plan; Toki ofrece ejecutarlo en Sonnet una vez por conversación. */
+const planHecho = { listo: false, ofrecido: false }
+
+/**
+ * Con el plan listo y tu siguiente mensaje (no una corrección): si vas en Opus, ofrece
+ * seguir en Sonnet, que cuesta la mitad. Sonnet primero ya sube a Opus si algo falla.
+ */
+async function ofrecerSonnetTrasPlan($: $, texto: string): Promise<void> {
+  if (!planHecho.listo) return
+  planHecho.listo = false
+  if (planHecho.ofrecido || ruta.modo === 'no' || !ruta.interactivo || sonnetActivo() || familiaDe(vivo.modelo) !== 'opus' || esCorreccion(texto)) return
+  planHecho.ofrecido = true
+  const x = xr().sonnet.plan
+  let respuesta: string
+  try {
+    respuesta = await $.ui.ask(x.pregunta, { header: 'Toki', options: [x.si, x.no] })
+  } catch {
+    return
+  }
+  const si = respuesta === x.si
+  void anotarDiagnostico($, `plan listo: ${si ? 'se ejecuta en Sonnet' : 'sigue en Opus'}`)
+  if (!si) return
+  // Solo esta sesión: lo guardado con /toki-sonnet no cambia.
+  ruta.sonnetPrimero = true
+  ruta.sonnetPausado = false
+  $.ui.toast(x.activado, { timeoutMs: 8_000 })
+  $.ui.invalidate('ui.render')
+}
+
 /** Sonnet primero, si está prendido y no lo pausaste con /model. */
 function sonnetActivo(): boolean {
   return ruta.sonnetPrimero && !ruta.sonnetPausado
@@ -3569,6 +3599,8 @@ export const register: Register = (on, options) => {
     // Lo medido de esta conversación se acredita antes de olvidarla.
     await acreditar($)
     await cerrarTarea($)
+    planHecho.listo = false
+    planHecho.ofrecido = false
     await guardarUltimoPedido($)
     await terminarLimpio($, 'terminó la conversación')
     reiniciarSeguimiento()
@@ -3627,6 +3659,11 @@ export const register: Register = (on, options) => {
       contexto = r.contexto
     } catch (err) {
       $.ui.log(`Toki, entrevista: ${String(err)}`, { to: 'debug' })
+    }
+    try {
+      await ofrecerSonnetTrasPlan($, texto)
+    } catch (err) {
+      $.ui.log(`Toki, plan en Sonnet: ${String(err)}`, { to: 'debug' })
     }
     try {
       await planearTurno($, texto, silenciar)
@@ -3916,6 +3953,8 @@ export const register: Register = (on, options) => {
     vivo.actividad = actividadDeHerramienta(herramienta)
     await update($, sesion, s => ({ ...s, llamadas: s.llamadas + 1 }))
     const entrada = e as { file_path?: unknown; offset?: unknown; limit?: unknown }
+    // Claude cerró el plan (o guardó el spec de la entrevista): el próximo mensaje puede ir a ejecutarlo.
+    if (herramienta === 'ExitPlanMode' || ((herramienta === 'Write' || herramienta === 'Edit') && typeof entrada.file_path === 'string' && entrada.file_path.replace(/\\/g, '/').endsWith(RUTA_SPEC))) planHecho.listo = true
     if ((herramienta === 'Edit' || herramienta === 'Write' || herramienta === 'MultiEdit') && typeof entrada.file_path === 'string') {
       vivo.memoria.archivosEditados = recordar(vivo.memoria.archivosEditados, entrada.file_path, LIMITES_MEMORIA.archivos)
     }
