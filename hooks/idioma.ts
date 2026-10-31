@@ -226,12 +226,8 @@ export type Textos = {
   mapaUso: string
   mapaModulos: string
   mapaArchivos: string
-  mapaOdoo: string
-  mapaOdooModulos: string
-  mapaOdooModelos: string
-  mapaOdooVistas: string
-  mapaOdooDefine: string
-  mapaOdooHereda: string
+  mapaDefine: string
+  mapaHereda: string
   logroNombres: Record<string, string>
   gastoTitulo: string
   gastoLinea: (leido: string, pct: number, escrito: string, nueva: string, salida: string) => string
@@ -440,12 +436,8 @@ const es: Textos = {
   mapaUso: 'Úsalo para ubicar archivos y símbolos antes de buscar con grep o leer archivos completos. Puede estar desactualizado: confirma leyendo el archivo antes de editar.',
   mapaModulos: 'Módulos más usados (importados por más archivos)',
   mapaArchivos: 'Archivos y símbolos',
-  mapaOdoo: 'Odoo',
-  mapaOdooModulos: 'Módulos y lo que necesitan (depends)',
-  mapaOdooModelos: 'Modelos: dónde se definen (_name) y dónde se heredan (_inherit)',
-  mapaOdooVistas: 'Vistas por modelo (id ← vista que hereda)',
-  mapaOdooDefine: 'define',
-  mapaOdooHereda: 'hereda',
+  mapaDefine: 'define',
+  mapaHereda: 'hereda',
   gastoTitulo: 'Lo que costó esta sesión (cifras de la API)',
   gastoLinea: (l, p, w, n, o) => `Releer la conversación (caché): ~${l} (${p}%) · escribir al caché: ~${w} · entrada nueva: ~${n} · respuestas y razonamiento: ~${o}`,
   gastoPedidos: (n, prom) => `${n} ${n === 1 ? 'pedido' : 'pedidos'} al modelo; cada uno mandó en promedio ~${prom} de contexto.`,
@@ -664,12 +656,8 @@ const en: Textos = {
   mapaUso: 'Use it to locate files and symbols before grepping or reading whole files. It may be stale: confirm by reading the file before editing.',
   mapaModulos: 'Most-used modules (imported by the most files)',
   mapaArchivos: 'Files and symbols',
-  mapaOdoo: 'Odoo',
-  mapaOdooModulos: 'Modules and what they need (depends)',
-  mapaOdooModelos: 'Models: where they are defined (_name) and extended (_inherit)',
-  mapaOdooVistas: 'Views by model (id ← view it extends)',
-  mapaOdooDefine: 'defines',
-  mapaOdooHereda: 'extends',
+  mapaDefine: 'defines',
+  mapaHereda: 'extends',
   gastoTitulo: 'What this session cost (API figures)',
   gastoLinea: (l, p, w, n, o) => `Re-reading the conversation (cache): ~${l} (${p}%) · writing to cache: ~${w} · new input: ~${n} · replies and reasoning: ~${o}`,
   gastoPedidos: (n, avg) => `${n} ${n === 1 ? 'request' : 'requests'} to the model; each sent ~${avg} of context on average.`,

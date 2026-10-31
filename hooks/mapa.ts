@@ -18,7 +18,7 @@ const EXTENSIONES: Record<string, string> = {
   py: 'py', go: 'go', rs: 'rs', java: 'jvm', kt: 'jvm', cs: 'cs', rb: 'rb', php: 'php', swift: 'swift',
 }
 
-export const LIMITES_MAPA = { maxArchivos: 1500, maxBytes: 150_000, maxSimbolos: 12, maxXml: 3000, maxLineasOdoo: 400, maxPorLineaOdoo: 6 } as const
+export const LIMITES_MAPA = { maxArchivos: 1500, maxBytes: 150_000, maxSimbolos: 12, maxXml: 3000, maxLineasFramework: 400, maxPorLineaFramework: 6 } as const
 
 export function lenguaje(ruta: string): string | undefined {
   const ext = ruta.split('.').pop()?.toLowerCase() ?? ''
@@ -101,107 +101,145 @@ function sinExtension(ruta: string): string {
   return ruta.replace(/\.[^./]+$/, '').replace(/\/(index|__init__)$/, '')
 }
 
-// ---------- Odoo: modelos, vistas y depends ----------
+// ---------- Detectores de framework ----------
+// El mapa es genérico; cada framework es un detector que se activa solo si el proyecto tiene su marca
+// (Odoo: __manifest__.py; Django: manage.py). Para sumar uno, se agrega a DETECTORES.
 
-/** Lo que un archivo aporta al mapa de Odoo: el manifiesto, los modelos de un .py o las vistas de un .xml. */
-export type FichaOdoo = {
-  ruta: string
-  depends?: string[]
-  modelos: { nombre: string; hereda: boolean }[]
-  vistas: { id: string; modelo?: string; hereda?: string }[]
+export type Hallazgo = { grupo: string; clave: string; valor: string; papel?: 'define' | 'hereda' }
+export type FichaFramework = { ruta: string; framework: string; hallazgos: Hallazgo[] }
+
+type Detector = {
+  id: string
+  nombre: string
+  marca: RegExp
+  grupos: Record<string, { es: string; en: string }>
+  extraer: (ruta: string, texto: string) => Hallazgo[]
 }
 
 function cadenas(texto: string): string[] {
   return [...texto.matchAll(/['"]([\w.]+)['"]/g)].map(m => m[1] ?? '')
 }
 
-/** Lee un archivo de Odoo sin usar el modelo. undefined si no aporta nada. */
-export function extraerOdoo(ruta: string, texto: string): FichaOdoo | undefined {
-  const ficha: FichaOdoo = { ruta, modelos: [], vistas: [] }
-  if (/(^|\/)__manifest__\.py$/.test(ruta)) {
-    const m = texto.match(/['"]depends['"]\s*:\s*\[([^\]]*)\]/)
-    ficha.depends = m ? cadenas(m[1] ?? '') : []
-    return ficha
-  }
-  if (ruta.endsWith('.py')) {
-    // Cada clase: con _name propio define el modelo (los _inherit son mixins); sin él, o igual al _inherit, lo hereda.
-    for (const clase of texto.split(/^class\s/m).slice(1)) {
-      const nombre = clase.match(/^\s+_name\s*=\s*['"]([\w.]+)['"]/m)?.[1]
-      const herencia = clase.match(/^\s+_inherit\s*=\s*(\[[^\]]*\]|['"][\w.]+['"])/m)?.[1]
-      const heredados = herencia !== undefined ? cadenas(herencia) : []
-      if (nombre !== undefined && !heredados.includes(nombre)) ficha.modelos.push({ nombre, hereda: false })
-      else for (const h of nombre !== undefined ? [nombre] : heredados) ficha.modelos.push({ nombre: h, hereda: true })
+function carpetaDe(ruta: string): string {
+  return ruta.includes('/') ? ruta.slice(0, ruta.lastIndexOf('/')) : '.'
+}
+
+const ODOO: Detector = {
+  id: 'odoo',
+  nombre: 'Odoo',
+  marca: /(^|\/)__manifest__\.py$/,
+  grupos: {
+    modulos: { es: 'Módulos y lo que necesitan (depends)', en: 'Modules and what they need (depends)' },
+    modelos: { es: 'Modelos: dónde se definen (_name) y dónde se heredan (_inherit)', en: 'Models: where they are defined (_name) and extended (_inherit)' },
+    vistas: { es: 'Vistas por modelo (id ← vista que hereda)', en: 'Views by model (id ← view it extends)' },
+  },
+  extraer(ruta, texto) {
+    const h: Hallazgo[] = []
+    if (ODOO.marca.test(ruta)) {
+      const m = texto.match(/['"]depends['"]\s*:\s*\[([^\]]*)\]/)
+      const depends = m ? cadenas(m[1] ?? '') : []
+      return [{ grupo: 'modulos', clave: carpetaDe(ruta), valor: depends.join(', ') }]
     }
-  } else if (ruta.endsWith('.xml')) {
-    for (const r of texto.matchAll(/<record\b([^>]*)>([\s\S]*?)<\/record>/g)) {
-      const atributos = r[1] ?? ''
-      const cuerpo = r[2] ?? ''
-      if (!/\bmodel=["']ir\.ui\.view["']/.test(atributos)) continue
-      const id = atributos.match(/\bid=["']([\w.]+)["']/)?.[1]
-      if (id === undefined) continue
-      const modelo = cuerpo.match(/<field\s+name=["']model["'][^>]*>\s*([\w.]+)\s*</)?.[1]
-      const hereda = cuerpo.match(/<field\s+name=["']inherit_id["'][^>]*\bref=["']([\w.]+)["']/)?.[1]
-      ficha.vistas.push({ id, modelo, hereda })
+    if (ruta.endsWith('.py')) {
+      // Con _name propio la clase define el modelo (los _inherit son mixins); sin él, o igual al _inherit, lo hereda.
+      for (const clase of texto.split(/^class\s/m).slice(1)) {
+        const nombre = clase.match(/^\s+_name\s*=\s*['"]([\w.]+)['"]/m)?.[1]
+        const herencia = clase.match(/^\s+_inherit\s*=\s*(\[[^\]]*\]|['"][\w.]+['"])/m)?.[1]
+        const heredados = herencia !== undefined ? cadenas(herencia) : []
+        if (nombre !== undefined && !heredados.includes(nombre)) h.push({ grupo: 'modelos', clave: nombre, valor: ruta, papel: 'define' })
+        else for (const n of nombre !== undefined ? [nombre] : heredados) h.push({ grupo: 'modelos', clave: n, valor: ruta, papel: 'hereda' })
+      }
+    } else if (ruta.endsWith('.xml')) {
+      for (const r of texto.matchAll(/<record\b([^>]*)>([\s\S]*?)<\/record>/g)) {
+        const atributos = r[1] ?? ''
+        const cuerpo = r[2] ?? ''
+        if (!/\bmodel=["']ir\.ui\.view["']/.test(atributos)) continue
+        const id = atributos.match(/\bid=["']([\w.]+)["']/)?.[1]
+        if (id === undefined) continue
+        const modelo = cuerpo.match(/<field\s+name=["']model["'][^>]*>\s*([\w.]+)\s*</)?.[1] ?? '?'
+        const hereda = cuerpo.match(/<field\s+name=["']inherit_id["'][^>]*\bref=["']([\w.]+)["']/)?.[1]
+        h.push({ grupo: 'vistas', clave: modelo, valor: `${id}${hereda !== undefined ? ` ← ${hereda}` : ''} (${ruta})` })
+      }
     }
+    return h
+  },
+}
+
+const DJANGO: Detector = {
+  id: 'django',
+  nombre: 'Django',
+  marca: /(^|\/)manage\.py$/,
+  grupos: {
+    modelos: { es: 'Modelos', en: 'Models' },
+    urls: { es: 'URLs con nombre (name ← ruta)', en: 'Named URLs (name ← route)' },
+  },
+  extraer(ruta, texto) {
+    const h: Hallazgo[] = []
+    if (!ruta.endsWith('.py')) return h
+    for (const m of texto.matchAll(/^class\s+(\w+)\s*\([^)]*\bmodels\.Model\b[^)]*\)/gm)) h.push({ grupo: 'modelos', clave: m[1] ?? '', valor: ruta, papel: 'define' })
+    if (/(^|\/)urls\.py$/.test(ruta)) {
+      for (const m of texto.matchAll(/\b(?:re_)?path\(\s*r?['"]([^'"]*)['"][^)]*?\bname\s*=\s*['"]([\w:-]+)['"]/g)) {
+        h.push({ grupo: 'urls', clave: m[2] ?? '', valor: `/${m[1] ?? ''} (${ruta})` })
+      }
+    }
+    return h
+  },
+}
+
+const DETECTORES: Detector[] = [ODOO, DJANGO]
+
+/** ¿Lo lee algún detector aunque no sea código? (las vistas .xml de Odoo). */
+export function leeDetector(ruta: string): boolean {
+  return ruta.endsWith('.xml')
+}
+
+/** Lo que cada detector encuentra en un archivo. Solo cuenta si el proyecto tiene la marca del framework. */
+export function extraerFrameworks(ruta: string, texto: string): FichaFramework[] {
+  const fichas: FichaFramework[] = []
+  for (const d of DETECTORES) {
+    const hallazgos = d.extraer(ruta, texto).filter(x => x.clave !== '')
+    if (hallazgos.length > 0 || d.marca.test(ruta)) fichas.push({ ruta, framework: d.id, hallazgos })
   }
-  return ficha.modelos.length > 0 || ficha.vistas.length > 0 ? ficha : undefined
+  return fichas
 }
 
 function lista(cosas: string[]): string {
-  const max = LIMITES_MAPA.maxPorLineaOdoo
+  const max = LIMITES_MAPA.maxPorLineaFramework
   return cosas.slice(0, max).join(', ') + (cosas.length > max ? `, +${cosas.length - max}` : '')
 }
 
-function seccionOdoo(odoo: FichaOdoo[], idioma: Idioma): string[] {
+function seccionesFrameworks(fichas: FichaFramework[], idioma: Idioma): string[] {
   const x = t(idioma)
   const lineas: string[] = []
-  const tope = (bloque: string[]): string[] =>
-    bloque.length > LIMITES_MAPA.maxLineasOdoo ? [...bloque.slice(0, LIMITES_MAPA.maxLineasOdoo), `- … +${bloque.length - LIMITES_MAPA.maxLineasOdoo}`] : bloque
-  const carpeta = (ruta: string): string => (ruta.includes('/') ? ruta.slice(0, ruta.lastIndexOf('/')) : '.')
-
-  const modulos = odoo.filter(f => f.depends !== undefined).sort((a, b) => a.ruta.localeCompare(b.ruta))
-  if (modulos.length > 0) {
-    lineas.push(`### ${x.mapaOdooModulos}`, '')
-    lineas.push(...tope(modulos.map(f => `- ${carpeta(f.ruta)}${f.depends?.length ? ` → ${f.depends.join(', ')}` : ''}`)), '')
-  }
-
-  const modelos = new Map<string, { define: string[]; hereda: string[] }>()
-  for (const f of odoo) {
-    for (const m of f.modelos) {
-      const e = modelos.get(m.nombre) ?? { define: [], hereda: [] }
-      const destino = m.hereda ? e.hereda : e.define
-      if (!destino.includes(f.ruta)) destino.push(f.ruta)
-      modelos.set(m.nombre, e)
+  for (const d of DETECTORES) {
+    const propias = fichas.filter(f => f.framework === d.id)
+    if (!propias.some(f => d.marca.test(f.ruta))) continue // Sin la marca, no es ese framework.
+    const bloque: string[] = []
+    for (const [grupo, titulo] of Object.entries(d.grupos)) {
+      const porClave = new Map<string, string[]>()
+      for (const f of propias) {
+        for (const h of f.hallazgos.filter(h => h.grupo === grupo)) {
+          const valor = h.papel === 'define' ? `${x.mapaDefine} ${h.valor}` : h.papel === 'hereda' ? `${x.mapaHereda} ${h.valor}` : h.valor
+          const l = porClave.get(h.clave) ?? []
+          if (!l.includes(valor)) l.push(valor)
+          porClave.set(h.clave, l)
+        }
+      }
+      if (porClave.size === 0) continue
+      const filas = [...porClave.keys()].sort().map(c => {
+        const valores = (porClave.get(c) ?? []).filter(v => v !== '')
+        return valores.length > 0 ? `- ${c}: ${lista(valores)}` : `- ${c}`
+      })
+      const tope = LIMITES_MAPA.maxLineasFramework
+      bloque.push(`### ${titulo[idioma]}`, '', ...filas.slice(0, tope), ...(filas.length > tope ? [`- … +${filas.length - tope}`] : []), '')
     }
+    if (bloque.length > 0) lineas.push(`## ${d.nombre}`, '', ...bloque)
   }
-  if (modelos.size > 0) {
-    lineas.push(`### ${x.mapaOdooModelos}`, '')
-    const bloque = [...modelos.keys()].sort().map(nombre => {
-      const e = modelos.get(nombre) ?? { define: [], hereda: [] }
-      const partes = [e.define.length > 0 ? `${x.mapaOdooDefine} ${lista(e.define)}` : '', e.hereda.length > 0 ? `${x.mapaOdooHereda} ${lista(e.hereda)}` : '']
-      return `- ${nombre}: ${partes.filter(p => p !== '').join('; ')}`
-    })
-    lineas.push(...tope(bloque), '')
-  }
-
-  const vistas = new Map<string, string[]>()
-  for (const f of odoo) {
-    for (const v of f.vistas) {
-      const clave = v.modelo ?? '?'
-      const l = vistas.get(clave) ?? []
-      l.push(`${v.id}${v.hereda !== undefined ? ` ← ${v.hereda}` : ''} (${f.ruta})`)
-      vistas.set(clave, l)
-    }
-  }
-  if (vistas.size > 0) {
-    lineas.push(`### ${x.mapaOdooVistas}`, '')
-    lineas.push(...tope([...vistas.keys()].sort().map(m => `- ${m}: ${lista(vistas.get(m) ?? [])}`)), '')
-  }
-  return lineas.length > 0 ? [`## ${x.mapaOdoo}`, '', ...lineas] : []
+  return lineas
 }
 
 /** Arma el MAPA.md: módulos más conectados y, por carpeta, cada archivo con sus símbolos. */
-export function construirMapa(fichas: FichaArchivo[], fecha: string, truncado: boolean, idioma: Idioma = 'es', odoo: FichaOdoo[] = []): string {
+export function construirMapa(fichas: FichaArchivo[], fecha: string, truncado: boolean, idioma: Idioma = 'es', frameworks: FichaFramework[] = []): string {
   const x = t(idioma)
   const entradas = new Map<string, number>()
   for (const f of fichas) for (const destino of f.imports) entradas.set(destino, (entradas.get(destino) ?? 0) + 1)
@@ -226,8 +264,8 @@ export function construirMapa(fichas: FichaArchivo[], fecha: string, truncado: b
     for (const [destino, n] of conectados) lineas.push(`- ${porBase.get(destino)} ← ${n}`)
     lineas.push('')
   }
-  // Odoo antes de los archivos: dónde se define o se hereda un modelo es lo que más se busca con grep.
-  lineas.push(...seccionOdoo(odoo, idioma))
+  // Los frameworks antes de los archivos: dónde se define o se hereda algo es lo que más se busca con grep.
+  lineas.push(...seccionesFrameworks(frameworks, idioma))
   lineas.push(`## ${x.mapaArchivos}`, '')
   for (const carpeta of [...carpetas.keys()].sort()) {
     const lista = carpetas.get(carpeta) ?? []

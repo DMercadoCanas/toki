@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { registrar } from '../hooks/bucles'
-import { construirMapa, esBusqueda, extraerFicha, extraerOdoo, resolverImport } from '../hooks/mapa'
+import { construirMapa, esBusqueda, extraerFicha, extraerFrameworks, resolverImport } from '../hooks/mapa'
 
 describe('bucles', () => {
   test('avisa una sola vez, al tercer fallo seguido', async () => {
@@ -61,10 +61,9 @@ describe('mapa', () => {
     expect(mapa).toContain('- db.ts: conectar()')
   })
 
-  test('mapa de Odoo: depends, dónde se define y se hereda cada modelo, y las vistas', async () => {
-    const manifiesto = extraerOdoo('furips/__manifest__.py', "{\n  'name': 'FURIPS',\n  'depends': ['account', \"acs_hms_base\"],\n}\n")
-    expect(manifiesto?.depends).toEqual(['account', 'acs_hms_base'])
-    const modelos = extraerOdoo(
+  test('detectores de framework: Odoo (depends, modelos, vistas) solo si el proyecto tiene su marca', async () => {
+    const manifiesto = extraerFrameworks('furips/__manifest__.py', "{\n  'name': 'FURIPS',\n  'depends': ['account', \"acs_hms_base\"],\n}\n")
+    const modelos = extraerFrameworks(
       'furips/models/datos.py',
       [
         'class FuripsDatos(models.Model):',
@@ -79,25 +78,39 @@ describe('mapa', () => {
         "    _inherit = 'res.partner'",
       ].join('\n'),
     )
-    expect(modelos?.modelos).toEqual([
-      { nombre: 'furips.datos', hereda: false },
-      { nombre: 'account.move', hereda: true },
-      { nombre: 'res.partner', hereda: true },
-    ])
-    const vistas = extraerOdoo(
+    const vistas = extraerFrameworks(
       'furips/views/factura.xml',
       '<odoo><record id="view_move_form_furips" model="ir.ui.view"><field name="model">account.move</field><field name="inherit_id" ref="account.view_move_form"/></record><record id="accion" model="ir.actions.act_window"><field name="res_model">account.move</field></record></odoo>',
     )
-    expect(vistas?.vistas).toEqual([{ id: 'view_move_form_furips', modelo: 'account.move', hereda: 'account.view_move_form' }])
-    expect(extraerOdoo('src/util.py', 'def f(): pass')).toBe(undefined)
+    expect(extraerFrameworks('src/util.py', 'def f(): pass')).toEqual([])
 
-    const mapa = construirMapa([], '2026-10-31 10:00', false, 'es', [manifiesto, modelos, vistas].filter(f => f !== undefined))
-    expect(mapa).toContain('- furips → account, acs_hms_base')
+    const mapa = construirMapa([], '2026-10-31 10:00', false, 'es', [...manifiesto, ...modelos, ...vistas])
+    expect(mapa).toContain('## Odoo')
+    expect(mapa).toContain('- furips: account, acs_hms_base')
     expect(mapa).toContain('- account.move: hereda furips/models/datos.py')
     expect(mapa).toContain('- furips.datos: define furips/models/datos.py')
+    expect(mapa).toContain('- res.partner: hereda furips/models/datos.py')
+    expect(mapa).not.toContain('mail.thread')
     expect(mapa).toContain('- account.move: view_move_form_furips ← account.view_move_form (furips/views/factura.xml)')
     expect(mapa.indexOf('## Odoo')).toBeLessThan(mapa.indexOf('## Archivos y símbolos'))
-    expect(construirMapa([], 'f', false)).not.toContain('## Odoo')
+    // Sin __manifest__.py no es Odoo, y las clases models.Model sin manage.py tampoco son Django.
+    const sinMarca = construirMapa([], 'f', false, 'es', [...modelos, ...vistas])
+    expect(sinMarca).not.toContain('## Odoo')
+    expect(sinMarca).not.toContain('## Django')
+  })
+
+  test('detector de Django: modelos y URLs con nombre', async () => {
+    const fichas = [
+      ...extraerFrameworks('manage.py', 'import django'),
+      ...extraerFrameworks('tienda/models.py', 'class Pedido(models.Model):\n    pass\nclass Ayuda:\n    pass\n'),
+      ...extraerFrameworks('tienda/urls.py', "urlpatterns = [path('pedidos/<int:pk>/', views.detalle, name='pedido-detalle')]"),
+    ]
+    const mapa = construirMapa([], 'f', false, 'es', fichas)
+    expect(mapa).toContain('## Django')
+    expect(mapa).toContain('- Pedido: define tienda/models.py')
+    expect(mapa).toContain('- pedido-detalle: /pedidos/<int:pk>/ (tienda/urls.py)')
+    expect(mapa).not.toContain('Ayuda')
+    expect(mapa).not.toContain('## Odoo')
   })
 
   test('reconoce búsquedas', async () => {
