@@ -8,7 +8,7 @@
 
 Habla español e inglés. Lo único fijo que agrega a tu contexto son ~200 tokens (en el caché) para pedir respuestas breves, y lo que cuestan se resta de lo que ahorran.
 
-> Versión 0.17.4. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
+> Versión 0.17.5. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
 ## Instalación
 
@@ -37,6 +37,7 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 - **0.17.2: Toki pasa la aspiradora.** El Toki en píxeles dejó la escoba: ahora trabaja con una aspiradora de manguera anillada que chupa los tokens del suelo, y tiene manos de garra de dos pinzas.
 - **0.17.3: la barra muestra a cuánto compacta.** Al cambiar de modelo, la barra podía saltar a «de 1.0M» aunque Claude Code siguiera compactando a los 300k. Ahora muestra siempre la ventana a la que de verdad se compacta.
 - **0.17.4: bajar el esfuerzo con cuidado, y un ahorro más honesto.** Una orden corta que cambia código («agrega el campo cups») ya no va en esfuerzo bajo. Si un mensaje que Toki bajó pasa de 8 pedidos o entra en bucle, vuelve a tu esfuerzo a mitad del turno, y una corrección («no, eso no») nunca cuenta como simple. Lo que ahorra bajar el esfuerzo se cuenta a la mitad de la tabla hasta tener datos: 1 de cada 10 mensajes que Toki bajaría va con tu esfuerzo, de testigo, y `/toki-modelo` muestra lo medido. Si las respuestas breves no pueden ir en el system prompt, Toki se lo pide a Claude con una nota y te sugiere una vez `/output-style` → `toki:conciso`. En la app de escritorio, el robot y el texto de la barra van lado a lado.
+- **0.17.5: planear en Opus, ejecutar en Sonnet, y `/toki-dieta`.** Cuando Claude cierra un plan o guarda el spec de la entrevista, Toki ofrece una vez seguir en Sonnet, que cuesta la mitad; sube a Opus si algo falla. `/toki-dieta` muestra cuánto pesa el contexto fijo en cada pedido (memoria, skills, agentes, servidores MCP), cuánto cuesta con el caché vivo y vencido, y sugiere apagar en `/mcp` los servidores que no usaste en 7 días. La tarjeta semanal dice cuántas tareas hiciste, ~$ por tarea y correcciones por tarea. En la app de escritorio, la barra lleva a Toki dentro de un anillo que marca el contexto, sin borde. «Compactar ahora» ya no falla en silencio: si un hook lo veta (por ejemplo, una política de la empresa) o Claude está en un turno, te lo dice y deja `/compact` listo en el cuadro.
 
 ## Lo nuevo en 0.16
 
@@ -319,6 +320,7 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **Toki vacuums (0.17.2).** The pixel Toki put the broom away: it now works with a vacuum with a ribbed hose that sucks the tokens off the floor, and has two-pincer claw hands.
 - **The bar shows where it compacts (0.17.3).** After a model switch, the bar could jump to "of 1.0M" while Claude Code kept compacting at 300k. It now always shows the window it really compacts at.
 - **Lowering effort carefully, and more honest savings (0.17.4).** A short order that changes code ("add the cups field") no longer goes on low effort. If a message Toki lowered passes 8 requests or loops, it goes back to your effort mid-turn, and a correction ("no, not that") never counts as simple. The saving from lowering effort counts at half the table until there is data: 1 in 10 messages Toki would lower goes at your effort as a control, and `/toki-modelo` shows what was measured. If brief replies can't go in the system prompt, Toki asks Claude with a note and suggests `/output-style` → `toki:conciso` once. In the desktop app, the robot and the bar's text sit side by side.
+- **Plan on Opus, execute on Sonnet, and `/toki-dieta` (0.17.5).** When Claude finishes a plan or saves the interview spec, Toki offers once to continue on Sonnet, which costs half; it goes up to Opus if something fails. `/toki-dieta` shows how much the fixed context weighs on every request (memory, skills, agents, MCP servers), what it costs with a warm and a cold cache, and suggests turning off in `/mcp` the servers you haven't used in 7 days. The weekly card shows how many tasks you did, ~$ per task and corrections per task. In the desktop app, the bar puts Toki inside a ring that shows the context, with no border. "Compact now" no longer fails silently: if a hook vetoes it (for example, a company policy) or Claude is mid-turn, it tells you and leaves `/compact` ready in the box.
 - Measured with `claude plugin eval` on Opus: a mechanical rename cost **55% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
 - On Team and Enterprise accounts, a Claude Code guard stops plugins from adding to the system prompt, so brief replies don't apply there and aren't counted: `/output-style` → `toki:conciso` does the same.
