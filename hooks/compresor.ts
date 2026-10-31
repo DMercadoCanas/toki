@@ -456,3 +456,47 @@ export function encabezado(c: Compactado, rutaOriginal: string, copiaCompleta = 
   const conservado = !copiaCompleta && c.recortadoAntes > 0 ? x.recortadoAntes(kb(c.recortadoAntes)) : x.conservado(c.importantesOmitidas)
   return x.encabezado(kb(c.caracteresAntes), kb(c.caracteresDespues), c.lineasAntes, c.lineasDespues, ahorro > 0 ? formatearTokens(ahorro) : undefined, conservado, copia)
 }
+
+// ---------- Salidas de herramientas MCP ----------
+
+type BloqueMcp = { type: string; text?: string }
+
+function sonBloquesDeTexto(v: unknown): v is BloqueMcp[] {
+  return Array.isArray(v) && v.length > 0 && v.every(b => b !== null && typeof b === 'object' && (b as BloqueMcp).type === 'text' && typeof (b as BloqueMcp).text === 'string')
+}
+
+/**
+ * El texto de una salida de MCP y cómo devolverla con otro texto, o undefined si no se toca:
+ * imágenes, recursos, datos estructurados o JSON (recortar un JSON lo rompe; mejor entero).
+ */
+export function salidaMcp(resultado: unknown): { texto: string; con: (nuevo: string) => unknown } | undefined {
+  let texto: string
+  let con: (nuevo: string) => unknown
+  if (typeof resultado === 'string') {
+    texto = resultado
+    con = nuevo => nuevo
+  } else if (sonBloquesDeTexto(resultado)) {
+    texto = resultado.map(b => b.text).join('\n')
+    con = nuevo => [{ type: 'text', text: nuevo }]
+  } else if (resultado !== null && typeof resultado === 'object' && sonBloquesDeTexto((resultado as { content?: unknown }).content)) {
+    const r = resultado as { content: BloqueMcp[]; isError?: boolean; structuredContent?: unknown }
+    if (r.isError === true || r.structuredContent !== undefined) return undefined
+    texto = r.content.map(b => b.text).join('\n')
+    con = nuevo => ({ ...r, content: [{ type: 'text', text: nuevo }] })
+  } else {
+    return undefined
+  }
+  if (esJson(texto)) return undefined
+  return { texto, con }
+}
+
+function esJson(texto: string): boolean {
+  const t = texto.trim()
+  if (!/^[[{]/.test(t)) return false
+  try {
+    JSON.parse(t)
+    return true
+  } catch {
+    return false
+  }
+}

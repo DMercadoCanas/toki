@@ -42,6 +42,7 @@ import { debeMantenerCache, evaluarPing } from './cache'
 import {
   bytesDeBase64,
   compactar,
+  salidaMcp,
   decodificarUtf16,
   encabezado,
   envolver,
@@ -1725,6 +1726,25 @@ async function compactarExito($: $, comando: string, r: SalidaShell, captura: Ca
     stdout: cOut ? `${cabecera}\n${cOut.texto}` : r.stdout,
     stderr: copia.existe ? '' : cErr ? (cOut ? cErr.texto : `${cabecera}\n${cErr.texto}`) : r.stderr,
   }
+}
+
+/** Claude Code corta las salidas de MCP en ~25k tokens: es lo más que Claude habría leído sin Toki. */
+const LIMITE_MCP = 100_000
+
+/** Una salida larga de texto de MCP (logs, tablas, páginas): lo esencial y el original guardado. */
+async function compactarMcp($: $, herramienta: string, resultado: unknown, agente: string | undefined): Promise<unknown> {
+  const salida = salidaMcp(resultado)
+  if (salida === undefined) return undefined
+  const idioma = vivo.idioma
+  const c = compactar(salida.texto, idioma)
+  if (c === null) return undefined
+  const ruta = await archivar($, salida.texto)
+  if (ruta === undefined) return undefined
+  const ahorrado = Math.max(0, Math.min(salida.texto.length, LIMITE_MCP) - c.caracteresDespues - 300)
+  await sumarAhorro($, ahorrado, herramienta, agente)
+  anotar(herramienta, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), true), tokensAprox(ahorrado))
+  registrarSalidaGrande($, salida.texto.length)
+  return salida.con(`${encabezado(c, ruta, true, tokensAprox(ahorrado), idioma)}\n${c.texto}`)
 }
 
 /** Una búsqueda que pasó de 30 KB: resumen por archivo o carpeta, con la salida completa en la copia. */
@@ -4349,7 +4369,15 @@ export const register: Register = (on, options) => {
     } catch {
       // Es solo estadística.
     }
-    return next(e)
+    const ran = await next(e)
+    if (!config.compresion || ran.deny !== undefined || ran.isError === true) return ran
+    try {
+      const nuevo = await compactarMcp($, String(e.tool), ran.result, e.agentId)
+      if (nuevo !== undefined) return { result: nuevo }
+    } catch {
+      // Ante cualquier sorpresa, la salida original.
+    }
+    return ran
   })
 
   on('command.run', { command: 'toki-dieta' }, async $ => {

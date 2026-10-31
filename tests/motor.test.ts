@@ -233,4 +233,27 @@ describe('motor', () => {
     await $.session.start({ cwd: '/proyecto', surface: null, isInteractive: false })
     expect(toasts.some(t => t.includes('Traje tu historial'))).toBe(false)
   })
+
+  test('MCP: compacta una salida larga de texto y guarda el original; un JSON o una salida corta van enteros', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    mock.store(on)
+    const archivos = disco(on)
+    const log = salidaRuidosa(true)
+    let respuesta: unknown = { content: [{ type: 'text', text: log }], isError: false }
+    on('tool.call', () => ({ result: respuesta }) as never)
+
+    const r = await $.tool.call({ tool: 'mcp__sentry__logs' } as never)
+    const texto = (r.result as { content: { text: string }[] }).content[0]?.text ?? ''
+    expect(texto).toContain('[Toki] Salida compactada')
+    expect(texto).toContain('Assert.Equal() Failure: Expected 200, Actual 402')
+    expect(texto.length < log.length / 2).toBe(true)
+    expect([...archivos.entries()].some(([ruta, t]) => ruta.includes('.claude/toki/salidas/') && t.includes('Caso200'))).toBe(true)
+
+    const json = JSON.stringify(Array.from({ length: 400 }, (_, i) => ({ id: i, titulo: `Pendiente ${i}` })), null, 2)
+    respuesta = { content: [{ type: 'text', text: json }], isError: false }
+    expect(((await $.tool.call({ tool: 'mcp__linear__list' } as never)).result as { content: { text: string }[] }).content[0]?.text).toBe(json)
+
+    respuesta = { content: [{ type: 'text', text: 'listo' }], isError: false }
+    expect(((await $.tool.call({ tool: 'mcp__linear__crear' } as never)).result as { content: { text: string }[] }).content[0]?.text).toBe('listo')
+  })
 })
