@@ -258,6 +258,10 @@ const vivo: {
     reinicios: Partial<Record<VentanaLimite, number>>
   }
   usoLeido: number
+  /** Los últimos límites guardados o leídos del store, y cuándo se leyeron. */
+  limitesGuardados?: Limites
+  limitesLeidos: number
+  avisoLimitesAjenos: boolean
   /** Costo de la sesión ya sumado a la semana. */
   costoContado: number
   /** Tokens que leyó la API en esta sesión (principal y subagentes): la base del presupuesto en tokens. */
@@ -357,6 +361,8 @@ const vivo: {
   tokensUltimoTurno: 0,
   bucleReciente: false,
   usoLeido: 0,
+  limitesLeidos: 0,
+  avisoLimitesAjenos: false,
   costoContado: 0,
   tokensSesion: 0,
   silencioPesadoHasta: 0,
@@ -1329,6 +1335,47 @@ async function revisarRepetida(
   return { stdout: linea, stderr: '' }
 }
 
+type Limites = { t: number; cincoHoras?: number; semana?: number; reinicios: Partial<Record<VentanaLimite, number>> }
+
+/** Los últimos límites que vio alguna sesión: la cuenta es una sola, sus ventanas también. */
+const CLAVE_LIMITES = 'ultimosLimites'
+/** Pasado esto sin que otra sesión los renueve, ya no se muestran. */
+const LIMITES_VIGENCIA = 6 * 60 * 60_000
+
+/**
+ * Los límites de 5 h y de la semana. La app de escritorio a veces no los trae en la sesión:
+ * entonces van los últimos que guardó otra sesión, solo si su ventana sigue abierta.
+ */
+async function limitesCompartidos($: $, ahora: number, propios: Limites): Promise<Limites> {
+  if (propios.cincoHoras !== undefined || propios.semana !== undefined) {
+    const previos = vivo.limitesGuardados
+    if (previos === undefined || previos.cincoHoras !== propios.cincoHoras || previos.semana !== propios.semana || ahora - previos.t > 60_000) {
+      vivo.limitesGuardados = propios
+      await $.store.set(CLAVE_LIMITES, propios).catch(() => undefined)
+    }
+    return propios
+  }
+  if (ahora - vivo.limitesLeidos >= 60_000) {
+    vivo.limitesLeidos = ahora
+    const guardado = (await $.store.get(CLAVE_LIMITES).catch(() => undefined)) as Limites | undefined
+    if (guardado !== undefined && typeof guardado.t === 'number') vivo.limitesGuardados = guardado
+  }
+  const g = vivo.limitesGuardados
+  if (g === undefined || ahora - g.t > LIMITES_VIGENCIA) return propios
+  const vigente = (v: VentanaLimite) => (g.reinicios[v] ?? 0) > ahora
+  const ajenos: Limites = {
+    t: g.t,
+    cincoHoras: vigente('five_hour') ? g.cincoHoras : undefined,
+    semana: vigente('seven_day') ? g.semana : undefined,
+    reinicios: Object.fromEntries(VENTANAS.filter(vigente).map(v => [v, g.reinicios[v]])),
+  }
+  if (!vivo.avisoLimitesAjenos && (ajenos.cincoHoras !== undefined || ajenos.semana !== undefined)) {
+    vivo.avisoLimitesAjenos = true
+    void anotarDiagnostico($, 'límites: la sesión no los trae; van los últimos de otra sesión')
+  }
+  return ajenos
+}
+
 /** Lee las cifras de la sesión como máximo cada 5 s (es la misma llamada barata de la status line). */
 async function refrescarUso($: $, forzar = false): Promise<void> {
   const ahora = await $.clock.now()
@@ -1337,18 +1384,19 @@ async function refrescarUso($: $, forzar = false): Promise<void> {
   try {
     const uso = await $.session.usage()
     const limite = (kind: string) => uso.rateLimits.find(r => r.kind === kind)?.percentUsed
+    const limites = await limitesCompartidos($, ahora, { t: ahora, cincoHoras: limite('five_hour'), semana: limite('seven_day'), reinicios: reiniciosDe(uso.rateLimits) })
     // El % que importa es contra la ventana a la que se compacta, no contra el millón del modelo.
     const ventana = vivo.ventana ?? uso.context.window
     vivo.usoCache = {
       pct: uso.context.tokens !== undefined && ventana > 0 ? Math.round((uso.context.tokens / ventana) * 100) : uso.context.percent,
       ventana,
       tokens: uso.context.tokens,
-      cincoHoras: limite('five_hour'),
-      semana: limite('seven_day'),
+      cincoHoras: limites.cincoHoras,
+      semana: limites.semana,
       costo: uso.cost?.usd,
       inicio: uso.startedAt,
-      esSuscripcion: uso.rateLimits.length > 0,
-      reinicios: reiniciosDe(uso.rateLimits),
+      esSuscripcion: uso.rateLimits.length > 0 || limites.cincoHoras !== undefined || limites.semana !== undefined,
+      reinicios: limites.reinicios,
     }
     const costo = uso.cost?.usd
     if (costo !== undefined && Number.isFinite(costo)) {
@@ -3229,7 +3277,7 @@ async function compactarYReenviar($: $, texto: string, conMemoria: boolean): Pro
 
 /**
  * El botón «Compactar ahora». Nuestro hook de session.compact no corre en nuestra propia llamada:
- * la memoria y la mascota van aquí. Si un hook la veta o Claude está en un turno, lo dice y deja /compact en el cuadro.
+ * la memoria y la mascota van aquí. Si la app la rechaza, corre /compact; si un hook la veta, lo dice y deja /compact en el cuadro.
  */
 async function compactarDesdeBarra($: $): Promise<void> {
   if (vivo.actividad === 'compactando') return
@@ -3237,23 +3285,34 @@ async function compactarDesdeBarra($: $): Promise<void> {
   vivo.actividad = 'compactando'
   $.ui.invalidate('ui.render')
   let motivo: string | undefined
+  let fallo: string | undefined
   try {
     if (config.memoria) await guardarMemoria($)
-    const conMemoria = config.memoria && !estaVacia(vivo.memoria)
-    const r = await $.session.compact(conMemoria ? { instructions: instruccionesDeCompactacion(vivo.memoria, vivo.idioma) } : {})
-    if (!('skip' in r)) {
+    const instrucciones = config.memoria && !estaVacia(vivo.memoria) ? instruccionesDeCompactacion(vivo.memoria, vivo.idioma) : undefined
+    try {
+      const r = await $.session.compact(instrucciones !== undefined ? { instructions: instrucciones } : {})
+      if ('skip' in r) motivo = r.skip
+    } catch (err) {
+      // La app de escritorio la rechaza aunque no haya turno: /compact, como si lo escribieras, sí pasa
+      // (espera a que la sesión quede libre).
+      fallo = String(err)
+      await $.command.run({ command: 'compact', args: instrucciones ?? '' })
+      fallo = undefined
+      void anotarDiagnostico($, 'compactar desde la barra: vía /compact')
+    }
+    if (motivo === undefined) {
       await registrarCompactacion($, 'resumen')
       await refrescarUso($, true)
       return
     }
-    motivo = r.skip
   } catch (err) {
-    $.ui.log(`Toki, compactar desde la barra: ${String(err)}`, { to: 'debug' })
+    fallo = `${fallo ?? ''}${fallo ? ' · ' : ''}/compact: ${String(err)}`
+    $.ui.log(`Toki, compactar desde la barra: ${fallo}`, { to: 'debug' })
   } finally {
     vivo.actividad = anterior === 'compactando' ? 'tranquilo' : anterior
     $.ui.invalidate('ui.render')
   }
-  void anotarDiagnostico($, `compactar desde la barra: no se pudo${motivo ? ` (${motivo})` : ''}`)
+  void anotarDiagnostico($, `compactar desde la barra: no se pudo${motivo ? ` (${motivo})` : ''}${fallo ? ` — ${fallo.slice(0, 200)}` : ''}`)
   // El /compact de siempre, a mano: pasa por donde pasa el tuyo.
   const enCuadro = await $.prompt.fill({ text: '/compact', mode: 'replace' }).then(r => r.isFilled, () => false)
   $.ui.toast(tx().noCompactoBoton(motivo, enCuadro), { timeoutMs: 10_000 })
@@ -4152,7 +4211,8 @@ export const register: Register = (on, options) => {
       await guardarMemoria($)
       if (!estaVacia(vivo.memoria)) {
         const extra = instruccionesDeCompactacion(vivo.memoria, vivo.idioma)
-        entrada = { ...e, instructions: e.instructions ? `${e.instructions}\n\n${extra}` : extra }
+        // El botón de la barra ya la manda en el /compact: no se repite.
+        if (e.instructions?.includes(extra) !== true) entrada = { ...e, instructions: e.instructions ? `${e.instructions}\n\n${extra}` : extra }
       }
     }
     try {
@@ -4847,14 +4907,14 @@ export const register: Register = (on, options) => {
         </Text>,
       ]),
       conRacha && !angosto ? chip('racha', [<Text color="warning">· {x.rachaCorta(vivo.racha)}</Text>]) : null,
-      uso?.cincoHoras !== undefined && !angosto
+      uso?.cincoHoras !== undefined && (grafico || !angosto)
         ? chip('cinco', [
             <Text dimColor>· {x.cincoHoras}</Text>,
             <Text color={colorDePorcentaje(uso.cincoHoras)}>{Math.round(uso.cincoHoras)}%</Text>,
             guardia.proyeccion.five_hour?.agotaEn !== undefined ? <Text color="warning">{xg().limite.seAcaba(hora(guardia.proyeccion.five_hour.agotaEn, 'five_hour', vivo.idioma))}</Text> : '',
           ])
         : null,
-      uso?.semana !== undefined && !angosto
+      uso?.semana !== undefined && (grafico || !angosto)
         ? chip('semana', [
             <Text dimColor>· {x.semana}</Text>,
             <Text color={colorDePorcentaje(uso.semana)}>{Math.round(uso.semana)}%</Text>,

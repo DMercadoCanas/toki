@@ -24,7 +24,7 @@ describe('acompañante', () => {
     await ui.unmount()
   })
 
-  test('«Compactar ahora» compacta; si un hook lo veta o falla, lo dice y deja /compact en el cuadro', async ($, on) => {
+  test('«Compactar ahora» compacta; si la app lo rechaza corre /compact; si un hook lo veta, lo dice y deja /compact en el cuadro', async ($, on) => {
     mock.clock(on, { now: 1_000_000 })
     mock.store(on)
     on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 160_000, window: 200_000, percent: 80 }, rateLimits: [] } }) as never)
@@ -34,6 +34,13 @@ describe('acompañante', () => {
       compactos += 1
       if (respuesta === 'falla') throw new Error('hay un turno en curso')
       return (respuesta === 'veta' ? { skip: 'lo bloquea la política de la empresa' } : { messages: [{ role: 'user', text: 'Resumen.', toolUses: [] }] }) as never
+    })
+    let comandoFalla = false
+    const comandos: string[] = []
+    on('command.run', ($, e) => {
+      if (comandoFalla) throw new Error('sin cola')
+      comandos.push(e.command)
+      return {} as never
     })
     const cuadro: string[] = []
     on('prompt.fill', ($, e) => {
@@ -54,10 +61,39 @@ describe('acompañante', () => {
     expect(compactos).toBe(2)
     expect(cuadro).toEqual(['/compact'])
     expect(avisos.at(-1)).toBe('Toki: no pude compactar desde la barra (lo bloquea la política de la empresa). Dejé /compact en el cuadro: pulsa Enter.')
+    // La app de escritorio rechaza la llamada: va /compact, como si lo escribieras.
     respuesta = 'falla'
+    await ui.press({ key: 'compactar' })
+    expect(comandos).toEqual(['compact'])
+    expect(cuadro).toEqual(['/compact'])
+    comandoFalla = true
     await ui.press({ key: 'compactar' })
     expect(cuadro).toEqual(['/compact', '/compact'])
     expect(avisos.at(-1)).toBe('Toki: no pude compactar desde la barra. Dejé /compact en el cuadro: pulsa Enter.')
+    await ui.unmount()
+  })
+
+  test('en la app muestra 5 h y semana; si la sesión no los trae, los últimos de otra sesión', async ($, on) => {
+    const ahora = 1_760_000_000_000
+    mock.clock(on, { now: ahora })
+    mock.store(on, { ultimosLimites: { t: ahora - 60_000, cincoHoras: 3, semana: 58, reinicios: { five_hour: ahora + 3_600_000, seven_day: ahora + 86_400_000 } } })
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 60_000, window: 200_000, percent: 30 }, rateLimits: [] } }) as never)
+    // Angosta a propósito: en la app las cifras se acomodan en otra fila, no se esconden.
+    const ui = await $.ui.mount({ ...BANDA, surface: 'desktop', props: { ...BANDA.props, bodyColumns: 70 } })
+    expect(await ui.find({ key: 'cinco' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^58%$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^3%$/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('los límites vencidos de otra sesión no se muestran', async ($, on) => {
+    const ahora = 1_760_000_000_000
+    mock.clock(on, { now: ahora })
+    mock.store(on, { ultimosLimites: { t: ahora - 60_000, cincoHoras: 90, semana: 58, reinicios: { five_hour: ahora - 1, seven_day: ahora + 86_400_000 } } })
+    on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 60_000, window: 200_000, percent: 30 }, rateLimits: [] } }) as never)
+    const ui = await $.ui.mount({ ...BANDA, surface: 'desktop' })
+    expect(await ui.find({ key: 'cinco' })).toBe(undefined)
+    expect(await ui.find({ key: 'semana' })).toBeDefined()
     await ui.unmount()
   })
 
