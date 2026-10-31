@@ -100,6 +100,8 @@ import {
   usaEsfuerzoHeredado,
   usd as usdTexto,
 } from './modelo'
+import { EXPLORACION_VACIA, pasoExploracion, sumarPaso, tocaDelegar } from './exploracion'
+import type { Exploracion } from './exploracion'
 import type { Decision as DecisionMensaje, Esfuerzo, EstadoRuta, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, Propuesta, ResultadoRuta, TextosRuta, TipoOpcion } from './modelo'
 import {
   alCompactar,
@@ -274,6 +276,10 @@ const vivo: {
   marcaVista: number
   nudgeConciso: boolean
   nudgeLecturas: boolean
+  /** Búsquedas y lecturas seguidas del turno, sin editar ni delegar. */
+  exploracion: Exploracion
+  /** Se sugirió delegar la exploración (una vez por conversación) y si Claude lo hizo. */
+  avisoExploracion?: 'dado' | 'seguido'
   /** Lecturas enteras pedidas por archivo generado: 1 = frenada, 2 = tramo, 3+ = entera. */
   generadosFrenados: Map<string, number>
   salidasGrandesEnTurno: number
@@ -366,6 +372,7 @@ const vivo: {
   marcaVista: 0,
   nudgeConciso: false,
   nudgeLecturas: false,
+  exploracion: EXPLORACION_VACIA,
   generadosFrenados: new Map<string, number>(),
   salidasGrandesEnTurno: 0,
   avisoModeloEn: 0,
@@ -1797,6 +1804,39 @@ async function conAvisoMapa($: $, herramienta: string, comando: string | undefin
   return { ...ran, context: [...(ran.context ?? []), avisoMapa(vivo.idioma)] }
 }
 
+/** Lo que la llamada dejó en la conversación, en caracteres; 0 si no se puede medir. */
+function tamanoResultado(ran: ToolCallResult): number {
+  if (typeof ran.text === 'string') return ran.text.length
+  try {
+    return JSON.stringify(ran.result ?? '').length
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Cuenta la exploración del turno. Pasado el umbral, devuelve la sugerencia de delegarla a un
+ * subagente Explore (una vez por conversación; con Haiku no hay modelo más barato).
+ */
+async function seguirExploracion($: $, herramienta: string, e: object, ran: ToolCallResult): Promise<string | undefined> {
+  const entrada = e as { command?: unknown; subagent_type?: unknown }
+  const paso = pasoExploracion(herramienta, typeof entrada.command === 'string' ? entrada.command : undefined)
+  if (paso === 'delegacion' && vivo.avisoExploracion === 'dado') {
+    vivo.avisoExploracion = 'seguido'
+    await anotarDiagnostico($, `exploración: Claude delegó tras el aviso (${typeof entrada.subagent_type === 'string' ? entrada.subagent_type : 'general-purpose'})`)
+  }
+  const caracteres = tamanoResultado(ran)
+  vivo.exploracion = sumarPaso(vivo.exploracion, paso, caracteres)
+  if (vivo.avisoExploracion !== undefined || !tocaDelegar(vivo.exploracion) || familiaDe(vivo.modelo) === 'haiku') return undefined
+  vivo.avisoExploracion = 'dado'
+  const { llamadas } = vivo.exploracion
+  const tokens = formatearTokens(tokensAprox(vivo.exploracion.caracteres))
+  const x = tx()
+  vivo.lecciones = agregarLeccion(vivo.lecciones, { clave: 'exploracion', texto: x.leccionExploracion(llamadas, tokens) })
+  await anotarDiagnostico($, `exploración: aviso de delegar (${llamadas} llamadas, ~${tokens} tokens)`)
+  return x.nudgeExploracion(llamadas, tokens)
+}
+
 // ---------- Mapa del proyecto ----------
 
 async function generarMapa($: $): Promise<{ archivos: number; truncado: boolean }> {
@@ -2131,6 +2171,8 @@ function reiniciarConversacion(): void {
   vivo.compactaciones = 0
   vivo.nudgeConciso = false
   vivo.nudgeLecturas = false
+  vivo.exploracion = EXPLORACION_VACIA
+  vivo.avisoExploracion = undefined
   vivo.generadosFrenados = new Map<string, number>()
   vivo.ultimoAhorro = undefined
   vivo.mensaje = undefined
@@ -3810,6 +3852,7 @@ export const register: Register = (on, options) => {
       vivo.ultimoAhorro = undefined
       vivo.bucleReciente = false
       vivo.salidasGrandesEnTurno = 0
+      vivo.exploracion = EXPLORACION_VACIA
       vivo.pingsEnPausa = 0
       vivo.apagadoEnPausa = false
       vivo.mensaje = undefined
@@ -4066,8 +4109,9 @@ export const register: Register = (on, options) => {
     }
     try {
       const ran = await next(e)
-      if (nudgeLectura !== undefined && ran.deny === undefined && ran.isError !== true) return { ...ran, context: [...(ran.context ?? []), nudgeLectura] }
-      return ran
+      if (ran.deny !== undefined || ran.isError === true) return ran
+      const notas = [nudgeLectura, await seguirExploracion($, herramienta, e, ran)].filter((n): n is string => n !== undefined)
+      return notas.length > 0 ? { ...ran, context: [...(ran.context ?? []), ...notas] } : ran
     } finally {
       vivo.actividad = 'pensando'
       // Tras cada herramienta Claude vuelve a llamar al modelo: el caché sigue en uso.

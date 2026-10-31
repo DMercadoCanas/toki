@@ -134,6 +134,8 @@ export type Textos = {
   avisoBucle: Fmt
   avisoMapa: (ruta: string) => string
   nudgeLectura: (nombre: string, n: number) => string
+  nudgeExploracion: (n: number, tokens: string) => string
+  leccionExploracion: (n: number, tokens: string) => string
   notaConciso: string
   pingPrompt: string
   encabezado: (antes: string, despues: string, lAntes: number, lDespues: number, tokens: string | undefined, conservado: string, copia: string) => string
@@ -317,6 +319,10 @@ const es: Textos = {
   avisoBucle: n => `[Toki] Este mismo comando ya falló ${n} veces seguidas. Antes de reintentar, revisa la causa o cambia de enfoque: cada intento repetido vuelve a enviar todo el contexto.`,
   avisoMapa: r => `[Toki] Hay un mapa del proyecto en ${r} con los archivos, sus símbolos y los módulos más usados. Consúltalo para ubicar código antes de buscar o leer archivos completos.`,
   nudgeLectura: (nombre, n) => `[Toki] Ya leíste «${nombre}» completo ${n} veces. Si solo necesitas una parte, usa offset y limit; si no cambió, no hace falta releerlo.`,
+  nudgeExploracion: (n, tk) =>
+    `[Toki] Llevas ${n} búsquedas y lecturas en este turno (~${tk} tokens), y todo eso se reenvía en cada pedido de esta conversación. Si te falta seguir explorando, delégalo a un subagente Explore: busca con un modelo más barato y te devuelve solo lo que encontró.`,
+  leccionExploracion: (n, tk) =>
+    `En un turno Claude hizo ${n} búsquedas y lecturas seguidas (~${tk} tokens) en la conversación principal. Para ubicar código en todo el proyecto, pedirle «búscalo con un subagente» deja ese contexto fuera y cuesta una fracción.`,
   notaConciso: '[Toki] Responde de forma concisa: sin preámbulos, sin resúmenes finales ni narración de cada paso. Nunca recortes código, comandos, rutas, errores ni advertencias. Si la persona pide detalle, dalo.',
   pingPrompt: 'Responde solo: ok',
   encabezado: (a, d, la, ld, t, conservado, copia) =>
@@ -537,6 +543,10 @@ const en: Textos = {
   avisoBucle: n => `[Toki] This same command has now failed ${n} times in a row. Before retrying, check the cause or change approach: every repeated attempt re-sends the whole context.`,
   avisoMapa: r => `[Toki] There is a project map at ${r} with files, their symbols and the most-used modules. Check it to locate code before searching or reading whole files.`,
   nudgeLectura: (nombre, n) => `[Toki] You already read "${nombre}" in full ${n} times. If you only need a part, use offset and limit; if it did not change, no need to re-read it.`,
+  nudgeExploracion: (n, tk) =>
+    `[Toki] ${n} searches and reads in this turn so far (~${tk} tokens), and all of it is re-sent with every request in this conversation. If you still need to explore, delegate it to an Explore subagent: it searches on a cheaper model and returns only what it found.`,
+  leccionExploracion: (n, tk) =>
+    `In one turn Claude made ${n} searches and reads in a row (~${tk} tokens) in the main conversation. To locate code across the project, asking it to "search with a subagent" keeps that context out at a fraction of the cost.`,
   notaConciso: '[Toki] Answer concisely: no preambles, no closing summaries, no narration of each step. Never trim code, commands, paths, errors or warnings. If the person asks for detail, give it.',
   pingPrompt: 'Reply only: ok',
   encabezado: (a, d, la, ld, t, conservado, copia) =>
