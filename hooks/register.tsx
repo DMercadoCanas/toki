@@ -63,8 +63,8 @@ import { agregarAlRegistro, agregarLeccion, filasGrafica, fusionarHistorial, hay
 import type { Historial, Leccion, Logro } from './historial'
 import { detectarIdioma, idiomaDeTexto, quitarEtiquetasDeSistema, t } from './idioma'
 import type { Idioma, Textos } from './idioma'
-import { avisoMapa, CARPETAS_IGNORADAS, construirMapa, esBusqueda, extraerFicha, lenguaje, LIMITES_MAPA, RUTA_MAPA } from './mapa'
-import type { FichaArchivo } from './mapa'
+import { avisoMapa, CARPETAS_IGNORADAS, construirMapa, esBusqueda, extraerFicha, extraerOdoo, lenguaje, LIMITES_MAPA, RUTA_MAPA } from './mapa'
+import type { FichaArchivo, FichaOdoo } from './mapa'
 import { actividadDeHerramienta, barra, colorDePorcentaje, cuadro, decidirActividad, formatearDuracion, formatearMinutos, formatearTokens, frase, recortar, relojCache } from './mascota'
 import type { Actividad } from './mascota'
 import { estaVacia, extraerDecisiones, instruccionesDeCompactacion, LIMITES_MEMORIA, motivo, notaPostCompactacion, primerError, recordar, registrarDecision, resumenCorto, vacio } from './memoria'
@@ -1781,6 +1781,8 @@ async function conAvisoMapa($: $, herramienta: string, comando: string | undefin
 
 async function generarMapa($: $): Promise<{ archivos: number; truncado: boolean }> {
   const fichas: FichaArchivo[] = []
+  const odoo: FichaOdoo[] = []
+  let xmls = 0
   const pendientes: string[] = ['']
   let truncado = false
   while (pendientes.length > 0 && !truncado) {
@@ -1797,14 +1799,30 @@ async function generarMapa($: $): Promise<{ archivos: number; truncado: boolean 
         if (!CARPETAS_IGNORADAS.has(entrada.name) && !entrada.name.startsWith('.')) pendientes.push(ruta)
         continue
       }
-      if (entrada.kind !== 'file' || entrada.size > LIMITES_MAPA.maxBytes || lenguaje(ruta) === undefined) continue
+      if (entrada.kind !== 'file' || entrada.size > LIMITES_MAPA.maxBytes) continue
+      // Los .xml solo aportan vistas de Odoo: no cuentan como código.
+      if (ruta.endsWith('.xml')) {
+        if (xmls >= LIMITES_MAPA.maxXml) continue
+        xmls += 1
+        try {
+          const ficha = extraerOdoo(ruta, await $.fs.read(ruta))
+          if (ficha !== undefined) odoo.push(ficha)
+        } catch {
+          // Archivo ilegible: se omite.
+        }
+        continue
+      }
+      if (lenguaje(ruta) === undefined) continue
       if (fichas.length >= LIMITES_MAPA.maxArchivos) {
         truncado = true
         break
       }
       try {
-        const ficha = extraerFicha(ruta, await $.fs.read(ruta))
+        const texto = await $.fs.read(ruta)
+        const ficha = extraerFicha(ruta, texto)
         if (ficha !== undefined) fichas.push(ficha)
+        const deOdoo = ruta.endsWith('.py') ? extraerOdoo(ruta, texto) : undefined
+        if (deOdoo !== undefined) odoo.push(deOdoo)
       } catch {
         // Archivo ilegible: se omite.
       }
@@ -1813,7 +1831,7 @@ async function generarMapa($: $): Promise<{ archivos: number; truncado: boolean 
   if (fichas.length === 0) return { archivos: 0, truncado }
   await asegurarCarpeta($)
   const fecha = new Date(await $.clock.now()).toISOString().slice(0, 16).replace('T', ' ')
-  await $.fs.write(RUTA_MAPA, construirMapa(fichas, fecha, truncado, vivo.idioma))
+  await $.fs.write(RUTA_MAPA, construirMapa(fichas, fecha, truncado, vivo.idioma, odoo))
   return { archivos: fichas.length, truncado }
 }
 

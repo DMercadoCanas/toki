@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { registrar } from '../hooks/bucles'
-import { construirMapa, esBusqueda, extraerFicha, resolverImport } from '../hooks/mapa'
+import { construirMapa, esBusqueda, extraerFicha, extraerOdoo, resolverImport } from '../hooks/mapa'
 
 describe('bucles', () => {
   test('avisa una sola vez, al tercer fallo seguido', async () => {
@@ -59,6 +59,45 @@ describe('mapa', () => {
     const mapa = construirMapa(fichas, '2026-10-19 16:00', false)
     expect(mapa).toContain('- src/lib/db.ts ← 2')
     expect(mapa).toContain('- db.ts: conectar()')
+  })
+
+  test('mapa de Odoo: depends, dónde se define y se hereda cada modelo, y las vistas', async () => {
+    const manifiesto = extraerOdoo('furips/__manifest__.py', "{\n  'name': 'FURIPS',\n  'depends': ['account', \"acs_hms_base\"],\n}\n")
+    expect(manifiesto?.depends).toEqual(['account', 'acs_hms_base'])
+    const modelos = extraerOdoo(
+      'furips/models/datos.py',
+      [
+        'class FuripsDatos(models.Model):',
+        "    _name = 'furips.datos'",
+        "    _inherit = ['mail.thread', 'mail.activity.mixin']",
+        '',
+        'class Factura(models.Model):',
+        "    _inherit = 'account.move'",
+        '',
+        'class Socio(models.Model):',
+        "    _name = 'res.partner'",
+        "    _inherit = 'res.partner'",
+      ].join('\n'),
+    )
+    expect(modelos?.modelos).toEqual([
+      { nombre: 'furips.datos', hereda: false },
+      { nombre: 'account.move', hereda: true },
+      { nombre: 'res.partner', hereda: true },
+    ])
+    const vistas = extraerOdoo(
+      'furips/views/factura.xml',
+      '<odoo><record id="view_move_form_furips" model="ir.ui.view"><field name="model">account.move</field><field name="inherit_id" ref="account.view_move_form"/></record><record id="accion" model="ir.actions.act_window"><field name="res_model">account.move</field></record></odoo>',
+    )
+    expect(vistas?.vistas).toEqual([{ id: 'view_move_form_furips', modelo: 'account.move', hereda: 'account.view_move_form' }])
+    expect(extraerOdoo('src/util.py', 'def f(): pass')).toBe(undefined)
+
+    const mapa = construirMapa([], '2026-10-31 10:00', false, 'es', [manifiesto, modelos, vistas].filter(f => f !== undefined))
+    expect(mapa).toContain('- furips → account, acs_hms_base')
+    expect(mapa).toContain('- account.move: hereda furips/models/datos.py')
+    expect(mapa).toContain('- furips.datos: define furips/models/datos.py')
+    expect(mapa).toContain('- account.move: view_move_form_furips ← account.view_move_form (furips/views/factura.xml)')
+    expect(mapa.indexOf('## Odoo')).toBeLessThan(mapa.indexOf('## Archivos y símbolos'))
+    expect(construirMapa([], 'f', false)).not.toContain('## Odoo')
   })
 
   test('reconoce búsquedas', async () => {
