@@ -258,10 +258,13 @@ describe('modelos y costos', () => {
     expect(leerModo('siempre')).toBe('siempre')
   })
 
-  test('subagentes: los generales con encargos simples, en Sonnet; Explore y los complejos, como vienen', () => {
+  test('subagentes: Explore y los generales con encargos simples, en Sonnet; los complejos, como vienen', () => {
     expect(modeloSubagente('general-purpose', 'Lista los archivos de src y dime cuáles usan fetch', 'claude-opus-5-5')).toBe('claude-sonnet-5-5')
     expect(modeloSubagente('general-purpose', 'Diseña la arquitectura del módulo de pagos y compara tres opciones de seguridad', 'claude-opus-5-5')).toBe(undefined)
-    expect(modeloSubagente('Explore', 'busca dónde se define X', 'claude-opus-5-5')).toBe(undefined)
+    expect(modeloSubagente('Explore', 'busca dónde se define X', 'claude-opus-5-5')).toBe('claude-sonnet-5-5')
+    expect(modeloSubagente('Explore', 'busca dónde se define X', 'claude-fable-5-1')).toBe('sonnet')
+    expect(modeloSubagente('Explore', 'busca dónde se define X', 'claude-sonnet-5-5')).toBe(undefined)
+    expect(modeloSubagente('Plan', 'planea la migración', 'claude-opus-5-5')).toBe(undefined)
     expect(modeloSubagente('general-purpose', 'lista los archivos', 'claude-sonnet-5-5')).toBe(undefined)
   })
 })
@@ -545,7 +548,7 @@ describe('modelo y esfuerzo con el motor', () => {
     expect(vistos[1]?.effort).toBe('max')
   })
 
-  test('subagente general con un encargo simple: Sonnet, y lo avisa una vez', async ($, on) => {
+  test('subagente general con un encargo simple, y Explore: Sonnet, y lo avisa una vez', async ($, on) => {
     mock.clock(on, { now: 1_000_000 })
     const { toasts } = mundo(on)
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
@@ -555,7 +558,11 @@ describe('modelo y esfuerzo con el motor', () => {
     expect(r2.model).toBe('claude-sonnet-5-5')
     expect(toasts.filter(t => t.includes('subagentes')).length).toBe(1)
     const explore = (await $.agent.spawn({ prompt: 'busca X', subagentType: 'Explore', parentModel: 'claude-opus-5-5' } as never)) as { model: string }
-    expect(explore.model).toBe('claude-opus-5-5')
+    expect(explore.model).toBe('claude-sonnet-5-5')
+    // Si la llamada ya pide un modelo, se respeta.
+    const propio = (await $.agent.spawn({ prompt: 'busca X', subagentType: 'Explore', parentModel: 'claude-opus-5-5', model: 'haiku' } as never)) as { model: string }
+    expect(propio.model).toBe('haiku')
+    expect(toasts.filter(t => t.includes('subagentes')).length).toBe(1)
   })
 })
 
@@ -635,7 +642,7 @@ describe('solo Sonnet hasta que haga falta', () => {
     expect(modeloSubagente('general-purpose', complejo, OPUS, true)).toBe(SONNET)
     expect(modeloSubagente('general-purpose', PROFUNDO, OPUS, true)).toBe(undefined)
     expect(modeloSubagente('general-purpose', 'sigue fallando el build con el mismo error', OPUS, true)).toBe(undefined)
-    expect(modeloSubagente('Explore', 'busca dónde se define X', OPUS, true)).toBe(undefined)
+    expect(modeloSubagente('Explore', 'busca dónde se define X', OPUS, true)).toBe(SONNET)
   })
 
   test('sin Toki: tu modelo con el esfuerzo de la sesión, sin reescribir nada', () => {

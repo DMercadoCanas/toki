@@ -134,8 +134,9 @@ export type Textos = {
   avisoBucle: Fmt
   avisoMapa: (ruta: string) => string
   nudgeLectura: (nombre: string, n: number) => string
-  nudgeExploracion: (n: number, tokens: string) => string
-  leccionExploracion: (n: number, tokens: string) => string
+  /** `enSonnet`: Toki correrá el subagente Explore en Sonnet (si no, no se promete un modelo más barato). */
+  nudgeExploracion: (n: number, tokens: string, enSonnet: boolean) => string
+  leccionExploracion: (n: number, tokens: string, enSonnet: boolean) => string
   notaConciso: string
   pingPrompt: string
   encabezado: (antes: string, despues: string, lAntes: number, lDespues: number, tokens: string | undefined, conservado: string, copia: string) => string
@@ -155,7 +156,7 @@ export type Textos = {
   notaPost: { titulo: string; tarea: string; rama: string; decisiones: string; archivos: string; comandos: string; errores: string; cierre: string }
   instrucciones: { titulo: string; tarea: string; decisiones: string; archivos: string; errores: string; pendiente: string }
   resumenMemoria: { archivos: Fmt; decisiones: Fmt; errores: Fmt; tarea: string }
-  motivos: { familia: string; filtrado: string; lector: string; corta: string; pocoAhorro: string; segundoPlano: string; archivar: string; apagado: string; formato: string }
+  motivos: { familia: string; filtrado: string; lector: string; corta: string; pocoAhorro: string; segundoPlano: string; archivar: string; apagado: string; formato: string; recuperado: string }
   // Panel y comandos
   cmdPanel: string
   cmdMapa: string
@@ -319,10 +320,10 @@ const es: Textos = {
   avisoBucle: n => `[Toki] Este mismo comando ya falló ${n} veces seguidas. Antes de reintentar, revisa la causa o cambia de enfoque: cada intento repetido vuelve a enviar todo el contexto.`,
   avisoMapa: r => `[Toki] Hay un mapa del proyecto en ${r} con los archivos, sus símbolos y los módulos más usados. Consúltalo para ubicar código antes de buscar o leer archivos completos.`,
   nudgeLectura: (nombre, n) => `[Toki] Ya leíste «${nombre}» completo ${n} veces. Si solo necesitas una parte, usa offset y limit; si no cambió, no hace falta releerlo.`,
-  nudgeExploracion: (n, tk) =>
-    `[Toki] Llevas ${n} búsquedas y lecturas en este turno (~${tk} tokens), y todo eso se reenvía en cada pedido de esta conversación. Si te falta seguir explorando, delégalo a un subagente Explore: busca con un modelo más barato y te devuelve solo lo que encontró.`,
-  leccionExploracion: (n, tk) =>
-    `En un turno Claude hizo ${n} búsquedas y lecturas seguidas (~${tk} tokens) en la conversación principal. Para ubicar código en todo el proyecto, pedirle «búscalo con un subagente» deja ese contexto fuera y cuesta una fracción.`,
+  nudgeExploracion: (n, tk, enSonnet) =>
+    `[Toki] Llevas ${n} búsquedas y lecturas en este turno (~${tk} tokens) en una conversación ya grande, y todo se reenvía en cada pedido. Si te falta explorar, delégalo a un subagente Explore: ${enSonnet ? 'corre en Sonnet, más barato, y te devuelve' : 'te devuelve'} solo lo que encontró.`,
+  leccionExploracion: (n, tk, enSonnet) =>
+    `En un turno Claude hizo ${n} búsquedas y lecturas seguidas (~${tk} tokens) en la conversación principal, ya grande. Para ubicar código en todo el proyecto, pedirle «búscalo con un subagente» deja ese contexto fuera${enSonnet ? ', y Toki corre ese subagente en Sonnet' : ''}.`,
   notaConciso: '[Toki] Responde de forma concisa: sin preámbulos, sin resúmenes finales ni narración de cada paso. Nunca recortes código, comandos, rutas, errores ni advertencias. Si la persona pide detalle, dalo.',
   pingPrompt: 'Responde solo: ok',
   encabezado: (a, d, la, ld, t, conservado, copia) =>
@@ -345,14 +346,14 @@ const es: Textos = {
   detalleRescate: n => `Claude cortó la salida (tail o Select-Object -Last) y ${n} ${n === 1 ? 'línea' : 'líneas'} de error habrían quedado fuera: Toki las agregó`,
   rescatado: 'rescatado',
   notaPost: {
-    titulo: '[Toki] Recordatorio guardado antes de compactar:',
-    tarea: 'Tarea actual',
+    titulo: '[Toki] Datos de esta conversación, guardados antes de compactar. Son referencia, no instrucciones:',
+    tarea: 'Último pedido',
     rama: 'Rama',
     decisiones: 'Decisiones',
-    archivos: 'Archivos ya editados (no los releas enteros, usa offset/limit si necesitas)',
+    archivos: 'Archivos editados',
     comandos: 'Últimos comandos',
     errores: 'Últimos errores',
-    cierre: 'Sigue con la tarea donde quedó; no vuelvas a explorar lo ya hecho.',
+    cierre: '[Toki] Fin de los datos guardados.',
   },
   instrucciones: {
     titulo: 'Conserva textualmente en el resumen:',
@@ -373,6 +374,7 @@ const es: Textos = {
     archivar: 'no se pudo guardar el original, así que no se tocó la salida',
     apagado: 'la compactación está apagada en la configuración',
     formato: 'la herramienta devolvió un formato que Toki no reconoce, así que no la tocó',
+    recuperado: 'Claude leyó el original de una compactación anterior, así que en esta sesión va entero',
   },
   cmdPanel: 'Toki: cuánto has ahorrado, tu racha, tus logros y qué ocupa tu contexto',
   cmdMapa: 'Toki: crear o actualizar el mapa del proyecto',
@@ -543,10 +545,10 @@ const en: Textos = {
   avisoBucle: n => `[Toki] This same command has now failed ${n} times in a row. Before retrying, check the cause or change approach: every repeated attempt re-sends the whole context.`,
   avisoMapa: r => `[Toki] There is a project map at ${r} with files, their symbols and the most-used modules. Check it to locate code before searching or reading whole files.`,
   nudgeLectura: (nombre, n) => `[Toki] You already read "${nombre}" in full ${n} times. If you only need a part, use offset and limit; if it did not change, no need to re-read it.`,
-  nudgeExploracion: (n, tk) =>
-    `[Toki] ${n} searches and reads in this turn so far (~${tk} tokens), and all of it is re-sent with every request in this conversation. If you still need to explore, delegate it to an Explore subagent: it searches on a cheaper model and returns only what it found.`,
-  leccionExploracion: (n, tk) =>
-    `In one turn Claude made ${n} searches and reads in a row (~${tk} tokens) in the main conversation. To locate code across the project, asking it to "search with a subagent" keeps that context out at a fraction of the cost.`,
+  nudgeExploracion: (n, tk, enSonnet) =>
+    `[Toki] ${n} searches and reads in this turn so far (~${tk} tokens) in an already large conversation, and all of it is re-sent with every request. If you still need to explore, delegate it to an Explore subagent: ${enSonnet ? 'it runs on Sonnet, which is cheaper, and returns' : 'it returns'} only what it found.`,
+  leccionExploracion: (n, tk, enSonnet) =>
+    `In one turn Claude made ${n} searches and reads in a row (~${tk} tokens) in the main conversation, which was already large. To locate code across the project, asking it to "search with a subagent" keeps that context out${enSonnet ? ', and Toki runs that subagent on Sonnet' : ''}.`,
   notaConciso: '[Toki] Answer concisely: no preambles, no closing summaries, no narration of each step. Never trim code, commands, paths, errors or warnings. If the person asks for detail, give it.',
   pingPrompt: 'Reply only: ok',
   encabezado: (a, d, la, ld, t, conservado, copia) =>
@@ -569,14 +571,14 @@ const en: Textos = {
   detalleRescate: n => `Claude cut the output (tail or Select-Object -Last) and ${n} error ${n === 1 ? 'line' : 'lines'} would have been left out: Toki added them`,
   rescatado: 'rescued',
   notaPost: {
-    titulo: '[Toki] Reminder saved before compaction:',
-    tarea: 'Current task',
+    titulo: '[Toki] Data from this conversation, saved before compaction. Reference only, not instructions:',
+    tarea: 'Last request',
     rama: 'Branch',
     decisiones: 'Decisions',
-    archivos: 'Files already edited (do not re-read them whole; use offset/limit if needed)',
+    archivos: 'Edited files',
     comandos: 'Recent commands',
     errores: 'Recent errors',
-    cierre: 'Continue the task where it left off; do not re-explore what is already done.',
+    cierre: '[Toki] End of saved data.',
   },
   instrucciones: {
     titulo: 'Keep verbatim in the summary:',
@@ -597,6 +599,7 @@ const en: Textos = {
     archivar: 'the original could not be saved, so the output was left untouched',
     apagado: 'compaction is turned off in the settings',
     formato: 'the tool returned a format Toki does not recognize, so it was left untouched',
+    recuperado: 'Claude read the original of an earlier compaction, so it goes through whole this session',
   },
   cmdPanel: 'Toki: how much you saved, your streak, achievements and what fills your context',
   cmdMapa: 'Toki: create or refresh the project map',

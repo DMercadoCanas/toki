@@ -1,6 +1,6 @@
 // Exploración en la conversación principal: búsquedas y lecturas seguidas, sin editar nada.
-// Todo lo que entra se reenvía en cada pedido que sigue. Pasado cierto tamaño, conviene que un
-// subagente Explore siga buscando: usa un modelo más barato y devuelve solo lo que encontró.
+// Todo lo que entra se reenvía en cada pedido que sigue. En una conversación ya grande, conviene
+// que un subagente Explore siga buscando: su búsqueda queda fuera y devuelve solo lo que encontró.
 // Lógica pura: sin dependencias del motor.
 
 import { esBusqueda } from './mapa'
@@ -9,8 +9,12 @@ export type Exploracion = { llamadas: number; busquedas: number; caracteres: num
 
 export const EXPLORACION_VACIA: Exploracion = { llamadas: 0, busquedas: 0, caracteres: 0 }
 
-/** Desde aquí conviene delegar: varias llamadas, más de una búsqueda y ~5k tokens ya en la conversación. */
-export const UMBRAL_EXPLORACION = { llamadas: 5, busquedas: 2, caracteres: 20_000 } as const
+/**
+ * Desde aquí conviene delegar: varias llamadas, más de una búsqueda, ~5k tokens explorados y una
+ * conversación de 80k tokens o más. Con menos, el subagente (que arranca con su propio contexto)
+ * cuesta más de lo que ahorra en relecturas.
+ */
+export const UMBRAL_EXPLORACION = { llamadas: 5, busquedas: 2, caracteres: 20_000, contexto: 80_000 } as const
 
 export type PasoExploracion = 'busqueda' | 'lectura' | 'edicion' | 'delegacion'
 
@@ -41,7 +45,8 @@ export function sumarPaso(e: Exploracion, paso: PasoExploracion | undefined, car
   return { llamadas: e.llamadas + 1, busquedas: e.busquedas + (paso === 'busqueda' ? 1 : 0), caracteres: e.caracteres + caracteres }
 }
 
-export function tocaDelegar(e: Exploracion): boolean {
+/** `contexto`: los tokens del último pedido de la conversación principal. */
+export function tocaDelegar(e: Exploracion, contexto: number): boolean {
   const u = UMBRAL_EXPLORACION
-  return e.llamadas >= u.llamadas && e.busquedas >= u.busquedas && e.caracteres >= u.caracteres
+  return e.llamadas >= u.llamadas && e.busquedas >= u.busquedas && e.caracteres >= u.caracteres && contexto >= u.contexto
 }

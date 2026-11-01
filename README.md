@@ -133,7 +133,7 @@ Se apaga con la opción "Textos pegados enormes". En `claude -p` no pregunta ni 
 - **Te avisa cuando cambia algo.** Si Toki cambia algo, la barra parpadea, suena una campanita y aparece "⚡ Este mensaje va con Sonnet · esfuerzo bajo". El botón **Deshacer** vuelve a lo de antes.
 - **Respeta tus decisiones.** Si eliges "Dejar como está", Toki recuerda tu elección para ese tipo de mensaje. Si la eliges 3 veces, deja de preguntar en esa sesión.
 - **Cambia entre Opus y Sonnet solo cuando conviene.** Cambiar de modelo obliga a reescribir el caché una vez. Toki solo cambia cuando la conversación es chica o el caché ya está frío (sesión nueva, después de `/clear` o de compactar, o caché vencido). Cambiar el esfuerzo no toca el caché, así que eso lo ajusta siempre que cambie el costo.
-- **Subagentes con Sonnet.** Si trabajas con Opus, los subagentes de propósito general con encargos sencillos van con Sonnet. Los que tienen su propio modelo (Explore suele usar Haiku) no se tocan.
+- **Subagentes con Sonnet.** Si trabajas con Opus o Fable, Explore (que solo busca y lee, y heredaría tu modelo) y los subagentes de propósito general con encargos sencillos van con Sonnet. Los que traen su propio modelo no se tocan.
 - **Para comprobar que funciona:** después de cualquier mensaje, `/toki-modelo` muestra la línea «Último mensaje: complejo (…) · Opus · máximo → Opus · alto (−40%) · aplicado», aunque no haya cambiado nada. Mientras un mensaje va con otro modelo o esfuerzo, la barra lo dice: «Opus · alto · por Toki». Y `.claude/toki/diagnostico.txt` guarda por mensaje una línea `ruta:` (lo que decidió) y otra `uso:` (lo que gastó).
 - **`/toki-modelo`** muestra lo que decidió en la sesión y cambia el modo:
   - `preguntar`: el de siempre.

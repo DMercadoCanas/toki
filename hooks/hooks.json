@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "d=\"${CLAUDE_PROJECT_DIR:-.}/.claude/toki\"; [ -f \"$d/nota-post-compactacion.txt\" ] && cat \"$d/nota-post-compactacion.txt\"; date +%s > \"$d/ultima-compactacion\" 2>/dev/null; exit 0"
+            "command": "d=\"${CLAUDE_PROJECT_DIR:-.}/.claude/toki/notas\"; [ -d \"$d\" ] || exit 0; i=$(cat); case \"$i\" in *'\"agent_id\"'*) exit 0;; esac; s=$(printf '%s' \"$i\" | sed -n 's/.*\"session_id\" *: *\"\\([A-Za-z0-9_-]*\\)\".*/\\1/p' | head -n 1); [ -n \"$s\" ] || exit 0; [ -f \"$d/$s.txt\" ] && cat \"$d/$s.txt\"; date +%s 2>/dev/null > \"$d/$s.compactada\"; find \"$d\" -type f -mtime +7 -delete 2>/dev/null; exit 0"
           }
         ]
       }

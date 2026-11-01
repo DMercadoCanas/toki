@@ -208,7 +208,8 @@ export function sumarSemana(semanas: Semanas, ms: number, d: Delta): Semanas {
   const clave = lunesDe(ms)
   const s = semanas[clave] ?? vacia()
   const porTipo = { ...s.porTipo }
-  if (d.tipo !== undefined && numero(d.ahorro) > 0) porTipo[d.tipo] = (porTipo[d.tipo] ?? 0) + numero(d.ahorro)
+  // Negativo al descontar (Claude leyó un original compactado); nunca bajo cero.
+  if (d.tipo !== undefined && numero(d.ahorro) !== 0) porTipo[d.tipo] = Math.max(0, (porTipo[d.tipo] ?? 0) + numero(d.ahorro))
   const porModelo = { ...s.porModelo }
   if (d.modelo !== undefined) porModelo[d.modelo] = (porModelo[d.modelo] ?? 0) + 1
   const entrevistas = { ...s.entrevistas }

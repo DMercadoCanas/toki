@@ -6,6 +6,7 @@ import {
   contarPedido,
   contarTemprana,
   decidirVentana,
+  devolver,
   esRepetida,
   GASTO_VACIO,
   huella,
@@ -23,6 +24,12 @@ import {
 const PEDIDO = { input_tokens: 2, output_tokens: 300, cache_read_input_tokens: 200_000, cache_creation_input_tokens: 1_500 }
 
 describe('gasto', () => {
+  test('lo que Claude vuelve a leer deja de contarse como relectura evitada', async () => {
+    expect(devolver({ vivos: 1_000, pendientes: 300 }, 500)).toEqual({ vivos: 800, pendientes: 0 })
+    expect(devolver({ vivos: 100, pendientes: 0 }, 500)).toEqual({ vivos: 0, pendientes: 0 })
+    expect(devolver({ vivos: 100, pendientes: 50 }, 0)).toEqual({ vivos: 100, pendientes: 50 })
+  })
+
   test('suma cada pedido: el principal por partes, los subagentes aparte', async () => {
     let g = sumarPedido(GASTO_VACIO, PEDIDO, false)
     g = sumarPedido(g, PEDIDO, false)

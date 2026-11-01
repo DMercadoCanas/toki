@@ -72,8 +72,8 @@
     },
     "subagentesSonnet": {
       "type": "boolean",
-      "title": "Subagentes simples en Sonnet",
-      "description": "Si trabajas con Opus, los subagentes generales con encargos simples van en Sonnet: cuesta la mitad y, como empiezan sin contexto, no se pierde caché. Explore y los demás conservan su modelo.",
+      "title": "Explore y subagentes simples en Sonnet",
+      "description": "Si trabajas con Opus o Fable, Explore (solo busca y lee) y los subagentes generales con encargos simples van en Sonnet: cuesta menos y, como empiezan sin contexto, no se pierde caché. Los que traen su propio modelo lo conservan.",
       "default": true
     },
     "avisoCacheFrio": {

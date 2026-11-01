@@ -45,6 +45,14 @@ describe('tarjeta semanal (puro)', () => {
     expect(leerSemanas(null)).toEqual({})
   })
 
+  test('descontar resta de su tipo sin bajar de cero', () => {
+    let s = sumarSemana({}, MIE, { tipo: 'salida', ahorro: 1000 })
+    s = sumarSemana(s, MIE, { tipo: 'salida', ahorro: -400 })
+    expect(s['2026-10-19']?.porTipo.salida).toBe(600)
+    s = sumarSemana(s, MIE, { tipo: 'salida', ahorro: -5000 })
+    expect(s['2026-10-19']?.porTipo.salida).toBe(0)
+  })
+
   test('la tarjeta de la semana pasada se avisa una sola vez, y solo si hubo algo', () => {
     const s = sumarSemana({}, MIE, { tipo: 'pegado', ahorro: 20_000 })
     const lunesSiguiente = MIE + 5 * DIA

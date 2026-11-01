@@ -531,14 +531,15 @@ export function esfuerzoGuardado(v: unknown): Exclude<Esfuerzo, 'max'> | undefin
 
 /**
  * El modelo de un subagente. Empieza con el contexto vacío: cambiarlo no
- * reescribe nada, es ahorro puro. Solo los generales (heredan el modelo del
- * padre) con un encargo simple. Explore y los demás traen su propio modelo
- * (a menudo Haiku, más barato aún): no se tocan. Nunca forks ni planes.
+ * reescribe nada, es ahorro puro. Explore (solo busca y lee; hereda el modelo
+ * del padre, hasta Opus) va siempre en Sonnet; los generales, con un encargo
+ * simple. Los demás traen su propio modelo: no se tocan. Nunca forks ni planes.
  */
 export function modeloSubagente(tipo: string, encargo: string, modeloPadre: string, sonnetPrimero = false): string | undefined {
   const fam = familiaDe(modeloPadre)
   if (fam !== 'opus' && fam !== 'fable') return undefined
   const sonnet = hermano(modeloPadre, 'sonnet') ?? 'sonnet'
+  if (tipo === 'Explore') return sonnet
   if (tipo === 'general-purpose') {
     const l = nivelHeuristico(encargo)
     if (l.nivel === 'trivial' || (l.nivel === 'normal' && l.seguro)) return sonnet
@@ -644,7 +645,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     deshecho: 'deshecho',
     silenciado: 'callado por esta sesión',
     callado: 'Toki ya no preguntará por el modelo en esta sesión. Solo ajustará lo que ahorra sin tocar el caché. /toki-modelo preguntar lo vuelve a activar.',
-    subagentes: 'Toki: los subagentes con encargos simples van en Sonnet (la mitad de precio; empiezan sin contexto, así que no se pierde caché).',
+    subagentes: 'Toki: Explore y los subagentes con encargos simples van en Sonnet (la mitad de precio; empiezan sin contexto, así que no se pierde caché).',
     modeloNoDisponible: m => `Toki: ${m} no respondió en esta cuenta; sigo con tu modelo y solo ajusto el esfuerzo.`,
     esfuerzoRestaurado: e => `Toki: esto resultó más largo de lo que parecía; lo que falta va con tu esfuerzo (${e}).`,
     calibracion: (cada, meta) => `Al bajar el esfuerzo, la salida que Toki cuenta como ahorrada (1 de cada ${cada} mensajes va con tu esfuerzo, de testigo, hasta juntar ${meta}):`,
@@ -730,7 +731,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     deshecho: 'undone',
     silenciado: 'quiet for this session',
     callado: 'Toki will stop asking about the model this session. It will only make changes that save without touching the cache. /toki-modelo preguntar turns it back on.',
-    subagentes: 'Toki: subagents with simple tasks run on Sonnet (half the price; they start with no context, so no cache is lost).',
+    subagentes: 'Toki: Explore and subagents with simple tasks run on Sonnet (half the price; they start with no context, so no cache is lost).',
     modeloNoDisponible: m => `Toki: ${m} did not answer on this account; keeping your model and only adjusting effort.`,
     esfuerzoRestaurado: e => `Toki: this turned out bigger than it looked; the rest goes with your effort (${e}).`,
     calibracion: (cada, meta) => `When lowering effort, the output Toki counts as saved (1 in ${cada} messages keeps your effort as a control, until ${meta}):`,

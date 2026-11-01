@@ -469,6 +469,20 @@ function sonBloquesDeTexto(v: unknown): v is BloqueMcp[] {
  * El texto de una salida de MCP y cómo devolverla con otro texto, o undefined si no se toca:
  * imágenes, recursos, datos estructurados o JSON (recortar un JSON lo rompe; mejor entero).
  */
+// MCP: solo se compactan las herramientas cuyo nombre dice que devuelven salida de terminal (logs,
+// tests, builds, comandos). Las que leen datos (archivos, páginas, consultas, tickets) van enteras:
+// recortarlas obligaría a Claude a pedirlas otra vez.
+const MCP_RUIDO = new Set(['log', 'logs', 'logcat', 'console', 'terminal', 'shell', 'bash', 'stdout', 'stderr', 'build', 'builds', 'test', 'tests', 'lint', 'compile', 'install', 'deploy', 'command', 'cmd', 'exec'])
+const MCP_DATOS = new Set(['sql', 'query', 'queries', 'list', 'file', 'files', 'page', 'pages', 'doc', 'docs', 'document', 'documents', 'content', 'contents', 'source', 'diff', 'patch', 'schema', 'table', 'tables', 'rows', 'records'])
+
+/** ¿La herramienta MCP devuelve salida ruidosa? Mira las palabras de su nombre (run_tests, getBuildLogs, read-terminal), no el servidor. */
+export function esMcpRuidosa(herramienta: string): boolean {
+  const partes = herramienta.split('__')
+  const nombre = partes.length >= 3 ? partes.slice(2).join('_') : herramienta
+  const palabras = nombre.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/)
+  return palabras.some(p => MCP_RUIDO.has(p)) && !palabras.some(p => MCP_DATOS.has(p))
+}
+
 export function salidaMcp(resultado: unknown): { texto: string; con: (nuevo: string) => unknown } | undefined {
   let texto: string
   let con: (nuevo: string) => unknown

@@ -44,6 +44,7 @@ import {
   compactar,
   salidaMcp,
   decodificarUtf16,
+  esMcpRuidosa,
   encabezado,
   envolver,
   envolverPs,
@@ -118,6 +119,7 @@ import {
   porcentajeRelectura,
   RELECTURAS_VACIAS,
   retirar,
+  devolver,
   sumarPedido,
   tamanoDelPedido,
   topeLimpio,
@@ -286,9 +288,15 @@ const vivo: {
   avisoExploracion?: 'dado' | 'seguido'
   /** Lecturas enteras pedidas por archivo generado: 1 = frenada, 2 = tramo, 3+ = entera. */
   generadosFrenados: Map<string, number>
+  /** Los originales que Toki archivó al compactar, por ruta: si Claude los lee, se descuenta. */
+  archivados: Map<string, Archivado>
+  /** Herramientas MCP y comandos cuyo original Claude tuvo que leer: ya no se compactan en esta sesión. */
+  sinCompactar: Set<string>
   salidasGrandesEnTurno: number
   modelo?: string
   modeloUltimoTurno?: string
+  /** El modelo que respondió el último pedido del hilo principal (puede ser el que Toki eligió para este mensaje). */
+  modeloEnUso?: string
   avisoModeloEn: number
   /** La última vez que algo usó el caché: un turno, una herramienta o un ping. */
   ultimoUsoCache: number
@@ -380,6 +388,8 @@ const vivo: {
   nudgeLecturas: false,
   exploracion: EXPLORACION_VACIA,
   generadosFrenados: new Map<string, number>(),
+  archivados: new Map<string, Archivado>(),
+  sinCompactar: new Set<string>(),
   salidasGrandesEnTurno: 0,
   avisoModeloEn: 0,
   ultimoUsoCache: 0,
@@ -512,7 +522,10 @@ async function reservarRuta($: $): Promise<string> {
   await asegurarCarpeta($)
   const n = Number((await $.store.get(CLAVE_RANURA)) ?? 0)
   await $.store.set(CLAVE_RANURA, (n + 1) % RANURAS)
-  return `${CARPETA}/salidas/salida-${String(n).padStart(2, '0')}.txt`
+  const ruta = `${CARPETA}/salidas/salida-${String(n).padStart(2, '0')}.txt`
+  // La ranura se reusa: lo que guardaba antes ya no es de ninguna compactación.
+  vivo.archivados.delete(ruta)
+  return ruta
 }
 
 /** Guarda la salida original. */
@@ -911,7 +924,16 @@ async function alaSemana($: $, d: Delta): Promise<void> {
  * recibió; ninguno en el hilo principal). En dólares vale lo que no se escribió
  * en el caché del modelo que la habría leído sin Toki.
  */
-async function sumarAhorro($: $, caracteres: number, comando: string, agente: string | undefined, tipo: TipoAhorro = 'salida'): Promise<void> {
+async function sumarAhorro(
+  $: $,
+  caracteres: number,
+  comando: string,
+  agente: string | undefined,
+  tipo: TipoAhorro = 'salida',
+  archivo?: { ruta: string; caracteres: number },
+): Promise<void> {
+  // Si después Claude lee el original archivado, lo leído se descuenta (contarRecuperacion).
+  if (archivo !== undefined) vivo.archivados.set(archivo.ruta, { origen: comando.trim(), tipo, caracteres: archivo.caracteres, leidos: 0 })
   const tokens = tokensAprox(caracteres)
   const principal = agente === undefined
   // Un subagente, a precio de 5 min: no se sabe cuánto dura su caché, y así no se infla.
@@ -1310,7 +1332,7 @@ async function revisarRepetida(
   r: SalidaShell | undefined,
   captura: Captura | undefined,
 ): Promise<{ stdout: string; stderr: string } | undefined> {
-  if (!config.repetidas || r === undefined) return undefined
+  if (!config.repetidas || r === undefined || vivo.sinCompactar.has(comando.trim())) return undefined
   if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) return undefined
   const texto = r.stderr ? `${r.stdout}\n${r.stderr}` : r.stdout
   if (texto.length < MIN_REPETIDA) return undefined
@@ -1330,7 +1352,7 @@ async function revisarRepetida(
   const linea = x.salidaRepetida(Math.round((actual.cuando - (previa?.cuando ?? actual.cuando)) / 60_000), kb(texto.length), ruta)
   // Contrafactual honesto: sin Toki, Claude habría leído lo que entrega Claude Code (máx. 30 KB).
   const ahorrado = Math.max(0, Math.min(texto.length, LIMITE_CLAUDE_CODE) - linea.length)
-  await sumarAhorro($, ahorrado, comando, agente, 'repetida')
+  await sumarAhorro($, ahorrado, comando, agente, 'repetida', { ruta, caracteres: texto.length })
   anotar(comando, 'compactado', x.detalleRepetida, tokensAprox(ahorrado))
   return { stdout: linea, stderr: '' }
 }
@@ -1450,13 +1472,29 @@ function reanotar(comando: string, resultado: Decision['resultado'], texto: stri
 
 // ---------- Memoria que sobrevive la compactación ----------
 
-/** Deja lista la nota que el hook SessionStart(compact) reinyecta tras compactar. */
+/**
+ * Los archivos de memoria de esta sesión (`.json` el punto de control, `.txt` la
+ * nota, `.compactada` la marca del hook): dos sesiones en el mismo proyecto no se
+ * pisan la nota. Tras un /clear el id cambia y se empieza otra.
+ */
+async function rutaMemoria($: $): Promise<string | undefined> {
+  try {
+    const id = (await $.session.id()).replace(/[^A-Za-z0-9_-]/g, '')
+    return id === '' ? undefined : `${CARPETA}/notas/${id}`
+  } catch {
+    return undefined
+  }
+}
+
+/** Deja lista la nota que el hook SessionStart(compact) reinyecta tras compactar (solo en el hilo principal). */
 async function guardarMemoria($: $): Promise<void> {
   try {
+    const base = await rutaMemoria($)
+    if (base === undefined) return
     await asegurarCarpeta($)
     vivo.memoria.cuando = await $.clock.now()
-    await $.fs.write(`${CARPETA}/punto-de-control.json`, JSON.stringify(vivo.memoria, null, 2))
-    await $.fs.write(`${CARPETA}/nota-post-compactacion.txt`, estaVacia(vivo.memoria) ? '' : notaPostCompactacion(vivo.memoria, vivo.idioma))
+    await $.fs.write(`${base}.json`, JSON.stringify(vivo.memoria, null, 2))
+    await $.fs.write(`${base}.txt`, estaVacia(vivo.memoria) ? '' : notaPostCompactacion(vivo.memoria, vivo.idioma))
   } catch {
     // Sin memoria guardada no pasa nada grave: Claude Code compacta como siempre.
   }
@@ -1465,7 +1503,9 @@ async function guardarMemoria($: $): Promise<void> {
 /** ¿El hook de comando ya le dio la nota a Claude después de `desde`? */
 async function marcaFresca($: $, desde: number): Promise<boolean> {
   try {
-    const { mtimeMs } = await $.fs.stat(`${CARPETA}/ultima-compactacion`)
+    const base = await rutaMemoria($)
+    if (base === undefined) return false
+    const { mtimeMs } = await $.fs.stat(`${base}.compactada`)
     return mtimeMs > desde && mtimeMs >= vivo.inicio - 5_000
   } catch {
     return false
@@ -1531,10 +1571,12 @@ async function registrarCompactacion($: $, origen: 'marca' | 'turno' | 'resumen'
 /** El hook de comando deja una marca de tiempo al compactar (macOS, Linux, Windows con Git Bash). */
 async function detectarMarca($: $): Promise<void> {
   try {
-    const { mtimeMs } = await $.fs.stat(`${CARPETA}/ultima-compactacion`)
+    const base = await rutaMemoria($)
+    if (base === undefined) return
+    const { mtimeMs } = await $.fs.stat(`${base}.compactada`)
     if (mtimeMs <= vivo.marcaVista) return
     vivo.marcaVista = mtimeMs
-    if (mtimeMs < vivo.inicio - 5_000) return // Marca vieja de otra sesión.
+    if (mtimeMs < vivo.inicio - 5_000) return // Marca de antes de abrir esta sesión (una reanudada).
     await registrarCompactacion($, 'marca')
   } catch {
     // Aún no hay marca.
@@ -1695,18 +1737,20 @@ function comoSalidaShell(r: unknown): SalidaShell | undefined {
   return typeof o.stdout === 'string' && typeof o.stderr === 'string' ? (r as SalidaShell) : undefined
 }
 
-/** Anota por qué no se compacta (si aplica) y recuerda el comando. ¿Se intenta compactar? */
-function prepararComando(comando: string): boolean {
+/** Anota por qué no se compacta (si aplica) y recuerda el comando del hilo principal. ¿Se intenta compactar? */
+function prepararComando(comando: string, agente: string | undefined): boolean {
   const motivoNo = porQueNoCompactable(comando)
+  const recuperado = vivo.sinCompactar.has(comando.trim())
   if (!config.compresion) anotarMotivo(comando, 'apagado')
   else if (motivoNo !== undefined) anotarMotivo(comando, motivoNo)
-  vivo.memoria.comandosRecientes = recordar(vivo.memoria.comandosRecientes, recortar(comando, 80), LIMITES_MEMORIA.comandos)
-  return config.compresion && motivoNo === undefined
+  else if (recuperado) anotarMotivo(comando, 'recuperado')
+  if (agente === undefined) vivo.memoria.comandosRecientes = recordar(vivo.memoria.comandosRecientes, recortar(comando, 80), LIMITES_MEMORIA.comandos)
+  return config.compresion && motivoNo === undefined && !recuperado
 }
 
 /** Recuerda el primer error y vigila bucles. Devuelve el aviso de bucle si toca. */
-async function despuesDeEjecutar($: $, comando: string, fallo: boolean, texto: string | undefined): Promise<string | undefined> {
-  if (fallo) {
+async function despuesDeEjecutar($: $, comando: string, fallo: boolean, texto: string | undefined, agente: string | undefined): Promise<string | undefined> {
+  if (fallo && agente === undefined) {
     const err = primerError(texto ?? '')
     if (err !== undefined) vivo.memoria.ultimosErrores = recordar(vivo.memoria.ultimosErrores, err, LIMITES_MEMORIA.errores)
   }
@@ -1740,7 +1784,7 @@ async function compactarFallo($: $, comando: string, texto: string, captura: Cap
   }
   // Contrafactual honesto: sin Toki, Claude habría leído lo que entregó Claude Code.
   const ahorrado = Math.max(0, texto.length - c.caracteresDespues - 200)
-  await sumarAhorro($, ahorrado, comando, agente)
+  await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: cuerpo.length })
   anotar(comando, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), copia.existe), tokensAprox(ahorrado))
   registrarSalidaGrande($, cuerpo.length)
   return [salida?.[1], encabezado(c, ruta, copia.existe, tokensAprox(ahorrado), idioma), c.texto].filter(Boolean).join('\n')
@@ -1773,7 +1817,7 @@ async function compactarExito($: $, comando: string, r: SalidaShell, captura: Ca
   const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
   const leidoConToki = (cOut?.caracteresDespues ?? 0) + (cErr?.caracteresDespues ?? 0) + 300
   const ahorrado = Math.max(0, leidoSinToki - leidoConToki)
-  await sumarAhorro($, ahorrado, comando, agente)
+  await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: fuente.length })
   anotar(comando, 'compactado', tx().detalleCompactado(kb(principal.caracteresAntes), kb(principal.caracteresDespues), copia.existe), tokensAprox(ahorrado))
   registrarSalidaGrande($, fuente.length)
   const cabecera = encabezado(principal, ruta, copia.existe, tokensAprox(ahorrado), idioma)
@@ -1786,8 +1830,13 @@ async function compactarExito($: $, comando: string, r: SalidaShell, captura: Ca
 /** Claude Code corta las salidas de MCP en ~25k tokens: es lo más que Claude habría leído sin Toki. */
 const LIMITE_MCP = 100_000
 
-/** Una salida larga de texto de MCP (logs, tablas, páginas): lo esencial y el original guardado. */
+/**
+ * Una salida larga de texto de una herramienta MCP ruidosa (logs, tests, builds, comandos): lo
+ * esencial y el original guardado. Las que leen datos van enteras, y también la que ya obligó
+ * a Claude a leer el original.
+ */
 async function compactarMcp($: $, herramienta: string, resultado: unknown, agente: string | undefined): Promise<unknown> {
+  if (!esMcpRuidosa(herramienta) || vivo.sinCompactar.has(herramienta)) return undefined
   const salida = salidaMcp(resultado)
   if (salida === undefined) return undefined
   const idioma = vivo.idioma
@@ -1796,10 +1845,54 @@ async function compactarMcp($: $, herramienta: string, resultado: unknown, agent
   const ruta = await archivar($, salida.texto)
   if (ruta === undefined) return undefined
   const ahorrado = Math.max(0, Math.min(salida.texto.length, LIMITE_MCP) - c.caracteresDespues - 300)
-  await sumarAhorro($, ahorrado, herramienta, agente)
+  await sumarAhorro($, ahorrado, herramienta, agente, 'salida', { ruta, caracteres: salida.texto.length })
   anotar(herramienta, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), true), tokensAprox(ahorrado))
   registrarSalidaGrande($, salida.texto.length)
   return salida.con(`${encabezado(c, ruta, true, tokensAprox(ahorrado), idioma)}\n${c.texto}`)
+}
+
+/** Un original que Toki archivó al compactar: de qué herramienta o comando, cuánto pesaba y cuánto leyó Claude después. */
+type Archivado = { origen: string; tipo: TipoAhorro; caracteres: number; leidos: number }
+
+/** `.claude/toki/salidas/salida-NN.txt`, con la ruta relativa o absoluta, también con barras de Windows. */
+const RUTA_ARCHIVADA = /\.claude[\\/]toki[\\/]salidas[\\/]salida-\d+\.txt/
+
+/** Lo contrario de sumarAhorro: lo que Claude volvió a leer de un original que Toki había recortado. */
+async function descontarAhorro($: $, tokens: number, tipo: TipoAhorro, agente: string | undefined): Promise<void> {
+  if (tokens <= 0) return
+  const principal = agente === undefined
+  const usd = valorEscritura(tokens, familiaSin(agente), principal && ttl1hSesion(), principal ? (vivo.contextoPedido ?? 0) : 0)
+  await alaSemana($, { tipo, ahorro: -tokens, ahorroUsd: -usd })
+  await update($, sesion, s => ({ ...s, tokensAhorrados: Math.max(0, s.tokensAhorrados - tokens), recorteUsd: (s.recorteUsd ?? 0) - usd }))
+  vivo.dolaresPendientes -= usd
+  // Lo leído vuelve al contexto: desde aquí se relee en cada pedido.
+  if (principal) vivo.relecturas = devolver(vivo.relecturas, tokens)
+  const total = Number((await $.store.get(CLAVE_TOTAL)) ?? 0)
+  await $.store.set(CLAVE_TOTAL, Math.max(0, total - tokens))
+  await $.store.set(CLAVE_HISTORIAL, sumarAlDia(await leerHistorial($), await $.clock.now(), -tokens))
+}
+
+/**
+ * Claude leyó (con Read, Grep o la terminal) un original que Toki archivó al compactar: lo
+ * leído se resta del ahorro, porque es lo que costó compactar. Si ya leyó la mitad o más, la
+ * compactación no le sirvió: esa herramienta o ese comando va entero el resto de la sesión.
+ */
+async function contarRecuperacion($: $, e: object, ran: ToolCallResult, agente: string | undefined): Promise<void> {
+  const entrada = e as { file_path?: unknown; path?: unknown; command?: unknown }
+  const donde = [entrada.file_path, entrada.path, entrada.command].find((v): v is string => typeof v === 'string' && RUTA_ARCHIVADA.test(v))
+  const ruta = donde === undefined ? undefined : RUTA_ARCHIVADA.exec(donde)?.[0]?.replace(/\\/g, '/')
+  const a = ruta === undefined ? undefined : vivo.archivados.get(ruta)
+  if (a === undefined) return
+  const leidos = tamanoResultado(ran)
+  a.leidos += leidos
+  const tokens = tokensAprox(leidos)
+  await descontarAhorro($, tokens, a.tipo, agente)
+  const vetar = a.leidos >= a.caracteres * 0.5 && !vivo.sinCompactar.has(a.origen)
+  if (vetar) {
+    vivo.sinCompactar.add(a.origen)
+    reanotar(a.origen, 'sin-cambio', motivo('recuperado', vivo.idioma))
+  }
+  await anotarDiagnostico($, `recuperación: Claude leyó ${kb(leidos)} del original de ${recortar(a.origen, 60)} (−~${formatearTokens(tokens)} tokens del ahorro)${vetar ? '; ya no se compacta en esta sesión' : ''}`)
 }
 
 /** Una búsqueda que pasó de 30 KB: resumen por archivo o carpeta, con la salida completa en la copia. */
@@ -1822,7 +1915,7 @@ async function resumirBusquedaShell(
   // Contrafactual honesto, como con las salidas ruidosas: sin Toki, como mucho 30 KB (o la vista previa de 2 KB).
   const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
   const ahorrado = Math.max(0, leidoSinToki - resumen.caracteresDespues)
-  await sumarAhorro($, ahorrado, comando, agente, 'busqueda')
+  await sumarAhorro($, ahorrado, comando, agente, 'busqueda', { ruta, caracteres: fuente.length })
   anotar(comando, 'compactado', tx().detalleCompactado(kb(resumen.caracteresAntes), kb(resumen.caracteresDespues), true), tokensAprox(ahorrado))
   registrarSalidaGrande($, fuente.length)
   return { stdout: resumen.texto, stderr: copia.existe ? '' : r.stderr }
@@ -1863,8 +1956,9 @@ function tamanoResultado(ran: ToolCallResult): number {
 }
 
 /**
- * Cuenta la exploración del turno. Pasado el umbral, devuelve la sugerencia de delegarla a un
- * subagente Explore (una vez por conversación; con Haiku no hay modelo más barato).
+ * Cuenta la exploración del turno. Pasado el umbral, en una conversación ya grande, devuelve la
+ * sugerencia de delegarla a un subagente Explore (una vez por conversación; no con Haiku, donde
+ * releer cuesta poco). Promete Sonnet solo si Toki de verdad correrá el subagente ahí.
  */
 async function seguirExploracion($: $, herramienta: string, e: object, ran: ToolCallResult): Promise<string | undefined> {
   const entrada = e as { command?: unknown; subagent_type?: unknown }
@@ -1875,14 +1969,17 @@ async function seguirExploracion($: $, herramienta: string, e: object, ran: Tool
   }
   const caracteres = tamanoResultado(ran)
   vivo.exploracion = sumarPaso(vivo.exploracion, paso, caracteres)
-  if (vivo.avisoExploracion !== undefined || !tocaDelegar(vivo.exploracion) || familiaDe(vivo.modelo) === 'haiku') return undefined
+  const contexto = vivo.contextoPedido ?? 0
+  if (vivo.avisoExploracion !== undefined || !tocaDelegar(vivo.exploracion, contexto) || familiaDe(vivo.modelo) === 'haiku') return undefined
   vivo.avisoExploracion = 'dado'
   const { llamadas } = vivo.exploracion
   const tokens = formatearTokens(tokensAprox(vivo.exploracion.caracteres))
+  // Explore hereda el modelo de este pedido: Sonnet es más barato solo si el hilo principal va en Opus o Fable.
+  const enSonnet = ruta.subagentes && ruta.modo !== 'no' && modeloSubagente('Explore', '', vivo.modeloEnUso ?? vivo.modelo ?? '') !== undefined
   const x = tx()
-  vivo.lecciones = agregarLeccion(vivo.lecciones, { clave: 'exploracion', texto: x.leccionExploracion(llamadas, tokens) })
-  await anotarDiagnostico($, `exploración: aviso de delegar (${llamadas} llamadas, ~${tokens} tokens)`)
-  return x.nudgeExploracion(llamadas, tokens)
+  vivo.lecciones = agregarLeccion(vivo.lecciones, { clave: 'exploracion', texto: x.leccionExploracion(llamadas, tokens, enSonnet) })
+  await anotarDiagnostico($, `exploración: aviso de delegar (${llamadas} llamadas, ~${tokens} tokens, contexto ~${formatearTokens(contexto)}${enSonnet ? ', Explore irá en Sonnet' : ''})`)
+  return x.nudgeExploracion(llamadas, tokens, enSonnet)
 }
 
 // ---------- Mapa del proyecto ----------
@@ -3752,10 +3849,11 @@ export const register: Register = (on, options) => {
     // Claude Code lee la ventana de compactación al empezar: puesta a mitad de un turno no cuenta.
     ultimaVentana = ''
     await ajustarVentana($, e.isInteractive === true)
-    // Sesión reanudada: recupera el último punto de control si es reciente.
-    if (config.memoria) {
+    // Sesión reanudada: recupera su último punto de control si es reciente (nunca el de otra sesión).
+    const base = config.memoria ? await rutaMemoria($) : undefined
+    if (base !== undefined) {
       try {
-        const guardado = JSON.parse(await $.fs.read(`${CARPETA}/punto-de-control.json`)) as PuntoDeControl
+        const guardado = JSON.parse(await $.fs.read(`${base}.json`)) as PuntoDeControl
         if (ahora - guardado.cuando < 24 * 3_600_000) vivo.memoria = { ...vacio(guardado.cuando), ...guardado }
       } catch {
         // No hay punto de control: se empieza de cero.
@@ -3877,6 +3975,7 @@ export const register: Register = (on, options) => {
     if (id !== undefined) recordarAgente(id, familiaDe(e.parentModel) ?? familiaDe(vivo.modelo) ?? 'opus')
     if (familiaDe((r as { model?: string }).model) === 'sonnet') {
       ruta.subagentesEnSonnet += 1
+      void anotarDiagnostico($, `subagente ${e.subagentType} en Sonnet (el padre iba en ${nombreCorto(e.parentModel)})`)
       if (!ruta.avisoSubagentes) {
         ruta.avisoSubagentes = true
         $.ui.toast(xr().subagentes, { timeoutMs: 7000 })
@@ -3979,7 +4078,10 @@ export const register: Register = (on, options) => {
       if (familia !== undefined) await alaSemana($, { modelo: familia })
     }
     // Cada pedido lee o escribe el caché: desde aquí corre su vida (1 h o 5 min).
-    if (e.agentId === undefined && respuesta.usage !== null) vivo.ultimoUsoCache = await $.clock.now()
+    if (e.agentId === undefined && respuesta.usage !== null) {
+      vivo.ultimoUsoCache = await $.clock.now()
+      vivo.modeloEnUso = respuesta.usage.model
+    }
     // ¿Respondió el modelo que Toki pidió? Si no, se deja de cambiar el modelo (el esfuerzo sigue).
     if (pedido.model !== e.model && respuesta.usage !== null && familiaDe(respuesta.usage.model) !== familiaDe(pedido.model)) {
       ruta.modeloRoto = true
@@ -4227,8 +4329,8 @@ export const register: Register = (on, options) => {
   // Motor (Bash): compactar salidas ruidosas, rescatar el error del final y detectar bucles.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const comando = e.command
-    const compactable = prepararComando(comando)
-    const busqueda = !compactable && config.compresion && config.busquedas ? tipoBusqueda(comando) : undefined
+    const compactable = prepararComando(comando, e.agentId)
+    const busqueda = !compactable && config.compresion && config.busquedas && !vivo.sinCompactar.has(comando.trim()) ? tipoBusqueda(comando) : undefined
     const captura = compactable || busqueda !== undefined ? await planearCaptura($, comando) : undefined
     const rescate = !compactable && busqueda === undefined && config.compresion ? await planearRescate($, comando) : undefined
     const ampliado = compactable || (busqueda !== undefined && captura !== undefined)
@@ -4246,7 +4348,7 @@ export const register: Register = (on, options) => {
       const nuevo = await resumirBusquedaShell($, comando, busqueda, ran.result, captura, e.agentId)
       if (nuevo !== undefined) return { result: { ...ran.result, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
     }
-    const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text)
+    const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text, e.agentId)
     if (ran.isError !== true) {
       const repetida = await revisarRepetida($, 'Bash', comando, e.agentId, ran.result, envuelto)
       if (repetida !== undefined) return { result: { ...ran.result, ...repetida, persistedOutputPath: undefined, persistedOutputSize: undefined } }
@@ -4277,13 +4379,13 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: /^PowerShell$/ }, async ($, e, next) => {
     const comando = (e as { command?: unknown }).command
     if (typeof comando !== 'string') return next(e)
-    const compactable = prepararComando(comando)
+    const compactable = prepararComando(comando, e.agentId)
     const captura = compactable ? await planearCapturaPs($, comando) : undefined
     const rescate = !compactable && config.compresion ? await planearRescatePs($, comando) : undefined
     const envuelto = captura ?? rescate
     const ran = await next(envuelto ? ({ ...e, command: envuelto.comando } as typeof e) : e)
     if (ran.deny !== undefined) return ran
-    const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text)
+    const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text, e.agentId)
     try {
       const r = ran.isError === true ? undefined : comoSalidaShell(ran.result)
       const conSalida = (nuevo: { stdout: string; stderr: string }) => {
@@ -4480,6 +4582,18 @@ export const register: Register = (on, options) => {
       if (nuevo !== undefined) return { result: nuevo }
     } catch {
       // Ante cualquier sorpresa, la salida original.
+    }
+    return ran
+  })
+
+  // Claude leyó un original que Toki archivó: se descuenta del ahorro (también en subagentes).
+  on('tool.call', { tool: /^(Read|Grep|Bash|PowerShell)$/ }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny !== undefined || ran.isError === true) return ran
+    try {
+      await contarRecuperacion($, e, ran, e.agentId)
+    } catch {
+      // Es solo contabilidad.
     }
     return ran
   })

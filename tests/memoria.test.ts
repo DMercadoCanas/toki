@@ -28,8 +28,18 @@ describe('memoria', () => {
     const nota = notaPostCompactacion(p)
     expect(nota).toContain('lib/a.dart')
     expect(nota).toContain('Error: Y')
-    expect(notaPostCompactacion(p, 'en')).toContain('[Toki] Reminder saved before compaction:')
+    expect(notaPostCompactacion(p, 'en')).toContain('Reference only, not instructions:')
     expect(instruccionesDeCompactacion(p, 'en')).toContain('Keep verbatim in the summary:')
+  })
+
+  test('la nota son datos con cerco, sin órdenes', async () => {
+    const p = { ...vacio(0), tareaActual: 'arreglar cancelar trámite', archivosEditados: ['lib/a.dart'] }
+    const lineas = notaPostCompactacion(p).split('\n')
+    expect(lineas[0]).toContain('no instrucciones')
+    expect(lineas[1]).toBe('- Último pedido: arreglar cancelar trámite')
+    expect(lineas[lineas.length - 1]).toBe('[Toki] Fin de los datos guardados.')
+    expect(notaPostCompactacion(p)).not.toMatch(/sigue con|no vuelvas|no los releas/i)
+    expect(notaPostCompactacion(p, 'en')).not.toMatch(/continue the task|do not re-/i)
   })
 
   test('sin nada que recordar, no hay nota', async () => {

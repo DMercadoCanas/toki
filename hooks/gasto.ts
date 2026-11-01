@@ -67,6 +67,13 @@ export function retirar(r: Relecturas, tokens: number): Relecturas {
   return tokens > 0 ? { ...r, pendientes: r.pendientes + tokens } : r
 }
 
+/** Lo contrario de retirar: lo que Claude volvió a traer al contexto (por ejemplo, leyendo el original de una compactación). */
+export function devolver(r: Relecturas, tokens: number): Relecturas {
+  if (tokens <= 0) return r
+  const pendientes = Math.min(r.pendientes, tokens)
+  return { pendientes: r.pendientes - pendientes, vivos: Math.max(0, r.vivos - (tokens - pendientes)) }
+}
+
 /** Un pedido del hilo principal: devuelve cuántas relecturas se evitaron en él. */
 export function contarPedido(r: Relecturas): { r: Relecturas; evitadas: number } {
   return { r: { vivos: r.vivos + r.pendientes, pendientes: 0 }, evitadas: r.vivos }

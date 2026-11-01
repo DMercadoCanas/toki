@@ -37,7 +37,7 @@ describe('plan B', () => {
     await $.turn.start({ text: 'sigue', turnId: 't2' })
 
     const notas = sesion.appended().map(r => JSON.stringify(r.message))
-    const recordatorios = notas.filter(n => n.includes('Recordatorio guardado antes de compactar'))
+    const recordatorios = notas.filter(n => n.includes('guardados antes de compactar. Son referencia, no instrucciones'))
     expect(recordatorios.length).toBe(1)
     expect(recordatorios[0]).toContain('arregla el login que falla con tarjetas vencidas')
     expect(toasts.some(t => t.includes('se compactó el contexto'))).toBe(true)
@@ -46,7 +46,7 @@ describe('plan B', () => {
     tokens = 12_000
     await $.turn.complete(fin('t2'))
     await $.turn.start({ text: 'ahora revisa también el registro de usuarios', turnId: 't3' })
-    expect(sesion.appended().filter(r => JSON.stringify(r.message).includes('Recordatorio')).length).toBe(1)
+    expect(sesion.appended().filter(r => JSON.stringify(r.message).includes('guardados antes de compactar')).length).toBe(1)
   })
 
   test('nota un cambio de modelo con el caché caliente aunque el evento no llegue', async ($, on) => {

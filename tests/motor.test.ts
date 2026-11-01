@@ -1,6 +1,8 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
+import { esMcpRuidosa } from '../hooks/compresor'
+
 // El motor de compactación de punta a punta, con lo que hay debajo de los plugins simulado.
 
 function salidaRuidosa(fallo: boolean): string {
@@ -255,5 +257,91 @@ describe('motor', () => {
 
     respuesta = { content: [{ type: 'text', text: 'listo' }], isError: false }
     expect(((await $.tool.call({ tool: 'mcp__linear__crear' } as never)).result as { content: { text: string }[] }).content[0]?.text).toBe('listo')
+  })
+
+  test('MCP: un lector va entero; si Claude lee el original de una compactada, se descuenta y esa herramienta va entera', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    const guardado = new Map<string, unknown>()
+    on('store.get', ($, e) => ({ value: guardado.get(e.key) }))
+    on('store.set', ($, e) => {
+      guardado.set(e.key, JSON.parse(JSON.stringify(e.value)))
+      return { value: undefined }
+    })
+    const archivos = disco(on)
+    const log = salidaRuidosa(true)
+    on('tool.call', ($, e) => (e.tool === 'Read' ? { result: log } : { result: { content: [{ type: 'text', text: log }], isError: false } }) as never)
+    const textoDe = (r: { result?: unknown }): string => (r.result as { content: { text: string }[] }).content[0]?.text ?? ''
+
+    // Leer un archivo, una página o un documento: va entero aunque sea largo.
+    expect(textoDe(await $.tool.call({ tool: 'mcp__github__get_file_contents' } as never))).toBe(log)
+
+    const compactada = textoDe(await $.tool.call({ tool: 'mcp__sentry__logs' } as never))
+    expect(compactada).toContain('[Toki] Salida compactada')
+    const ruta = /\.claude\/toki\/salidas\/salida-\d+\.txt/.exec(compactada)?.[0] ?? ''
+    expect(ruta).not.toBe('')
+    const antes = Number(guardado.get('tokensAhorradosTotal') ?? 0)
+    expect(antes > 0).toBe(true)
+
+    // Claude lee el original entero: lo leído se resta del ahorro y la herramienta ya no se compacta.
+    await $.tool.call({ tool: 'Read', file_path: `/proyecto/${ruta}` } as never)
+    expect(Number(guardado.get('tokensAhorradosTotal') ?? 0) < antes).toBe(true)
+    const diagnostico = [...archivos.entries()].find(([r]) => r.endsWith('diagnostico.txt'))?.[1] ?? ''
+    expect(diagnostico).toContain('recuperación: Claude leyó')
+    expect(diagnostico).toContain('ya no se compacta en esta sesión')
+    expect(textoDe(await $.tool.call({ tool: 'mcp__sentry__logs' } as never))).toBe(log)
+  })
+
+  test('Bash: si Claude lee entero el original de un comando compactado, ese comando va entero', async ($, on) => {
+    mock.clock(on, { now: 1_000_000 })
+    mock.store(on)
+    const archivos = disco(on)
+    on('env.get', () => ({ value: undefined }))
+    on('env.set', () => ({ value: {} }))
+    const log = salidaRuidosa(false)
+    on('tool.call', ($, e) => (e.tool === 'Read' ? { result: log } : String(e.tool) === 'Grep' ? { result: 'Failed App.Tests.Pagos.CobraConTarjetaVencida' } : { result: { stdout: log, stderr: '', interrupted: false } }) as never)
+    const stdout = async (): Promise<string> => ((await $.tool.call({ tool: 'Bash', command: 'dotnet test' } as never)).result as { stdout: string }).stdout
+
+    const compactada = await stdout()
+    expect(compactada).toContain('[Toki] Salida compactada')
+    const ruta = /\.claude\/toki\/salidas\/salida-\d+\.txt/.exec(compactada)?.[0] ?? ''
+    // Un vistazo con grep cuesta poco: se descuenta, pero el comando se sigue compactando.
+    await $.tool.call({ tool: 'Grep', pattern: 'Failed', path: ruta } as never)
+    const diagnostico = (): string => [...archivos.entries()].find(([r]) => r.endsWith('diagnostico.txt'))?.[1] ?? ''
+    expect(diagnostico()).toContain('recuperación: Claude leyó')
+    expect(diagnostico()).not.toContain('ya no se compacta')
+    // Sigue recortándose (aquí, como salida idéntica a la anterior).
+    expect(await stdout()).not.toBe(log)
+    await $.tool.call({ tool: 'Read', file_path: ruta } as never)
+    expect(diagnostico()).toContain('ya no se compacta en esta sesión')
+    expect(await stdout()).toBe(log)
+  })
+})
+
+describe('MCP: qué se compacta', () => {
+  test('solo las de salida ruidosa, por las palabras del nombre de la herramienta', async () => {
+    const ruidosas = [
+      'mcp__sentry__logs',
+      'mcp__Claude_Browser__preview_logs',
+      'mcp__Claude_Browser__read_console_messages',
+      'mcp__terminal__read_terminal',
+      'mcp__github__get_job_logs',
+      'mcp__ci__getBuildLogs',
+      'mcp__runner__run_tests',
+      'mcp__shell__execute_command',
+      'mcp__k8s__pods_log',
+    ]
+    const lectores = [
+      'mcp__github__get_file_contents',
+      'mcp__claude-in-chrome__get_page_text',
+      'mcp__context7__get-library-docs',
+      'mcp__supabase__execute_sql',
+      'mcp__db__exec_sql',
+      'mcp__jira__get_issue',
+      'mcp__linear__list_issues',
+      'mcp__logs-server__search',
+      'mcp__x__run_query',
+    ]
+    expect(ruidosas.filter(t => !esMcpRuidosa(t))).toEqual([])
+    expect(lectores.filter(t => esMcpRuidosa(t))).toEqual([])
   })
 })
