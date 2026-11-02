@@ -632,6 +632,21 @@ export type TextosRuta = {
   deshacerHecho: (modelo: string, esfuerzo: string, nivel: string) => string
   nadaQueDeshacer: string
   sonnet: TextosSonnet
+  calidad: TextosCalidad
+}
+
+/** «¿Quedó bien?»: la pregunta, sus respuestas y lo que muestra /toki-modelo. */
+export type TextosCalidad = {
+  pregunta: string
+  bien: string
+  mal: string
+  nose: string
+  apagar: string
+  titulo: (cada: number) => string
+  grupo: { bajados: string; testigos: string }
+  fila: (grupo: string, mensajes: number, bien: number, respondidas: number, corregidos: number, siguientes: number) => string
+  apagada: string
+  reactivada: string
 }
 
 /** Lo que Toki hizo con el último mensaje (se ve en /toki-modelo). */
@@ -742,6 +757,18 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
       soloEsfuerzo: m => `Con ${m} no cambia de modelo: solo ajusta el esfuerzo.`,
       uso: 'Actívalo o apágalo con /toki-sonnet sí | no',
     },
+    calidad: {
+      pregunta: 'Toki comprueba de vez en cuando que ahorrar no te quite calidad (no gasta tokens). ¿La respuesta quedó bien?',
+      bien: 'Sí, quedó bien',
+      mal: 'No del todo',
+      nose: 'Aún no sé',
+      apagar: 'No preguntes más',
+      titulo: cada => `¿Quedó bien? (pregunta por 1 de cada ${cada} mensajes que Toki bajó y por cada testigo, sin gastar tokens):`,
+      grupo: { bajados: 'bajados por Toki', testigos: 'testigos, con tu modelo y esfuerzo' },
+      fila: (g, m, b, r, c, s) => `• ${g} (${m}): ${r === 0 ? 'sin respuestas aún' : `${b} de ${r} bien`}${s > 0 ? ` · tu mensaje siguiente corrigió ${c} de ${s}` : ''}`,
+      apagada: 'Ya no pregunta: lo pediste. /toki-modelo calidad lo vuelve a activar.',
+      reactivada: 'Toki: vuelve a preguntar de vez en cuando si la respuesta quedó bien.',
+    },
   },
   en: {
     esfuerzo: { low: 'low', medium: 'medium', high: 'high', xhigh: 'extra high', max: 'max' },
@@ -829,6 +856,18 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
       sinRuteo: 'Note: model and effort per message is off (/toki-modelo no). It will do nothing until you turn it on with /toki-modelo preguntar.',
       soloEsfuerzo: m => `With ${m} it does not switch models: it only adjusts effort.`,
       uso: 'Turn it on or off with /toki-sonnet on | off',
+    },
+    calidad: {
+      pregunta: 'Toki checks now and then that saving does not cost you quality (it spends no tokens). Did the answer turn out right?',
+      bien: 'Yes, it did',
+      mal: 'Not quite',
+      nose: 'Not sure yet',
+      apagar: 'Stop asking',
+      titulo: cada => `Did it turn out right? (asks about 1 in ${cada} messages Toki lowered and every control, spending no tokens):`,
+      grupo: { bajados: 'lowered by Toki', testigos: 'controls, at your model and effort' },
+      fila: (g, m, b, r, c, s) => `• ${g} (${m}): ${r === 0 ? 'no answers yet' : `${b} of ${r} right`}${s > 0 ? ` · your next message corrected ${c} of ${s}` : ''}`,
+      apagada: 'No longer asks: you asked it to stop. /toki-modelo calidad turns it back on.',
+      reactivada: 'Toki: asking again now and then whether the answer turned out right.',
     },
   },
 }

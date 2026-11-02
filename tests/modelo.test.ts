@@ -36,6 +36,7 @@ import {
 } from '../hooks/modelo'
 import type { EstadoRuta } from '../hooks/modelo'
 import { CADA_TESTIGO, factorCalibrado, TESTIGOS_META } from '../hooks/ahorro'
+import { CADA_PREGUNTA } from '../hooks/calidad'
 import { claveDia } from '../hooks/historial'
 
 // Qué modelo y esfuerzo merece cada mensaje: primero lo puro, después con el motor simulado.
@@ -1444,6 +1445,88 @@ describe('calibrar cuántos pedidos usa cada mensaje', () => {
     const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
     expect(estado).toContain(`Pedidos por mensaje con que Toki estima el costo (lo medido en tus mensajes; la tabla de fábrica pesa como ${PESO_FABRICA}):`)
     expect(estado).toContain('• simple: ~2.6 (de fábrica 2; 2 medidos)')
+  })
+})
+
+describe('¿quedó bien? con el motor', () => {
+  const RENOMBRA = 'renombra la variable foo a bar en utils'
+  const PREGUNTA = 'Toki comprueba de vez en cuando que ahorrar no te quite calidad (no gasta tokens). ¿La respuesta quedó bien?'
+
+  test('tras un mensaje que Toki bajó solo, pregunta (cero tokens); «No del todo» y tu corrección siguiente cuentan, y /toki-modelo lo muestra', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const guardado = new Map<string, unknown>()
+    const preguntas: string[] = []
+    const { vistos } = mundo(on, { archivos, guardado, preguntas, respuesta: ls => (ls.includes('No del todo') ? 'No del todo' : (ls[0] ?? '')) })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't0')?.effort).toBe('medium')
+    // Primero lees la respuesta; la pregunta sale un momento después, sin pasar por Claude.
+    expect(preguntas).not.toContain(PREGUNTA)
+    await reloj.advance(2_000)
+    expect(preguntas.filter(p => p === PREGUNTA)).toHaveLength(1)
+    expect(vistos.length).toBe(1)
+    await mensaje($, 't1', 'no era eso, sigue fallando', 1, 'Listo.', 'high')
+    await reloj.advance(2_000)
+    // Una sola pregunta: la siguiente espera ENTRE_PREGUNTAS.
+    expect(preguntas.filter(p => p === PREGUNTA)).toHaveLength(1)
+    const calidad = guardado.get('calidadRuta') as { bajados: Record<string, number>; testigos: Record<string, number> }
+    expect(calidad.bajados).toMatchObject({ preguntas: 1, bien: 0, mal: 1, siguientes: 1, corregidos: 1 })
+    expect(calidad.testigos.mensajes).toBe(0)
+    expect(await diagnostico(reloj, archivos)).toContain('calidad: pregunta (bajados) → mal')
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toContain(`¿Quedó bien? (pregunta por 1 de cada ${CADA_PREGUNTA} mensajes que Toki bajó y por cada testigo, sin gastar tokens):`)
+    expect(estado).toContain(`• bajados por Toki (${calidad.bajados.mensajes}): 0 de 1 bien · tu mensaje siguiente corrigió 1 de 1`)
+  })
+
+  test('los testigos llevan la misma pregunta; «No preguntes más» la apaga hasta /toki-modelo calidad', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const CLAVE = 'claude-opus-5-5|normal|high>medium'
+    // El próximo mensaje normal que Toki planea bajar es el décimo: testigo. Y ya preguntó por un bajado: el
+    // primero de esta sesión (que Toki baja al conocer tu esfuerzo) no pregunta.
+    const vacio = { mensajes: 0, preguntas: 0, bien: 0, mal: 0, siguientes: 0, corregidos: 0 }
+    const guardado = new Map<string, unknown>([
+      ['calibracionEsfuerzo', { [CLAVE]: { candidatos: CADA_TESTIGO - 1, bajados: { mensajes: 9, pedidos: 9, salida: 1_800 }, testigos: { mensajes: 0, pedidos: 0, salida: 0 } } }],
+      ['calidadRuta', { bajados: { ...vacio, preguntas: 1 }, testigos: vacio, ultimaPregunta: 0, apagada: false }],
+    ])
+    const preguntas: string[] = []
+    const { vistos } = mundo(on, { guardado, preguntas, respuesta: ls => (ls.includes('No preguntes más') ? 'No preguntes más' : (ls[0] ?? '')) })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    await reloj.advance(2_000)
+    expect(preguntas).not.toContain(PREGUNTA)
+    await mensaje($, 't1', COLUMNA, 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't1')?.effort).toBe('high')
+    await reloj.advance(2_000)
+    // La misma pregunta que tras un bajado: no sabes cuál es cuál.
+    expect(preguntas.filter(p => p === PREGUNTA)).toHaveLength(1)
+    // Apagada: el bajado que sigue cuenta, pero ya no pregunta.
+    await mensaje($, 't2', BOTON, 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't2')?.effort).toBe('medium')
+    await reloj.advance(2_000)
+    expect(preguntas.filter(p => p === PREGUNTA)).toHaveLength(1)
+    const calidad = guardado.get('calidadRuta') as { bajados: Record<string, number>; testigos: Record<string, number>; apagada: boolean }
+    expect(calidad.testigos).toMatchObject({ mensajes: 1, preguntas: 1, bien: 0, mal: 0, siguientes: 1, corregidos: 0 })
+    expect(calidad.bajados).toMatchObject({ mensajes: 2, preguntas: 1 })
+    expect(calidad.apagada).toBe(true)
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toContain('• testigos, con tu modelo y esfuerzo (1): sin respuestas aún · tu mensaje siguiente corrigió 0 de 1')
+    expect(estado).toContain('Ya no pregunta: lo pediste. /toki-modelo calidad lo vuelve a activar.')
+    const otraVez = ((await $.command.run({ command: 'toki-modelo', args: 'calidad' } as never)) as { text: string }).text
+    expect(otraVez).toBe('Toki: vuelve a preguntar de vez en cuando si la respuesta quedó bien.')
+    expect((guardado.get('calidadRuta') as { apagada: boolean }).apagada).toBe(false)
+  })
+
+  test('sin nadie que conteste (claude -p) no pregunta, pero cuenta', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const guardado = new Map<string, unknown>()
+    const preguntas: string[] = []
+    mundo(on, { guardado, preguntas })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    await reloj.advance(2_000)
+    expect(preguntas).toHaveLength(0)
+    expect((guardado.get('calidadRuta') as { bajados: Record<string, number> }).bajados).toMatchObject({ mensajes: 1, preguntas: 0 })
   })
 })
 

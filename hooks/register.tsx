@@ -106,6 +106,8 @@ import {
   usd as usdTexto,
 } from './modelo'
 import { EXPLORACION_VACIA, pasoExploracion, sumarPaso, tocaDelegar } from './exploracion'
+import { anotarRespuesta, CADA_PREGUNTA, calidadVacia, esBajado, GRUPOS_CALIDAD, leerCalidad, marcarPregunta, sumarMensaje, sumarSiguiente, tocaPreguntar } from './calidad'
+import type { Calidad, GrupoCalidad, RespuestaCalidad } from './calidad'
 import type { Exploracion } from './exploracion'
 import type { Decision as DecisionMensaje, Esfuerzo, EstadoRuta, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, PedidosMedidos, Propuesta, ResultadoRuta, TextosRuta, TipoOpcion } from './modelo'
 import {
@@ -2392,6 +2394,10 @@ const CLAVE_ESFUERZO = 'esfuerzoPorDefecto'
 const CLAVE_CALIBRACION = 'calibracionEsfuerzo'
 /** Pedidos que usó cada tipo de mensaje: calibran lo que Toki estima antes de mandarlo. */
 const CLAVE_PEDIDOS = 'pedidosPorMensaje'
+/** «¿Quedó bien?»: lo que respondiste y lo que corregiste tras los mensajes bajados y sus testigos. */
+const CLAVE_CALIDAD = 'calidadRuta'
+/** La pregunta sale un momento después de la respuesta: primero la lees. */
+const DEMORA_CALIDAD = 1_000
 /** Cuántos modelos recuerda con un esfuerzo por defecto distinto del de fábrica. */
 const MAX_DEFECTOS = 8
 /** Del más fuerte al más débil, como los junta Claude Code. */
@@ -2488,6 +2494,10 @@ const ruta: {
   calibracion: CalibracionEsfuerzo
   /** Cuántos pedidos usaron de verdad tus mensajes, por tipo: la estimación previa se corrige con esto. */
   pedidosMedidos: PedidosMedidos
+  /** «¿Quedó bien?» de los mensajes bajados y sus testigos: vale entre sesiones. */
+  calidad: Calidad
+  /** El último mensaje fue bajado o testigo: tu siguiente dice si lo corregías. */
+  calidadPrevio?: GrupoCalidad
   plan?: PlanTurno
   /** Lo que elegiste antes para cada nivel: la próxima vez se aplica solo. */
   preferencias: Partial<Record<Nivel, TipoOpcion>>
@@ -2546,6 +2556,7 @@ const ruta: {
   defectos: {},
   calibracion: {},
   pedidosMedidos: {},
+  calidad: calidadVacia(),
 }
 
 function xr(): TextosRuta {
@@ -2569,6 +2580,7 @@ function reiniciarRuta(): void {
   ruta.nivelPrevio = undefined
   ruta.atascadoPrevio = false
   ruta.preguntoAntes = false
+  ruta.calidadPrevio = undefined
   ruta.aviso = undefined
   ruta.soloComienzo = true
   ruta.mensajesEn = {}
@@ -2835,6 +2847,76 @@ function lineasPedidos(x: TextosRuta): string[] {
     if (medidos > 0) lineas.push(`    ${x.celdaPedidos(x.nivel[n], pedidosEsperados(ruta.pedidosMedidos, n).toFixed(1), PEDIDOS_POR_NIVEL[n], medidos)}`)
   }
   return lineas.length === 0 ? [] : [`  ${x.pedidosMedidos(PESO_FABRICA)}`, ...lineas]
+}
+
+// ---------- ¿Quedó bien? ----------
+
+/** Cambia lo guardado de «¿quedó bien?». Relee antes: otra sesión pudo sumar lo suyo. */
+async function cambiarCalidad($: $, cambiar: (c: Calidad) => Calidad): Promise<void> {
+  let guardada = ruta.calidad
+  try {
+    guardada = leerCalidad(await $.store.get(CLAVE_CALIDAD))
+  } catch {
+    // Sin store: lo de esta sesión.
+  }
+  ruta.calidad = cambiar(guardada)
+  try {
+    await $.store.set(CLAVE_CALIDAD, ruta.calidad)
+  } catch {
+    // Sin store: solo en esta sesión.
+  }
+}
+
+/**
+ * Un mensaje entero que Toki mandó solo con menos que lo tuyo, o su testigo: cuenta
+ * para su grupo y, si le toca, pregunta si quedó bien. Como en la calibración, lo que
+ * bajaste tú (al preguntarte, o con el modo ahorro) no cuenta: no tiene testigos. Lo
+ * tuyo es tu modelo (el de /model) y el esfuerzo con que Toki planeó.
+ */
+async function anotarCalidad($: $, plan: PlanTurno | undefined, turnId: string, ahora: number): Promise<void> {
+  if (plan === undefined || plan.turno !== turnId) return
+  const tuyo = { modelo: vivo.modelo ?? plan.modelo, esfuerzo: plan.supuesto }
+  const solo = plan.como === 'auto' && !plan.preguntado && !plan.estado.enAhorro
+  const grupo: GrupoCalidad | undefined = plan.testigo !== undefined ? 'testigos' : solo && esBajado(tuyo, plan.usada) ? 'bajados' : undefined
+  ruta.calidadPrevio = grupo
+  if (grupo === undefined) return
+  let toca = false
+  await cambiarCalidad($, c => {
+    const sumada = sumarMensaje(c, grupo)
+    // Sin nadie que conteste, o si Claude te preguntó algo: lo suyo va primero.
+    toca = ruta.interactivo && !ruta.preguntoAntes && tocaPreguntar(sumada, grupo, ahora)
+    return toca ? marcarPregunta(sumada, grupo, ahora) : sumada
+  })
+  if (toca) $.clock.after(DEMORA_CALIDAD, () => void preguntarCalidad($, grupo))
+}
+
+/** La misma pregunta para bajados y testigos: no sabes cuál es cuál. Un texto libre no cuenta. */
+async function preguntarCalidad($: $, grupo: GrupoCalidad): Promise<void> {
+  // Ya mandaste otro mensaje: llegaría tarde.
+  if (vivo.enTurno) return
+  const x = xr().calidad
+  let respuesta: string
+  try {
+    respuesta = await $.ui.ask(x.pregunta, { header: 'Toki', options: [x.bien, x.mal, x.nose, x.apagar] })
+  } catch {
+    void anotarDiagnostico($, `calidad: pregunta (${grupo}) sin respuesta`)
+    return
+  }
+  const r: RespuestaCalidad | undefined = respuesta === x.bien ? 'bien' : respuesta === x.mal ? 'mal' : respuesta === x.nose ? 'nose' : respuesta === x.apagar ? 'apagar' : undefined
+  if (r === undefined) return
+  await cambiarCalidad($, c => anotarRespuesta(c, grupo, r))
+  // No quedó bien: un "dale" o "sigue" que venga ahora cuenta como atascado, y no va en simple.
+  if (r === 'mal' && !vivo.enTurno) ruta.atascadoPrevio = true
+  void anotarDiagnostico($, `calidad: pregunta (${grupo}) → ${r}`)
+}
+
+/** /toki-modelo: lo que respondiste y lo que corregiste tras los bajados y los testigos. */
+function lineasCalidad(x: TextosRuta): string[] {
+  const c = ruta.calidad
+  const xc = x.calidad
+  const filas = GRUPOS_CALIDAD.filter(g => c[g].mensajes > 0).map(g => `    ${xc.fila(xc.grupo[g], c[g].mensajes, c[g].bien, c[g].bien + c[g].mal, c[g].corregidos, c[g].siguientes)}`)
+  if (filas.length === 0 && !c.apagada) return []
+  return [`  ${xc.titulo(CADA_PREGUNTA)}`, ...filas, ...(c.apagada ? [`    ${xc.apagada}`] : [])]
 }
 
 /** /toki-modelo: al bajar el esfuerzo, cuánta salida cuenta Toki como ahorrada y con cuántos testigos. */
@@ -3153,7 +3235,7 @@ function textoRuta(x: TextosRuta, s?: Pick<Sesion, 'ruteoAhorroUsd' | 'ruteoExtr
     const elegido = `${nombreCorto(d.despues.modelo)} · ${x.esfuerzo[d.despues.esfuerzo]} (${textoDiferencia(d.dif, x)}${d.como === 'deshecho' ? `, ${x.deshecho}` : ''})`
     lineas.push(`  • ${x.linea(x.nivel[d.nivel], elegido, x.motivo[d.motivo])}`)
   }
-  return [...lineas, ...lineasCalibracion(x), ...lineasPedidos(x)]
+  return [...lineas, ...lineasCalibracion(x), ...lineasPedidos(x), ...lineasCalidad(x)]
 }
 
 // ---------- Guardias: caché vencido y límites ----------
@@ -3506,6 +3588,10 @@ async function cerrarTarea($: $): Promise<void> {
 async function contarMensaje($: $, textoCrudo: string, frio?: number): Promise<void> {
   const texto = quitarEtiquetasDeSistema(textoCrudo)
   if (texto === '' || texto.startsWith('/')) return
+  // El anterior fue bajado o testigo: si este lo corrige, no había quedado bien.
+  const previo = ruta.calidadPrevio
+  ruta.calidadPrevio = undefined
+  if (previo !== undefined) await cambiarCalidad($, c => sumarSiguiente(c, previo, esCorreccion(texto)))
   if (empiezaTarea(texto)) {
     await cerrarTarea($)
     tareaAbierta = { usd: 0, correcciones: 0 }
@@ -3863,6 +3949,11 @@ export const register: Register = (on, options) => {
     } catch {
       // Sin dato: la tabla de fábrica.
     }
+    try {
+      ruta.calidad = leerCalidad(await $.store.get(CLAVE_CALIDAD))
+    } catch {
+      // Sin dato: se empieza a contar.
+    }
     // Animación de Toki: un cuadro cada 600 ms mientras la franja esté visible.
     if (config.acompanante) {
       $.clock.every(600, () => {
@@ -4211,6 +4302,8 @@ export const register: Register = (on, options) => {
         if (!e.isAborted && e.reason === 'answer') await registrarCalibracion($, ruta.plan, medicion, e.turnId)
         // Cuántos pedidos usó de verdad: la próxima estimación de este tipo de mensaje parte de ahí.
         if (!e.isAborted && e.reason === 'answer') await registrarPedidos($, medicion)
+        // Un mensaje que Toki bajó, o su testigo: a veces pregunta si quedó bien (cero tokens).
+        if (!e.isAborted && e.reason === 'answer') await anotarCalidad($, ruta.plan, e.turnId, ahora)
       }
       // Lo que ahorró (o costó de más) este mensaje, medido, a la sesión, la semana y el total.
       await acreditar($)
@@ -4544,6 +4637,10 @@ export const register: Register = (on, options) => {
       const antes = await deshacerEleccion($)
       if (antes === undefined || ultima === undefined) return { text: x.nadaQueDeshacer }
       return { text: x.deshacerHecho(nombreCorto(antes.modelo), x.esfuerzo[antes.esfuerzo], x.nivel[ultima.nivel]) }
+    }
+    if (/^(calidad|quality)$/.test(arg)) {
+      await cambiarCalidad($, c => ({ ...c, apagada: false }))
+      return { text: x.calidad.reactivada }
     }
     if (/^(preguntar|siempre|autom[aá]tico|auto|no|off|apagado)$/.test(arg)) {
       ruta.modo = leerModo(arg)
