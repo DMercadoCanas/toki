@@ -189,7 +189,7 @@ function cifraFina(n: number): string {
 }
 
 /** Sin usar en DIAS_SIN_USO días, contados desde que Toki lleva la cuenta. */
-function sinUsar(s: ServidorMcp, o: OpcionesDieta): boolean {
+function sinUsar(s: ServidorMcp, o: Pick<OpcionesDieta, 'ahora' | 'desde'>): boolean {
   const desde = s.ultimoUso ?? o.desde
   return o.ahora - desde >= DIAS_SIN_USO * DIA
 }
@@ -201,6 +201,11 @@ function textoUso(s: ServidorMcp, o: OpcionesDieta, x: (typeof TEXTOS)['es']): s
   }
   const dias = Math.floor((o.ahora - s.ultimoUso) / DIA)
   return dias <= 0 ? x.hoy : dias === 1 ? x.ayer : dias >= DIAS_SIN_USO ? x.sinUso(dias) : x.haceDias(dias)
+}
+
+/** Los servidores MCP que pesan y no usaste en DIAS_SIN_USO días: apagarlos ahorra en cada pedido. */
+export function mcpSinUso(d: Dieta, o: Pick<OpcionesDieta, 'ahora' | 'desde'>): ServidorMcp[] {
+  return d.servidores.filter(s => s.tokens >= MCP_QUE_PESA && sinUsar(s, o))
 }
 
 /** /toki-dieta en texto. Sin desglose, lo dice. */
@@ -226,9 +231,7 @@ export function textoDieta(d: Dieta | undefined, o: OpcionesDieta): string {
   }
   if (d.skills !== undefined && d.skills.tokens > 0) lineas.push('', x.skills(formatearTokens(d.skills.tokens), d.skills.listadas, d.skills.total))
   const sugerencias: string[] = []
-  for (const s of d.servidores) {
-    if (s.tokens >= MCP_QUE_PESA && sinUsar(s, o)) sugerencias.push(x.apagarMcp(s.nombre, formatearTokens(s.tokens), cifraUsd(o.pedidosSemana * o.lectura(s.tokens))))
-  }
+  for (const s of mcpSinUso(d, o)) sugerencias.push(x.apagarMcp(s.nombre, formatearTokens(s.tokens), cifraUsd(o.pedidosSemana * o.lectura(s.tokens))))
   const memoria = d.memoria.reduce((suma, m) => suma + m.tokens, 0)
   if (memoria > MEMORIA_QUE_PESA) sugerencias.push(x.memoriaGrande(formatearTokens(memoria)))
   if ((d.skills?.tokens ?? 0) > SKILLS_QUE_PESAN) sugerencias.push(x.skillsGrandes(formatearTokens(d.skills?.tokens ?? 0)))

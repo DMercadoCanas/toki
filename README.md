@@ -157,7 +157,7 @@ Medido con `claude -p` y Opus 5.5 de modelo:
 - **Te muestra a dónde se va cada token.** Con las cifras que la API reporta pedido por pedido: cuánto fue releer la conversación, escribir al caché, entrada nueva, respuestas y razonamiento, y subagentes. Si el ahorro va en 0, `/toki-por-que` te dice por qué.
 - **Relecturas evitadas.** Lo que Toki saca del contexto (o lo que compacta antes) Claude ya no lo relee en cada pedido siguiente. Toki lo cuenta aparte, pedido por pedido, y descuenta lo que cuesta la compactación misma.
 - **Salidas repetidas en una línea.** Si un comando devuelve exactamente lo mismo que hace un rato (`git status`, un build sin cambios), Claude recibe una línea con la ruta de la copia.
-- **Modo conciso por tamaño.** Se activa cuando la conversación pasa de ~150k tokens (o la mitad de la ventana de compactación). Antes era al 50% de la ventana, y con 1M de ventana llegaba tarde o nunca.
+- **Modo conciso por tamaño.** Se activa cuando la conversación pasa de ~150k tokens (o la mitad de la ventana de compactación). Antes era al 50% de la ventana, y con 1M de ventana llegaba tarde o nunca. *Desde 0.17 ya no existe: lo reemplazan las respuestas breves desde el primer mensaje.*
 - **Lo que no hace, a propósito:** Claude Code ya evita releer un archivo que no cambió, así que Toki no lo duplica. Tampoco recorta lo que Claude pidió exacto (`cat`, `sed -n`, `git diff`), para no perder información.
 
 ## Lo nuevo en 0.6
@@ -219,7 +219,7 @@ Medido con `claude -p` y Opus 5.5 de modelo:
 
 ## El panel `/toki`
 
-Cifras grandes en dólares (esta sesión, hoy, 7 días, 30 días, histórico), de dónde sale el ahorro de la sesión (relecturas, recortes, empezar en limpio, respuestas breves, modelo y esfuerzo), lo que costó según la API y lo que habría costado sin Toki, a cuánto compacta, tu racha y tus logros, una gráfica del ahorro por día de las últimas dos semanas, qué ocupa tu contexto ahora, los últimos comandos y qué hizo Toki con cada uno, lo que notó en la sesión y sugerencias concretas.
+Cifras grandes en dólares (esta sesión, hoy, 7 días, 30 días, histórico), de dónde sale el ahorro estimado de la sesión (relecturas, recortes, empezar en limpio, respuestas breves, modelo y esfuerzo), lo que costó según la API (medido) y lo que habría costado sin Toki (estimado), la oportunidad que aún no tomaste (no se suma), a cuánto compacta, tu racha y tus logros, una gráfica del ahorro por día de las últimas dos semanas, qué ocupa tu contexto ahora, los últimos comandos y qué hizo Toki con cada uno, lo que notó en la sesión y sugerencias concretas.
 
 ### Logros
 
@@ -230,11 +230,12 @@ Cifras grandes en dólares (esta sesión, hoy, 7 días, 30 días, histórico), d
 - **`/toki`**: el panel con todo lo anterior.
 - **`/toki-por-que`**: los últimos comandos y, para cada uno, si se compactó (y cuánto ahorró), si se rescató algo o por qué no se tocó. Si crees que Toki no está ahorrando, empieza por aquí.
 - **`/toki-entrevista`**: preguntas antes de pedidos grandes (`auto`, `preguntar`, `no`).
-- **`/toki-modelo`**: qué modelo y esfuerzo eligió para cada mensaje, y el modo (`preguntar`, `siempre`, `automatico`, `no`). `/toki-modelo deshacer` vuelve atrás el último cambio.
+- **`/toki-modelo`**: qué modelo y esfuerzo eligió para cada mensaje, y el modo (`preguntar`, `siempre`, `automatico`, `no`). `/toki-modelo deshacer` vuelve atrás el último cambio. También muestra con cuántos pedidos por mensaje estima el costo: la tabla de fábrica, corregida con lo que usaron tus mensajes.
 - **`/toki-sonnet`** `sí` · `no`: Solo Sonnet hasta que haga falta; sin argumento, cómo va.
 - **`/toki-semana`** (o `/toki-semana pasada`): la tarjeta de la semana, con su nota de A a F. Agrega `md` para guardarla en Markdown.
 - **`/toki-presupuesto`** `$2` · `500k` · `quitar`: un tope para la tarea actual; sin argumentos, cómo va.
 - **`/toki-mapa`**: crea o actualiza el mapa del proyecto (también se crea solo, una vez al día, en repositorios git).
+- **`/toki-dieta`**: cuánto pesa el contexto fijo en cada pedido (memoria, skills, agentes, servidores MCP), lo que cuesta con el caché caliente y frío, y qué servidores MCP no usaste en 7 días, para apagarlos en `/mcp`.
 - **`/output-style`** → `toki:conciso`: lo mismo que **Respuestas breves**, como estilo (por si apagaste la opción).
 
 ## Configuración
@@ -278,7 +279,7 @@ Lo honesto: el ahorro grande aparece cuando Toki le evita a Claude volver a corr
 
 Las **relecturas evitadas** son otra cuenta, aparte: lo que Toki sacó del contexto, multiplicado por cada pedido siguiente que ya no lo releyó, hasta la próxima compactación. Si Toki compactó antes que Claude Code, cuenta la diferencia de tamaño en cada pedido mientras la conversación "sin Toki" no hubiera llegado al umbral de Claude Code, y descuenta una lectura completa por la compactación. Son lecturas de caché: la parte más barata de cada pedido, pero la más grande.
 
-Lo que la barra muestra como "ahorrado" suma, en dólares a precio de API: las relecturas evitadas; las salidas recortadas (lo que Claude habría leído sin Toki, como máximo 30 KB o la vista previa de 2 KB cuando Claude Code guarda la salida en un archivo, menos lo que leyó con él, a ~4 caracteres por token); empezar en limpio; las respuestas breves (con lo medido); y modelo y esfuerzo (con lo que devolvió cada pedido). Resta lo que costó de más. Los rescates y los turnos evitados no se suman, así que en sesiones con tests y builds la cifra se queda corta.
+Lo que la barra muestra como "ahorrado (est.)" es una estimación, porque el mismo mensaje nunca corre también sin Toki; lo medido es lo que costó, con las cifras que la API devuelve en cada pedido. `/toki` separa las dos cosas y muestra aparte, sin sumarla, la **oportunidad**: lo que ahorrarías apagando servidores MCP que no usaste en 7 días. La estimación suma, en dólares a precio de API: las relecturas evitadas; las salidas recortadas (lo que Claude habría leído sin Toki, como máximo 30 KB o la vista previa de 2 KB cuando Claude Code guarda la salida en un archivo, menos lo que leyó con él, a ~4 caracteres por token); empezar en limpio; las respuestas breves (con lo medido); y modelo y esfuerzo (con lo que devolvió cada pedido). Resta lo que costó de más y lo que Claude volvió a leer del original de una salida compactada. Los rescates y los turnos evitados no se suman, así que en sesiones con tests y builds la cifra se queda corta.
 
 En `evals/` está la suite para `claude plugin eval`: corre cada caso con y sin el plugin y califica el resultado. `evals/README.md` explica cada caso.
 

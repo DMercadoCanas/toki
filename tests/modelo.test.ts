@@ -18,12 +18,18 @@ import {
   hermano,
   leerEsfuerzo,
   leerModo,
+  leerPedidosMedidos,
   limpiarPrompt,
   modeloCanonico,
   modeloSubagente,
   nivelHeuristico,
+  MUESTRAS_PEDIDOS,
   PEDIDOS_PARA_SUBIR,
+  PEDIDOS_POR_NIVEL,
+  pedidosEsperados,
+  PESO_FABRICA,
   proponer,
+  sumarPedidos,
   terminaEnPregunta,
   textosRuta,
   usaEsfuerzoHeredado,
@@ -919,7 +925,7 @@ describe('una sola cifra en dólares con el motor', () => {
     await reloj.advance(13_000)
     const banda = await $.ui.mount({ ...BANDA, surface: 'terminal' })
     // Cada mensaje: $0.0074 en Sonnet contra $0.0148 en Opus. Tres: ~$0.02 ahorrados, la mitad de lo que habría costado.
-    expect(await banda.find({ type: 'Text', text: '· ahorrado' })).toBeDefined()
+    expect(await banda.find({ type: 'Text', text: '· ahorrado (est.)' })).toBeDefined()
     expect(await banda.find({ type: 'Text', text: /^~\$0\.02 −50 %$/ })).toBeDefined()
     expect(await banda.find({ type: 'Text', text: /^Sonnet ✓ · por Toki$/ })).toBeDefined()
     // Ni relecturas ni "por modelo" sueltos: el desglose está en /toki.
@@ -928,12 +934,12 @@ describe('una sola cifra en dólares con el motor', () => {
 
     const toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
     expect(toki).toContain('Toki · ~$0.02 ahorrados en esta sesión (−50 %) · hoy ~$0.02 · semana ~$0.02 · histórico ~$0.02\n')
-    expect(toki).toContain('De dónde sale el ahorro de esta sesión:\n  Modelo y esfuerzo: ~$0.02 (cada pedido contra tu modelo y tu esfuerzo)\n  Esta sesión costó ~$0.02; sin Toki habría costado ~$0.04.\n')
+    expect(toki).toContain('De dónde sale el ahorro de esta sesión (estimado):\n  Modelo y esfuerzo: ~$0.02 (cada pedido contra tu modelo y tu esfuerzo)\n  Medido: esta sesión costó ~$0.02. Estimado: sin Toki habría costado ~$0.04.\n')
     expect(toki).toContain('✓ Respondió Sonnet: lo dice la API en cada pedido, no es una suposición de Toki.')
 
     const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
-    expect(await panel.find({ type: 'Text', text: 'De dónde sale el ahorro de esta sesión' })).toBeDefined()
-    expect(await panel.find({ type: 'Text', text: 'Esta sesión costó ~$0.02; sin Toki habría costado ~$0.04.' })).toBeDefined()
+    expect(await panel.find({ type: 'Text', text: 'De dónde sale el ahorro de esta sesión (estimado)' })).toBeDefined()
+    expect(await panel.find({ type: 'Text', text: 'Medido: esta sesión costó ~$0.02. Estimado: sin Toki habría costado ~$0.04.' })).toBeDefined()
     expect(await panel.find({ type: 'Text', text: /^~\$0\.02 −50 %$/ })).toBeDefined()
     await panel.unmount()
 
@@ -960,12 +966,12 @@ describe('una sola cifra en dólares con el motor', () => {
     const banda = await $.ui.mount({ ...BANDA, surface: 'terminal' })
     expect(await banda.find({ type: 'Text', text: '· costó de más' })).toBeDefined()
     expect(await banda.find({ type: 'Text', text: /^~\$0\.06$/ })).toBeDefined()
-    expect(await banda.find({ type: 'Text', text: '· ahorrado' })).toBeUndefined()
+    expect(await banda.find({ type: 'Text', text: '· ahorrado (est.)' })).toBeUndefined()
     await banda.unmount()
     const toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
     expect(toki).toContain('Toki · esta sesión Toki costó ~$0.06 de más · hoy −$0.06 · semana −$0.06 · histórico −$0.06\n')
     expect(toki).toContain('  Modelo y esfuerzo: −$0.06 (costó de más por más esfuerzo o al reescribir el caché)\n')
-    expect(toki).toContain('  Esta sesión costó ~$0.10; sin Toki habría costado ~$0.04.\n')
+    expect(toki).toContain('  Medido: esta sesión costó ~$0.10. Estimado: sin Toki habría costado ~$0.04.\n')
     expect(toki.includes('ahorró $0.00')).toBe(false)
   })
 
@@ -1161,7 +1167,7 @@ describe('el esfuerzo con que pide Claude Code', () => {
     const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
     expect(estado).toContain('Último mensaje: simple (tarea mecánica) · Opus · muy alto → Sonnet · bajo')
     // Una sola entrada: la del plan, corregida.
-    expect(estado.split('\n').filter(l => l.trim().startsWith('•')).length).toBe(1)
+    expect(estado.split('\n').filter(l => l.trim().startsWith('•') && l.includes('→')).length).toBe(1)
     // Un solo aviso con sonido; el texto, el corregido.
     expect(toasts.filter(t => t.includes('Sonnet')).length).toBeLessThanOrEqual(1)
   })
@@ -1395,6 +1401,49 @@ describe('calibrar lo que ahorra bajar el esfuerzo', () => {
     expect(vistos.filter(v => v.turnId !== 't0').map(v => v.effort)).toEqual(Array<string>(CADA_TESTIGO).fill('low'))
     // t0 sí cuenta: Toki lo bajó solo al ver que ibas en alto. Lo simple, que bajaste tú, no.
     expect(Object.keys(guardado.get('calibracionEsfuerzo') ?? {})).toEqual(['claude-opus-5-5|normal|high>medium'])
+  })
+})
+
+describe('calibrar cuántos pedidos usa cada mensaje', () => {
+  const RENOMBRA = 'renombra la variable foo a bar en utils'
+
+  test('lo medido corrige la tabla de fábrica poco a poco, con los últimos mensajes', () => {
+    expect(pedidosEsperados({}, 'complejo')).toBe(PEDIDOS_POR_NIVEL.complejo)
+    // Lo que pasó en una sesión real: Toki estimó 9 pedidos para un mensaje complejo y fueron 31.
+    let m = sumarPedidos({}, 'complejo', 31)
+    expect(pedidosEsperados(m, 'complejo')).toBe((9 * PESO_FABRICA + 31) / (PESO_FABRICA + 1))
+    expect(pedidosEsperados(m, 'trivial')).toBe(PEDIDOS_POR_NIVEL.trivial)
+    for (let i = 0; i < 30; i++) m = sumarPedidos(m, 'complejo', 20)
+    expect(m.complejo?.length).toBe(MUESTRAS_PEDIDOS)
+    expect(pedidosEsperados(m, 'complejo')).toBe((9 * PESO_FABRICA + 20 * MUESTRAS_PEDIDOS) / (PESO_FABRICA + MUESTRAS_PEDIDOS))
+    // Un mensaje sin pedidos no cuenta.
+    expect(sumarPedidos(m, 'normal', 0)).toBe(m)
+    expect(leerPedidosMedidos({ complejo: [31, -2, 'x', 12], raro: [5] })).toEqual({ complejo: [31, 12] })
+    expect(leerPedidosMedidos(null)).toEqual({})
+  })
+
+  test('con el doble de pedidos esperados, el mensaje cuesta el doble', () => {
+    const base = { nivel: 'complejo' as const, modelo: OPUS, esfuerzo: 'high' as const, contexto: 50_000, ttl1h: false, permitirModelo: true }
+    expect(cerca(proponer({ ...base, pedidos: 18 }).actual.usd, proponer(base).actual.usd * 2)).toBe(true)
+  })
+
+  test('cada mensaje entero guarda cuántos pedidos usó; el siguiente de su tipo ya se estima con eso, y /toki-modelo lo muestra', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const guardado = new Map<string, unknown>()
+    mundo(on, { archivos, guardado })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', RENOMBRA, 6)
+    expect(guardado.get('pedidosPorMensaje')).toEqual({ trivial: [6] })
+    await mensaje($, 't1', RENOMBRA, 1)
+    const usos = (await diagnostico(reloj, archivos)).filter(l => l.startsWith('uso: trivial'))
+    expect(usos[0]).toContain('Toki estimó $')
+    expect(usos[0]).toContain('(2 pedidos,')
+    // (2 × 3 de fábrica + 6 medidos) / 4.
+    expect(usos[1]).toContain('(3 pedidos,')
+    const estado = ((await $.command.run({ command: 'toki-modelo', args: '' } as never)) as { text: string }).text
+    expect(estado).toContain(`Pedidos por mensaje con que Toki estima el costo (lo medido en tus mensajes; la tabla de fábrica pesa como ${PESO_FABRICA}):`)
+    expect(estado).toContain('• simple: ~2.6 (de fábrica 2; 2 medidos)')
   })
 })
 

@@ -18,7 +18,7 @@ Lista para el día que decidas enviarlo. Nada de esto se ha enviado.
 - [ ] Nombre permanente: `toki`. No se cambia nunca; para otra etiqueta se usa `displayName`.
 - [ ] `version` subida en `plugin.json` (ahora 0.17.6) y el mismo número en `VERSION` de `hooks/register.tsx`.
 - [ ] `claude plugin validate --strict .` → `Validation passed` sin advertencias (hoy pasa).
-- [ ] `claude plugin test .` → todo verde (hoy 332/332).
+- [ ] `claude plugin test .` → todo verde (hoy 336/336).
 - [ ] Instalar desde el marketplace en una carpeta limpia y abrir una sesión: `claude plugin marketplace add DMercadoCanas/toki`, luego `claude plugin install toki@toki`.
 - [ ] Correr en el Mac los casos con Bash (necesitan el sandbox; el comando, con `-j 1`, está en `evals/README.md`), juntarlos con los demás (`python3 evals/benchmark.py evals/results/2026-10-22-sin-bash.json evals/results/bash.json`) y pegar la tabla en el README. Los casos sin Bash ya están medidos con 0.16.
 - [x] `homepage` y `repository` en `plugin.json` apuntan a `https://github.com/DMercadoCanas/toki`, igual que tu `origin` local.

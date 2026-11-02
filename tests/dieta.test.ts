@@ -122,6 +122,21 @@ function mundo(on: On, guardado: Map<string, unknown>): void {
   on('tool.call', () => ({ result: 'ok' }) as never)
 }
 
+describe('oportunidad en /toki', () => {
+  test('un servidor MCP sin uso en 7 días va como oportunidad, aparte del ahorro y sin sumarse', async ($, on) => {
+    mock.clock(on, { now: AHORA })
+    const guardado = new Map<string, unknown>([['usoMcp', { desde: AHORA - 30 * DIA, ultimo: { mcp__linear__list_issues: AHORA - DIA } }]])
+    mundo(on, guardado)
+    on('ui.open', () => ({ value: { isPlaced: false, reason: 'prueba' } }) as never)
+    on('ui.log', () => ({ value: undefined }))
+    const toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).toContain(`Oportunidad (aún no ahorrado; no se suma):\n  • Apagar en /mcp slack, sin uso en ${DIAS_SIN_USO} días: ~3.0k tokens menos en cada pedido.\n`)
+    // linear se usó ayer: no es oportunidad. Y nada de eso entra en lo ahorrado.
+    expect(toki).not.toContain('Apagar en /mcp linear')
+    expect(toki).toMatch(/^Toki · \$0\.00 ahorrados en esta sesión/)
+  })
+})
+
 describe('/toki-dieta con el motor', () => {
   test('una llamada a MCP queda anotada, y /toki-dieta la usa para el último uso', async ($, on) => {
     const reloj = mock.clock(on, { now: AHORA })

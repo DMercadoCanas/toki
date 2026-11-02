@@ -233,6 +233,9 @@ export type Textos = {
   mapaHereda: string
   logroNombres: Record<string, string>
   gastoTitulo: string
+  /** Lo que se podría ahorrar y aún no: va aparte y no se suma al ahorro. */
+  oportunidadTitulo: string
+  oportunidadMcp: (servidores: string, tokens: string, dias: number, usdSemana: string | undefined) => string
   gastoLinea: (leido: string, pct: number, escrito: string, nueva: string, salida: string) => string
   gastoPedidos: (pedidos: number, promedio: string) => string
   gastoSub: (pedidos: number, tokens: string) => string
@@ -253,8 +256,8 @@ const es: Textos = {
   eslogan: 'Cada token cuenta.',
   contexto: 'contexto',
   cache: 'caché',
-  ahorrado: 'ahorrado',
-  ahorrados: 'ahorrados',
+  ahorrado: 'ahorrado (est.)',
+  ahorrados: 'ahorrados (est.)',
   cincoHoras: '5 h',
   semana: 'semana',
   frio: 'frío',
@@ -423,9 +426,9 @@ const es: Textos = {
   menosPct: p => `−${p} %`,
   tokensLinea: (s, t, r) => `En tokens: ~${s} recortados esta sesión · ~${t} desde siempre${r !== undefined ? ` · ~${r} relecturas evitadas` : ''}`,
   aPrecioApi: (s, b) =>
-    `En dólares a precio de API: lo de modelo y esfuerzo sale de lo que devolvió cada pedido; recortes y relecturas, de los tokens que Toki quitó${b !== undefined ? `; las respuestas breves, de la salida de cada pedido con lo medido (~${b} % menos)` : ''}.${s ? ' Con tu suscripción no lo pagas aparte: es uso de tus límites que te queda libre.' : ''}`,
+    `En dólares a precio de API. Lo que costó es medido: sale de lo que devolvió la API en cada pedido. El ahorro es estimado, porque el mismo mensaje no corre también sin Toki: lo de modelo y esfuerzo compara cada pedido con el mismo en tu modelo y tu esfuerzo; recortes y relecturas salen de los tokens que Toki quitó, menos lo que Claude volvió a leer del original${b !== undefined ? `; las respuestas breves, de la salida de cada pedido con lo medido (~${b} % menos)` : ''}.${s ? ' Con tu suscripción no lo pagas aparte: es uso de tus límites que te queda libre.' : ''}`,
   estimadoPrevio: c => `Incluye ${c} de antes de la versión 0.17, estimados a precio de Sonnet (solo recortes y relecturas).`,
-  desgloseTitulo: 'De dónde sale el ahorro de esta sesión',
+  desgloseTitulo: 'De dónde sale el ahorro de esta sesión (estimado)',
   desgloseRelecturas: (u, t) => `Relecturas evitadas: ${u} (~${t} tokens que Claude no volvió a leer porque Toki compactó antes o sacó algo del contexto)`,
   desgloseLimpio: (u, t) => `Empezar en limpio: ${u} (~${t} tokens de la conversación de antes que Claude ya no releyó ni reescribió)`,
   desgloseBreve: (u, t, p) => `Respuestas breves: ${u} (~${t} tokens de salida que Claude no escribió; estimado con lo medido, ~${p} % menos)`,
@@ -437,7 +440,7 @@ const es: Textos = {
       : a === undefined
         ? `Modelo y esfuerzo: ${n} (costó de más por más esfuerzo o al reescribir el caché)`
         : `Modelo y esfuerzo: ${n} (ahorró ${a}; costó ${e} de más por más esfuerzo o al reescribir el caché)`,
-  desgloseCosto: (g, s) => `Esta sesión costó ${g}; sin Toki habría costado ${s}.`,
+  desgloseCosto: (g, s) => `Medido: esta sesión costó ${g}. Estimado: sin Toki habría costado ${s}.`,
   diasSemana: ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'],
   mapaTitulo: 'Mapa del proyecto',
   mapaCabecera: (f, n, r) => `Generado por Toki el ${f}, sin usar el modelo (solo análisis de texto). ${n} archivos de código${r ? ' (recortado: el proyecto es más grande)' : ''}.`,
@@ -446,7 +449,9 @@ const es: Textos = {
   mapaArchivos: 'Archivos y símbolos',
   mapaDefine: 'define',
   mapaHereda: 'hereda',
-  gastoTitulo: 'Lo que costó esta sesión (cifras de la API)',
+  gastoTitulo: 'Lo que costó esta sesión (medido: cifras de la API)',
+  oportunidadTitulo: 'Oportunidad (aún no ahorrado; no se suma)',
+  oportunidadMcp: (s, t, d, u) => `Apagar en /mcp ${s}, sin uso en ${d} días: ~${t} tokens menos en cada pedido${u !== undefined ? ` (esta semana te costaron ${u})` : ''}.`,
   gastoLinea: (l, p, w, n, o) => `Releer la conversación (caché): ~${l} (${p}%) · escribir al caché: ~${w} · entrada nueva: ~${n} · respuestas y razonamiento: ~${o}`,
   gastoPedidos: (n, prom) => `${n} ${n === 1 ? 'pedido' : 'pedidos'} al modelo; cada uno mandó en promedio ~${prom} de contexto.`,
   gastoSub: (n, t) => `Subagentes y tareas internas (compactar, memoria): ${n} ${n === 1 ? 'pedido' : 'pedidos'}, ~${t}.`,
@@ -478,8 +483,8 @@ const en: Textos = {
   eslogan: 'Every token counts.',
   contexto: 'context',
   cache: 'cache',
-  ahorrado: 'saved',
-  ahorrados: 'saved',
+  ahorrado: 'saved (est.)',
+  ahorrados: 'saved (est.)',
   cincoHoras: '5 h',
   semana: 'week',
   frio: 'cold',
@@ -648,9 +653,9 @@ const en: Textos = {
   menosPct: p => `−${p}%`,
   tokensLinea: (s, t, r) => `In tokens: ~${s} trimmed this session · ~${t} all time${r !== undefined ? ` · ~${r} re-reads avoided` : ''}`,
   aPrecioApi: (s, b) =>
-    `In dollars at API prices: model and effort come from what each request returned; trims and re-reads, from the tokens Toki removed${b !== undefined ? `; brief replies, from each request's output with what was measured (~${b}% less)` : ''}.${s ? ' On your subscription you do not pay it separately: it is usage of your limits left free.' : ''}`,
+    `In dollars at API prices. What it cost is measured: it comes from what the API returned on each request. Savings are estimated, because the same message never also runs without Toki: model and effort compare each request with the same one on your model and effort; trims and re-reads come from the tokens Toki removed, minus what Claude read back from the original${b !== undefined ? `; brief replies, from each request's output with what was measured (~${b}% less)` : ''}.${s ? ' On your subscription you do not pay it separately: it is usage of your limits left free.' : ''}`,
   estimadoPrevio: c => `Includes ${c} from before version 0.17, estimated at Sonnet prices (trims and re-reads only).`,
-  desgloseTitulo: "Where this session's savings come from",
+  desgloseTitulo: "Where this session's savings come from (estimated)",
   desgloseRelecturas: (u, t) => `Re-reads avoided: ${u} (~${t} tokens Claude did not read again because Toki compacted earlier or took something out of context)`,
   desgloseLimpio: (u, t) => `Starting clean: ${u} (~${t} tokens of the old conversation Claude no longer re-read or rewrote)`,
   desgloseBreve: (u, t, p) => `Brief replies: ${u} (~${t} output tokens Claude did not write; estimated from what was measured, ~${p}% less)`,
@@ -662,7 +667,7 @@ const en: Textos = {
       : a === undefined
         ? `Model and effort: ${n} (cost extra from more effort or rewriting the cache)`
         : `Model and effort: ${n} (saved ${a}; cost ${e} extra from more effort or rewriting the cache)`,
-  desgloseCosto: (g, s) => `This session cost ${g}; without Toki it would have cost ${s}.`,
+  desgloseCosto: (g, s) => `Measured: this session cost ${g}. Estimated: without Toki it would have cost ${s}.`,
   diasSemana: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
   mapaTitulo: 'Project map',
   mapaCabecera: (f, n, r) => `Generated by Toki on ${f}, without using the model (text analysis only). ${n} code files${r ? ' (truncated: the project is larger)' : ''}.`,
@@ -671,7 +676,9 @@ const en: Textos = {
   mapaArchivos: 'Files and symbols',
   mapaDefine: 'defines',
   mapaHereda: 'extends',
-  gastoTitulo: 'What this session cost (API figures)',
+  gastoTitulo: 'What this session cost (measured: API figures)',
+  oportunidadTitulo: 'Opportunity (not saved yet; not added in)',
+  oportunidadMcp: (s, t, d, u) => `Turn off ${s} in /mcp, unused for ${d} days: ~${t} fewer tokens on every request${u !== undefined ? ` (they cost you ${u} this week)` : ''}.`,
   gastoLinea: (l, p, w, n, o) => `Re-reading the conversation (cache): ~${l} (${p}%) · writing to cache: ~${w} · new input: ~${n} · replies and reasoning: ~${o}`,
   gastoPedidos: (n, avg) => `${n} ${n === 1 ? 'request' : 'requests'} to the model; each sent ~${avg} of context on average.`,
   gastoSub: (n, t) => `Subagents and internal tasks (compaction, memory): ${n} ${n === 1 ? 'request' : 'requests'}, ~${t}.`,

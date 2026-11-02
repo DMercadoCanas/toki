@@ -173,6 +173,38 @@ export const SALIDA_SIMPLE: Record<Esfuerzo, number> = { low: 150, medium: 150, 
 /** Pedidos al modelo por mensaje (cada herramienta es otro pedido). Aproximado. */
 export const PEDIDOS_POR_NIVEL: Record<Nivel, number> = { trivial: 2, normal: 4, complejo: 9, profundo: 12 }
 /**
+ * Pedidos que de verdad usaron tus mensajes, por tipo de mensaje (los últimos
+ * MUESTRAS_PEDIDOS, medidos con `turn.step`): corrigen la tabla de arriba.
+ */
+export type PedidosMedidos = Partial<Record<Nivel, number[]>>
+export const MUESTRAS_PEDIDOS = 20
+/** Cuántos mensajes pesa la tabla de fábrica: con pocos medidos, la estimación se mueve poco. */
+export const PESO_FABRICA = 3
+
+export function sumarPedidos(m: PedidosMedidos, nivel: Nivel, pedidos: number): PedidosMedidos {
+  if (!Number.isFinite(pedidos) || pedidos < 1) return m
+  return { ...m, [nivel]: [...(m[nivel] ?? []), Math.round(pedidos)].slice(-MUESTRAS_PEDIDOS) }
+}
+
+/** Los pedidos que Toki espera de un mensaje de este tipo: la tabla de fábrica, corregida con lo medido. */
+export function pedidosEsperados(m: PedidosMedidos | undefined, nivel: Nivel): number {
+  const medidos = m?.[nivel] ?? []
+  return (PEDIDOS_POR_NIVEL[nivel] * PESO_FABRICA + medidos.reduce((suma, n) => suma + n, 0)) / (PESO_FABRICA + medidos.length)
+}
+
+/** Lo guardado, si sirve: solo tipos de mensaje conocidos y cifras positivas. */
+export function leerPedidosMedidos(v: unknown): PedidosMedidos {
+  const salida: PedidosMedidos = {}
+  if (typeof v !== 'object' || v === null) return salida
+  for (const nivel of NIVELES) {
+    const lista: unknown = (v as Record<string, unknown>)[nivel]
+    if (!Array.isArray(lista)) continue
+    const buenos = lista.filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 1).slice(-MUESTRAS_PEDIDOS)
+    if (buenos.length > 0) salida[nivel] = buenos
+  }
+  return salida
+}
+/**
  * Un mensaje que Toki bajó de esfuerzo y ya va por este pedido (o entró en bucle)
  * no era tan simple: lo que queda del turno va con tu esfuerzo.
  */
@@ -274,9 +306,11 @@ export function proponer(a: {
   sonnetPrimero?: boolean
   /** Lo anterior no funcionó (o sigue esa tarea): con Sonnet primero, toca Opus. */
   atascado?: boolean
+  /** Pedidos esperados del mensaje, si ya hay medidos (`pedidosEsperados`); si no, la tabla de fábrica. */
+  pedidos?: number
 }): Propuesta {
   const fam = familiaDe(a.modelo)
-  const pedidos = PEDIDOS_POR_NIVEL[a.nivel]
+  const pedidos = a.pedidos ?? PEDIDOS_POR_NIVEL[a.nivel]
   const puedeCambiar = a.permitirModelo && (fam === 'opus' || fam === 'sonnet') && hermano(a.modelo, 'opus') !== undefined && a.contexto <= CONTEXTO_MAX_CAMBIO
   const alto = puedeCambiar ? (hermano(a.modelo, 'opus') as string) : a.modelo
   const bajo = puedeCambiar ? (hermano(a.modelo, 'sonnet') as string) : a.modelo
@@ -575,6 +609,9 @@ export type TextosRuta = {
   celdaCalibracion: (modelo: string, nivel: string, desde: string, hacia: string, factor: string, detalle: string) => string
   sinTestigos: (testigos: number, meta: number) => string
   conTestigos: (medido: string, testigos: number, bajados: number, pedidosTestigo: string, pedidosBajado: string) => string
+  /** Pedidos por mensaje con que Toki estima, por tipo de mensaje: la tabla de fábrica corregida con lo medido. */
+  pedidosMedidos: (peso: number) => string
+  celdaPedidos: (nivel: string, esperados: string, fabrica: number, medidos: number) => string
   porToki: string
   titulo: string
   cmd: string
@@ -652,6 +689,8 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     celdaCalibracion: (m, n, d, h, f, det) => `• ${m} · ${n}, ${d} → ${h}: ×${f} · ${det}`,
     sinTestigos: (t, meta) => `${t} de ${meta} testigos; mientras tanto, la mitad de lo medido en pruebas`,
     conTestigos: (m, t, b, pt, pb) => `medido ×${m} con ${t} ${t === 1 ? 'testigo' : 'testigos'} y ${b} ${b === 1 ? 'bajado' : 'bajados'} · pedidos por mensaje: ${pt} con tu esfuerzo, ${pb} bajado`,
+    pedidosMedidos: peso => `Pedidos por mensaje con que Toki estima el costo (lo medido en tus mensajes; la tabla de fábrica pesa como ${peso}):`,
+    celdaPedidos: (n, e, f, m) => `• ${n}: ~${e} (de fábrica ${f}; ${m} ${m === 1 ? 'medido' : 'medidos'})`,
     porToki: 'por Toki',
     titulo: 'Modelo y esfuerzo',
     cmd: 'Toki: cómo elige modelo y esfuerzo para cada mensaje (preguntar, siempre, automatico, no)',
@@ -738,6 +777,8 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     celdaCalibracion: (m, n, d, h, f, det) => `• ${m} · ${n}, ${d} → ${h}: ×${f} · ${det}`,
     sinTestigos: (t, meta) => `${t} of ${meta} controls; meanwhile, half of what tests measured`,
     conTestigos: (m, t, b, pt, pb) => `measured ×${m} with ${t} ${t === 1 ? 'control' : 'controls'} and ${b} lowered · requests per message: ${pt} at your effort, ${pb} lowered`,
+    pedidosMedidos: peso => `Requests per message Toki uses to estimate cost (measured on your messages; the factory table weighs as ${peso}):`,
+    celdaPedidos: (n, e, f, m) => `• ${n}: ~${e} (factory ${f}; ${m} measured)`,
     porToki: 'by Toki',
     titulo: 'Model and effort',
     cmd: 'Toki: how it picks model and effort for each message (preguntar, siempre, automatico, no)',

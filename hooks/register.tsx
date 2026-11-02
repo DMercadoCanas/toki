@@ -86,6 +86,7 @@ import {
   igual,
   leerEsfuerzo,
   leerModo,
+  leerPedidosMedidos,
   limpiarPrompt,
   modeloCanonico,
   modeloSubagente,
@@ -94,7 +95,10 @@ import {
   nombreCorto,
   PEDIDOS_PARA_SUBIR,
   PEDIDOS_POR_NIVEL,
+  pedidosEsperados,
+  PESO_FABRICA,
   proponer,
+  sumarPedidos,
   terminaEnPregunta,
   textoDiferencia,
   textosRuta,
@@ -103,7 +107,7 @@ import {
 } from './modelo'
 import { EXPLORACION_VACIA, pasoExploracion, sumarPaso, tocaDelegar } from './exploracion'
 import type { Exploracion } from './exploracion'
-import type { Decision as DecisionMensaje, Esfuerzo, EstadoRuta, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, Propuesta, ResultadoRuta, TextosRuta, TipoOpcion } from './modelo'
+import type { Decision as DecisionMensaje, Esfuerzo, EstadoRuta, Familia, ModoRuta, Motivo as MotivoRuta, Nivel, Opcion, PedidosMedidos, Propuesta, ResultadoRuta, TextosRuta, TipoOpcion } from './modelo'
 import {
   alCompactar,
   contarLimpio,
@@ -132,7 +136,7 @@ import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
 import type { TipoBusqueda } from './busquedas'
 import { conAcentos } from './palabras'
-import { anotarUsoMcp, armarDieta, cmdDieta, leerUsoMcp, textoDieta } from './dieta'
+import { anotarUsoMcp, armarDieta, cmdDieta, DIAS_SIN_USO, leerUsoMcp, mcpSinUso, textoDieta } from './dieta'
 import type { Dieta } from './dieta'
 import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
@@ -2077,6 +2081,8 @@ type Reporte = {
   contexto?: { pct?: number; ventana: number; costo?: number; esSuscripcion: boolean }
   ocupan: { nombre: string; tokens: number }[]
   sugerencias: string[]
+  /** Lo que se podría ahorrar y aún no: no se suma al ahorro. */
+  oportunidad: string[]
   lecciones: Leccion[]
   hayMapa: boolean
   gasto: Gasto
@@ -2193,6 +2199,7 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
     grafica: filasGrafica(pendiente === 0 ? historialUsd : sumarAlDia(historialUsd, ahora, pendiente), ahora, 14, anchoBarra, vivo.idioma, cifraUsdDia),
     ocupan: [],
     sugerencias: [],
+    oportunidad: [],
     lecciones: vivo.lecciones,
     hayMapa: await $.fs.exists(RUTA_MAPA).catch(() => false),
     gasto: await read($, gasto),
@@ -2216,8 +2223,10 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
         .map(c => ({ nombre: c.name, tokens: c.tokens }))
       const memoria = desglose.memoryFiles.reduce((suma, f) => suma + f.tokens, 0)
       if (memoria > 5000) r.sugerencias.push(x.sugMemoria(formatearTokens(memoria)))
+      const sinUso = await oportunidadMcp($, desglose, ahora)
+      if (sinUso !== undefined) r.oportunidad.push(sinUso)
       const mcp = desglose.mcpTools.filter(h => h.isLoaded).reduce((suma, h) => suma + h.tokens, 0)
-      if (mcp > 10_000) r.sugerencias.push(x.sugMcp(formatearTokens(mcp)))
+      if (mcp > 10_000 && sinUso === undefined) r.sugerencias.push(x.sugMcp(formatearTokens(mcp)))
     }
     if (pct !== undefined && pct >= 50) r.sugerencias.push(x.sugContexto)
   } catch {
@@ -2229,6 +2238,18 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
   // Con respuestas breves ya puestas (o con un estilo tuyo) el consejo sobra.
   if (!breveActivo(vivo.breve) && vivo.breve !== 'tuyo') r.sugerencias.push(x.sugConciso)
   return r
+}
+
+/** Oportunidad: los servidores MCP que no usaste en DIAS_SIN_USO días, y lo que pesaron esta semana. */
+async function oportunidadMcp($: $, desglose: Parameters<typeof armarDieta>[0], ahora: number): Promise<string | undefined> {
+  const uso = leerUsoMcp(await $.store.get(CLAVE_USO_MCP).catch(() => undefined), ahora)
+  const servidores = mcpSinUso(armarDieta(desglose, uso), { ahora, desde: uso.desde })
+  if (servidores.length === 0) return undefined
+  const tokens = servidores.reduce((suma, s) => suma + s.tokens, 0)
+  const pedidos = (await leerSemanasDe($).catch(() => ({}) as Semanas))[lunesDe(ahora)]?.pedidos ?? 0
+  const familia = familiaDe(ruta.modeloPrincipal ?? vivo.modelo) ?? 'opus'
+  const semana = pedidos > 0 ? cifraUsd(pedidos * valorLectura(tokens, familia)) : undefined
+  return tx().oportunidadMcp(servidores.map(s => s.nombre).join(', '), formatearTokens(tokens), DIAS_SIN_USO, semana)
 }
 
 async function textoDecisiones($: $): Promise<string> {
@@ -2302,6 +2323,10 @@ function reporteEnTexto(r: Reporte): string {
     lineas.push('', `${x.loQueNoto}:`)
     for (const l of r.lecciones) lineas.push(`  • ${l.texto}`)
   }
+  if (r.oportunidad.length > 0) {
+    lineas.push('', `${x.oportunidadTitulo}:`)
+    for (const l of r.oportunidad) lineas.push(`  • ${l}`)
+  }
   lineas.push('', `${x.sugerencias}:`)
   for (const sug of r.sugerencias) lineas.push(`  • ${sug}`)
   return lineas.join('\n')
@@ -2365,6 +2390,8 @@ const CLAVE_USO_MCP = 'usoMcp'
 const CLAVE_ESFUERZO = 'esfuerzoPorDefecto'
 /** Lo medido al bajar el esfuerzo, con sus testigos (`hooks/ahorro.ts`): vale entre sesiones. */
 const CLAVE_CALIBRACION = 'calibracionEsfuerzo'
+/** Pedidos que usó cada tipo de mensaje: calibran lo que Toki estima antes de mandarlo. */
+const CLAVE_PEDIDOS = 'pedidosPorMensaje'
 /** Cuántos modelos recuerda con un esfuerzo por defecto distinto del de fábrica. */
 const MAX_DEFECTOS = 8
 /** Del más fuerte al más débil, como los junta Claude Code. */
@@ -2459,6 +2486,8 @@ const ruta: {
   defectos: Record<string, Esfuerzo>
   /** Lo que escriben los mensajes que Toki baja de esfuerzo y sus testigos, por tipo de mensaje. */
   calibracion: CalibracionEsfuerzo
+  /** Cuántos pedidos usaron de verdad tus mensajes, por tipo: la estimación previa se corrige con esto. */
+  pedidosMedidos: PedidosMedidos
   plan?: PlanTurno
   /** Lo que elegiste antes para cada nivel: la próxima vez se aplica solo. */
   preferencias: Partial<Record<Nivel, TipoOpcion>>
@@ -2516,6 +2545,7 @@ const ruta: {
   cambioEsfuerzo: false,
   defectos: {},
   calibracion: {},
+  pedidosMedidos: {},
 }
 
 function xr(): TextosRuta {
@@ -2551,7 +2581,7 @@ function lineaUso(m: Medicion, interrumpido: boolean): string {
   const modelo = m.modeloReal ?? m.modelo
   const esfuerzo = m.esfuerzoReal ?? m.esfuerzo
   const otroPlan = modelo !== m.modelo || esfuerzo !== m.esfuerzo ? `, para ${m.modelo}/${m.esfuerzo}` : ''
-  const estimacion = `${m.pedidosEstimados} pedidos, contexto ${Math.round(m.contexto / 1000)}k, caché ${m.ttl1h ? '1 h' : '5 min'}${m.frio ? ', frío' : ''}${otroPlan}`
+  const estimacion = `${Number(m.pedidosEstimados.toFixed(1))} pedidos, contexto ${Math.round(m.contexto / 1000)}k, caché ${m.ttl1h ? '1 h' : '5 min'}${m.frio ? ', frío' : ''}${otroPlan}`
   return [
     `uso: ${m.nivel} ${modelo}/${esfuerzo}`,
     `${m.pedidos} ${m.pedidos === 1 ? 'pedido' : 'pedidos'}`,
@@ -2786,6 +2816,27 @@ function celdaDelPedido(e: TurnStepInput, pedido: TurnStepInput): CeldaEsfuerzo 
   return ruta.calibracion[claveEsfuerzo(modeloCanonico(pedido.model), m.nivel, e.effort, pedido.effort)]
 }
 
+/** Lo que usó de verdad un mensaje entero, para estimar mejor el próximo de su tipo. Nunca falla: es estadística. */
+async function registrarPedidos($: $, m: Medicion): Promise<void> {
+  if (m.pedidos < 1) return
+  ruta.pedidosMedidos = sumarPedidos(ruta.pedidosMedidos, m.nivel, m.pedidos)
+  try {
+    await $.store.set(CLAVE_PEDIDOS, ruta.pedidosMedidos)
+  } catch {
+    // Sin store: vale para esta sesión.
+  }
+}
+
+/** /toki-modelo: con cuántos pedidos por mensaje estima Toki, y de dónde sale. */
+function lineasPedidos(x: TextosRuta): string[] {
+  const lineas: string[] = []
+  for (const n of NIVELES) {
+    const medidos = ruta.pedidosMedidos[n]?.length ?? 0
+    if (medidos > 0) lineas.push(`    ${x.celdaPedidos(x.nivel[n], pedidosEsperados(ruta.pedidosMedidos, n).toFixed(1), PEDIDOS_POR_NIVEL[n], medidos)}`)
+  }
+  return lineas.length === 0 ? [] : [`  ${x.pedidosMedidos(PESO_FABRICA)}`, ...lineas]
+}
+
 /** /toki-modelo: al bajar el esfuerzo, cuánta salida cuenta Toki como ahorrada y con cuántos testigos. */
 function lineasCalibracion(x: TextosRuta): string[] {
   const lineas: string[] = []
@@ -2930,6 +2981,7 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
     reescribe,
     sonnetPrimero: base !== undefined,
     atascado,
+    pedidos: pedidosEsperados(ruta.pedidosMedidos, nivel),
   }
   const p = proponer({ ...propuesta, esfuerzo: actual.esfuerzo })
   const estado: EstadoRuta = {
@@ -2966,7 +3018,7 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
     modelo: usada.modelo,
     esfuerzo: usada.esfuerzo,
     estimado: usada.usd + usada.cambio,
-    pedidosEstimados: PEDIDOS_POR_NIVEL[nivel],
+    pedidosEstimados: propuesta.pedidos ?? PEDIDOS_POR_NIVEL[nivel],
     contexto,
     ttl1h,
     frio: cacheFrio,
@@ -3101,7 +3153,7 @@ function textoRuta(x: TextosRuta, s?: Pick<Sesion, 'ruteoAhorroUsd' | 'ruteoExtr
     const elegido = `${nombreCorto(d.despues.modelo)} · ${x.esfuerzo[d.despues.esfuerzo]} (${textoDiferencia(d.dif, x)}${d.como === 'deshecho' ? `, ${x.deshecho}` : ''})`
     lineas.push(`  • ${x.linea(x.nivel[d.nivel], elegido, x.motivo[d.motivo])}`)
   }
-  return [...lineas, ...lineasCalibracion(x)]
+  return [...lineas, ...lineasCalibracion(x), ...lineasPedidos(x)]
 }
 
 // ---------- Guardias: caché vencido y límites ----------
@@ -3806,6 +3858,11 @@ export const register: Register = (on, options) => {
     } catch {
       // Sin dato: se empieza a medir.
     }
+    try {
+      ruta.pedidosMedidos = leerPedidosMedidos(await $.store.get(CLAVE_PEDIDOS))
+    } catch {
+      // Sin dato: la tabla de fábrica.
+    }
     // Animación de Toki: un cuadro cada 600 ms mientras la franja esté visible.
     if (config.acompanante) {
       $.clock.every(600, () => {
@@ -4152,6 +4209,8 @@ export const register: Register = (on, options) => {
         void anotarDiagnostico($, lineaUso(medicion, e.isAborted))
         // Un mensaje entero que Toki bajó de esfuerzo, o su testigo: a la calibración.
         if (!e.isAborted && e.reason === 'answer') await registrarCalibracion($, ruta.plan, medicion, e.turnId)
+        // Cuántos pedidos usó de verdad: la próxima estimación de este tipo de mensaje parte de ahí.
+        if (!e.isAborted && e.reason === 'answer') await registrarPedidos($, medicion)
       }
       // Lo que ahorró (o costó de más) este mensaje, medido, a la sesión, la semana y el total.
       await acreditar($)
@@ -4860,6 +4919,17 @@ export const register: Register = (on, options) => {
               <Text wrap="wrap">
                 {'  • '}
                 {l.texto}
+              </Text>
+            ))}
+          </Box>
+        )}
+        {r.oportunidad.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>{x.oportunidadTitulo}</Text>
+            {r.oportunidad.map(l => (
+              <Text color="claude" wrap="wrap">
+                {'  • '}
+                {l}
               </Text>
             ))}
           </Box>
