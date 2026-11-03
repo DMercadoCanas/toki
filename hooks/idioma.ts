@@ -239,7 +239,8 @@ export type Textos = {
   gastoTitulo: string
   /** Lo que se podría ahorrar y aún no: va aparte y no se suma al ahorro. */
   oportunidadTitulo: string
-  oportunidadMcp: (servidores: string, tokens: string, dias: number, usdSemana: string | undefined) => string
+  /** `bajoDemanda`: Toki puede dejarlos tras ToolSearch con /toki-dieta mcp. */
+  oportunidadMcp: (servidores: string, tokens: string, dias: number, usdSemana: string | undefined, bajoDemanda: boolean) => string
   gastoLinea: (leido: string, pct: number, escrito: string, nueva: string, salida: string) => string
   gastoPedidos: (pedidos: number, promedio: string) => string
   gastoSub: (pedidos: number, tokens: string) => string
@@ -458,7 +459,8 @@ const es: Textos = {
   mapaHereda: 'hereda',
   gastoTitulo: 'Lo que costó esta sesión (medido: cifras de la API)',
   oportunidadTitulo: 'Oportunidad (aún no ahorrado; no se suma)',
-  oportunidadMcp: (s, t, d, u) => `Apagar en /mcp ${s}, sin uso en ${d} días: ~${t} tokens menos en cada pedido${u !== undefined ? ` (esta semana te costaron ${u})` : ''}.`,
+  oportunidadMcp: (s, t, d, u, b) =>
+    `${b ? `Dejar ${s} bajo demanda con /toki-dieta mcp` : `Apagar en /mcp ${s}`}, sin uso en ${d} días: ~${t} tokens menos en cada pedido${u !== undefined ? ` (esta semana te costaron ${u})` : ''}.`,
   gastoLinea: (l, p, w, n, o) => `Releer la conversación (caché): ~${l} (${p}%) · escribir al caché: ~${w} · entrada nueva: ~${n} · respuestas y razonamiento: ~${o}`,
   gastoPedidos: (n, prom) => `${n} ${n === 1 ? 'pedido' : 'pedidos'} al modelo; cada uno mandó en promedio ~${prom} de contexto.`,
   gastoSub: (n, t) => `Subagentes y tareas internas (compactar, memoria): ${n} ${n === 1 ? 'pedido' : 'pedidos'}, ~${t}.`,
@@ -689,7 +691,8 @@ const en: Textos = {
   mapaHereda: 'extends',
   gastoTitulo: 'What this session cost (measured: API figures)',
   oportunidadTitulo: 'Opportunity (not saved yet; not added in)',
-  oportunidadMcp: (s, t, d, u) => `Turn off ${s} in /mcp, unused for ${d} days: ~${t} fewer tokens on every request${u !== undefined ? ` (they cost you ${u} this week)` : ''}.`,
+  oportunidadMcp: (s, t, d, u, b) =>
+    `${b ? `Load ${s} on demand with /toki-dieta mcp` : `Turn off ${s} in /mcp`}, unused for ${d} days: ~${t} fewer tokens on every request${u !== undefined ? ` (they cost you ${u} this week)` : ''}.`,
   gastoLinea: (l, p, w, n, o) => `Re-reading the conversation (cache): ~${l} (${p}%) · writing to cache: ~${w} · new input: ~${n} · replies and reasoning: ~${o}`,
   gastoPedidos: (n, avg) => `${n} ${n === 1 ? 'request' : 'requests'} to the model; each sent ~${avg} of context on average.`,
   gastoSub: (n, t) => `Subagents and internal tasks (compaction, memory): ${n} ${n === 1 ? 'request' : 'requests'}, ~${t}.`,

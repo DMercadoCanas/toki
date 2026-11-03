@@ -137,8 +137,27 @@ import { PEGADO, recortarPegado, textosPegado } from './pegados'
 import { resumirBusqueda, tipoBusqueda } from './busquedas'
 import type { TipoBusqueda } from './busquedas'
 import { conAcentos } from './palabras'
-import { anotarUsoMcp, armarDieta, cmdDieta, DIAS_SIN_USO, leerUsoMcp, mcpSinUso, textoDieta } from './dieta'
-import type { Dieta } from './dieta'
+import {
+  anotarUso,
+  armarDieta,
+  arreglos,
+  cifraFina,
+  cmdDieta,
+  DIAS_SIN_USO,
+  esDiferido,
+  leerDiferidos,
+  leerRespaldos,
+  leerUsoMcp,
+  leerUsoSkills,
+  mcpSinUso,
+  medirTexto,
+  nombreSkill,
+  OPCION_DIFERIDOS,
+  pedidoMemoria,
+  textoDieta,
+  txDieta,
+} from './dieta'
+import type { ArchivoMemoria, Arreglos, Dieta, OpcionesDieta } from './dieta'
 import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
@@ -241,6 +260,8 @@ const config = {
   busquedas: true,
   /** El guardia de empresa se salta prompt.compose y otros hooks: Toki no los registra. */
   guardiaEmpresa: false,
+  /** Servidores MCP que Toki deja tras ToolSearch (/toki-dieta mcp). */
+  mcpDiferidos: [] as string[],
 }
 
 // Estado vivo del acompañante (se pierde al recargar el plugin; es efímero a propósito).
@@ -1050,23 +1071,27 @@ async function hayAlguien($: $): Promise<boolean> {
 }
 
 /**
- * Cambia «Guardia de empresa» como si lo hicieras en /plugin; Claude Code recarga el plugin.
- * Devuelve si se pudo.
+ * Cambia una opción de Toki como si lo hicieras en /plugin; Claude Code recarga el plugin.
+ * Devuelve por qué no se pudo, o nada si se pudo.
  */
-async function cambiarOpcionEmpresa($: $, valor: boolean): Promise<boolean> {
-  const propia = `${$.plugin.name}.${OPCION_EMPRESA}`
+async function cambiarOpcion($: $, campo: string, valor: boolean | string): Promise<string | undefined> {
+  const propia = `${$.plugin.name}.${campo}`
   let clave = propia
   try {
-    clave = (await $.config.list()).find(f => f.key === propia || (f.key.endsWith(`.${OPCION_EMPRESA}`) && f.provider.plugin === $.plugin.name))?.key ?? propia
+    clave = (await $.config.list()).find(f => f.key === propia || (f.key.endsWith(`.${campo}`) && f.provider.plugin === $.plugin.name))?.key ?? propia
   } catch {
     // Sin la lista: la clave de siempre.
   }
-  let motivo: string | undefined
   try {
-    motivo = (await $.config.set({ key: clave, value: valor })).deny
+    return (await $.config.set({ key: clave, value: valor })).deny
   } catch (err) {
-    motivo = String(err)
+    return String(err)
   }
+}
+
+/** Cambia «Guardia de empresa»; devuelve si se pudo. */
+async function cambiarOpcionEmpresa($: $, valor: boolean): Promise<boolean> {
+  const motivo = await cambiarOpcion($, OPCION_EMPRESA, valor)
   if (motivo !== undefined) void anotarDiagnostico($, `guardia de empresa: Claude Code no dejó ${valor ? 'prender' : 'apagar'} la opción (${motivo})`)
   return motivo === undefined
 }
@@ -2381,7 +2406,185 @@ async function oportunidadMcp($: $, desglose: Parameters<typeof armarDieta>[0], 
   const pedidos = (await leerSemanasDe($).catch(() => ({}) as Semanas))[lunesDe(ahora)]?.pedidos ?? 0
   const familia = familiaDe(ruta.modeloPrincipal ?? vivo.modelo) ?? 'opus'
   const semana = pedidos > 0 ? cifraUsd(pedidos * valorLectura(tokens, familia)) : undefined
-  return tx().oportunidadMcp(servidores.map(s => s.nombre).join(', '), formatearTokens(tokens), DIAS_SIN_USO, semana)
+  const bajoDemanda = arreglos(armarDieta(desglose, uso), { ahora, desde: uso.desde, guardia: config.guardiaEmpresa }).mcp.length > 0
+  return tx().oportunidadMcp(servidores.map(s => s.nombre).join(', '), formatearTokens(tokens), DIAS_SIN_USO, semana, bajoDemanda)
+}
+
+// ---------- Dieta que arregla ----------
+
+/** Lo que /toki-dieta miró: el desglose, la memoria medida en disco (con su texto, para el respaldo) y lo que se puede arreglar. */
+type RevisionDieta = { dieta?: Dieta; opciones: OpcionesDieta; arreglos: Arreglos; textos: Map<string, string> }
+
+async function revisarDieta($: $): Promise<RevisionDieta> {
+  const ahora = await $.clock.now()
+  const uso = leerUsoMcp(await $.store.get(CLAVE_USO_MCP).catch(() => undefined), ahora)
+  let dieta: Dieta | undefined
+  try {
+    const desglose = (await $.session.usage({ breakdown: 'summary' })).context.breakdown
+    if (desglose !== undefined) dieta = armarDieta(desglose, uso)
+  } catch {
+    // Sin desglose: lo dice.
+  }
+  // Las líneas no vienen en el desglose: se cuentan en el disco. Los de la organización no se tocan.
+  const medidos: ArchivoMemoria[] = []
+  const textos = new Map<string, string>()
+  for (const m of (dieta?.memoria ?? []).filter(m => m.tipo !== 'Managed').slice(0, MAX_MEDIDOS)) {
+    try {
+      const texto = await $.fs.read(m.ruta)
+      textos.set(m.ruta, texto)
+      medidos.push({ ...m, ...medirTexto(texto) })
+    } catch {
+      // Sin leer: no se mide ni se toca.
+    }
+  }
+  const modelo = ruta.modeloPrincipal ?? vivo.modelo
+  const familia = familiaDe(modelo) ?? 'opus'
+  const opciones: OpcionesDieta = {
+    ahora,
+    idioma: vivo.idioma,
+    modelo: modelo !== undefined ? nombreCorto(modelo) : 'Opus',
+    desde: uso.desde,
+    pedidosSemana: (await leerSemanasDe($).catch(() => ({}) as Semanas))[lunesDe(ahora)]?.pedidos ?? 0,
+    lectura: t => valorLectura(t, familia),
+    escritura: t => valorEscritura(t, familia, ttl1hSesion()),
+    medidos,
+    usoSkills: leerUsoSkills(await $.store.get(CLAVE_USO_SKILLS).catch(() => undefined), ahora),
+    propio: $.plugin.name,
+    diferidos: config.mcpDiferidos,
+    guardia: config.guardiaEmpresa,
+    suscripcion: vivo.usoCache?.esSuscripcion === true,
+  }
+  return { dieta, opciones, arreglos: arreglos(dieta, opciones), textos }
+}
+
+/** /toki-dieta mcp: los servidores sin uso quedan bajo demanda, en la opción de Toki (Claude Code recarga el plugin). */
+function diferirMcp($: $, r: RevisionDieta): string {
+  const x = txDieta(vivo.idioma)
+  if (config.guardiaEmpresa) return x.mcpGuardia
+  if (r.dieta !== undefined && !r.dieta.bajoDemanda) return x.mcpSinBusqueda
+  const nombres = r.arreglos.mcp.map(s => s.nombre)
+  if (nombres.length === 0) return x.mcpNinguno
+  // Las herramientas cambian: el pedido siguiente vuelve a escribir todo el contexto en vez de leerlo.
+  const total = r.dieta?.total ?? 0
+  const extra = Math.max(0, r.opciones.escritura(total) - r.opciones.lectura(total))
+  const lista = leerDiferidos([...config.mcpDiferidos, ...nombres])
+  // Cambiar la opción recarga el plugin: después de responder.
+  $.clock.after(100, () => void cambiarDiferidos($, lista))
+  void anotarDiagnostico($, `dieta: MCP bajo demanda: ${nombres.join(', ')}`)
+  return x.mcpHecho(nombres.join(', '), cifraFina(extra))
+}
+
+/** Escribe la lista en la opción; si Claude Code no deja, lo dice. */
+async function cambiarDiferidos($: $, lista: readonly string[]): Promise<void> {
+  const motivo = await cambiarOpcion($, OPCION_DIFERIDOS, lista.join(', '))
+  if (motivo === undefined) return
+  void anotarDiagnostico($, `dieta: Claude Code no dejó cambiar ${OPCION_DIFERIDOS} (${motivo})`)
+  $.ui.toast(txDieta(vivo.idioma).mcpNegado(motivo), { timeoutMs: 12_000 })
+}
+
+/** Copia el archivo a .claude/toki/respaldos antes de tocarlo y lo anota para /toki-dieta restaurar. */
+async function respaldar($: $, archivo: string, texto: string | undefined, ahora: number): Promise<string | undefined> {
+  if (texto === undefined) return undefined
+  try {
+    await asegurarCarpeta($)
+    const fecha = new Date(ahora).toISOString().slice(0, 16).replace(/[:T]/g, '-')
+    const respaldo = `${CARPETA}/respaldos/${fecha}-${archivo.replace(/^\/+/, '').replace(/[^A-Za-z0-9._-]+/g, '_').slice(-120)}`
+    await $.fs.write(respaldo, texto)
+    const antes = leerRespaldos(await $.store.get(CLAVE_RESPALDOS).catch(() => undefined))
+    await $.store.set(CLAVE_RESPALDOS, [...antes, { ruta: archivo, respaldo, ms: ahora }].slice(-MAX_RESPALDOS))
+    return respaldo
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * /toki-dieta memoria: un respaldo de cada archivo largo y el pedido para Claude en el cuadro de
+ * texto. Toki no edita la memoria: la adelgaza Claude, mostrándote cada cambio, cuando envías el pedido.
+ */
+async function adelgazarMemoria($: $, r: RevisionDieta): Promise<string> {
+  const x = txDieta(vivo.idioma)
+  if (r.arreglos.memoria.length === 0) return x.memoriaNinguna
+  const respaldados: { archivo: ArchivoMemoria; respaldo: string }[] = []
+  for (const archivo of r.arreglos.memoria) {
+    const respaldo = await respaldar($, archivo.ruta, r.textos.get(archivo.ruta), r.opciones.ahora)
+    // Sin respaldo no se toca: nunca se pierde información.
+    if (respaldo !== undefined) respaldados.push({ archivo, respaldo })
+  }
+  if (respaldados.length === 0) return x.sinRespaldo
+  const pedido = pedidoMemoria(
+    respaldados.map(h => h.archivo),
+    vivo.idioma,
+  )
+  const lista = [x.respaldos, ...respaldados.map(h => `  ${h.archivo.ruta} → ${h.respaldo}`)]
+  void anotarDiagnostico($, `dieta: memoria a adelgazar: ${respaldados.map(h => h.archivo.ruta).join(', ')}`)
+  if (!(await hayAlguien($))) return [x.memoriaCopia, '', pedido, '', ...lista].join('\n')
+  // El cuadro se vacía al correr el comando: el pedido va un momento después. Si no entra, va al historial.
+  $.clock.after(100, async () => {
+    const lleno = await $.prompt.fill({ text: pedido, mode: 'replace' }).then(f => f.isFilled, () => false)
+    if (!lleno) $.ui.log([x.memoriaCopia, pedido].join('\n'))
+  })
+  return [x.memoriaPedido, ...lista].join('\n')
+}
+
+/** Entre comillas simples para la terminal. */
+function comillas(texto: string): string {
+  return `'${texto.replace(/'/g, `'\\''`)}'`
+}
+
+/** /toki-dieta restaurar: los MCP vuelven a cargarse; de la memoria, cómo volver al último respaldo de cada archivo. */
+async function restaurarDieta($: $): Promise<string> {
+  const x = txDieta(vivo.idioma)
+  const partes: string[] = []
+  if (config.mcpDiferidos.length > 0) {
+    $.clock.after(100, () => void cambiarDiferidos($, []))
+    void anotarDiagnostico($, `dieta: MCP cargados otra vez: ${config.mcpDiferidos.join(', ')}`)
+    partes.push(x.restauradoMcp(config.mcpDiferidos.join(', ')))
+  }
+  // Toki no copia encima: quizá cambiaste algo después. Te deja el comando.
+  const ultimos = new Map(leerRespaldos(await $.store.get(CLAVE_RESPALDOS).catch(() => undefined)).map(h => [h.ruta, h]))
+  if (ultimos.size > 0) partes.push(x.restaurarMemoria, ...[...ultimos.values()].map(h => `  cp ${comillas(h.respaldo)} ${comillas(h.ruta)}`))
+  return partes.length > 0 ? partes.join('\n') : x.nadaQueRestaurar
+}
+
+/** Tras el informe, con alguien mirando: ¿lo arreglo ahora? Primero la memoria (llena el cuadro); al final los MCP, que recargan el plugin. */
+async function ofrecerArreglos($: $, r: RevisionDieta): Promise<void> {
+  // Ya mandaste otro mensaje: llegaría tarde.
+  if (vivo.enTurno) return
+  const x = txDieta(vivo.idioma)
+  const opciones: { etiqueta: string; hacer: () => Promise<void> }[] = []
+  if (r.arreglos.memoria.length > 0) {
+    const nombres = r.arreglos.memoria.map(a => a.ruta.split(/[\\/]/).pop() ?? a.ruta)
+    opciones.push({ etiqueta: x.opMemoria(nombres), hacer: async () => $.ui.log(await adelgazarMemoria($, r)) })
+  }
+  if (r.arreglos.mcp.length > 0) opciones.push({ etiqueta: x.opMcp(r.arreglos.mcp.map(s => s.nombre)), hacer: async () => $.ui.log(diferirMcp($, r)) })
+  const [una] = opciones
+  if (una === undefined) return
+  let respuesta: string
+  try {
+    respuesta =
+      opciones.length === 1
+        ? await $.ui.ask(x.pregunta, { header: 'Toki', options: [una.etiqueta, x.ahoraNo] })
+        : await $.ui.ask(x.preguntaVarios, { header: 'Toki', options: opciones.map(o => o.etiqueta), multiSelect: true })
+  } catch {
+    return
+  }
+  // Varias elegidas llegan separadas por comas; las etiquetas no llevan comas.
+  const elegidas = respuesta.split(',').map(e => e.trim())
+  for (const o of opciones) if (elegidas.includes(o.etiqueta)) await o.hacer()
+}
+
+/** Una skill más usada; los comandos de Toki no cuentan. */
+async function anotarSkill($: $, nombre: unknown): Promise<void> {
+  if (typeof nombre !== 'string') return
+  const clave = nombreSkill(nombre)
+  if (clave === '' || /^toki(-|$)/.test(clave)) return
+  try {
+    const ahora = await $.clock.now()
+    await $.store.set(CLAVE_USO_SKILLS, anotarUso(leerUsoSkills(await $.store.get(CLAVE_USO_SKILLS), ahora), clave, ahora))
+  } catch {
+    // Es solo estadística.
+  }
 }
 
 async function textoDecisiones($: $): Promise<string> {
@@ -2518,6 +2721,17 @@ const CLAVE_MODO_RUTA = 'modoModeloEsfuerzo'
 const CLAVE_SONNET = 'sonnetPrimero'
 /** Cuándo se usó cada herramienta MCP, para /toki-dieta. */
 const CLAVE_USO_MCP = 'usoMcp'
+/** Cuándo se usó cada skill, para /toki-dieta. */
+const CLAVE_USO_SKILLS = 'usoSkills'
+/** Los MCP bajo demanda que Claude Code ya conoce: si la opción cambia, vuelve a preguntar por las herramientas. */
+const CLAVE_DIFERIDOS = 'mcpDiferidosAplicados'
+/** Las copias de memoria que Toki guardó antes de adelgazarla. */
+const CLAVE_RESPALDOS = 'respaldosMemoria'
+const MAX_RESPALDOS = 20
+/** Archivos de memoria que /toki-dieta lee para contar líneas. */
+const MAX_MEDIDOS = 20
+/** La pregunta de /toki-dieta sale un momento después del informe: primero lo lees. */
+const DEMORA_DIETA = 1_000
 /** El esfuerzo que Claude Code usó para cada modelo sin que nadie lo fijara (el de tu organización), si no es el de fábrica. */
 const CLAVE_ESFUERZO = 'esfuerzoPorDefecto'
 /** Lo medido al bajar el esfuerzo, con sus testigos (`hooks/ahorro.ts`): vale entre sesiones. */
@@ -4012,6 +4226,7 @@ export const register: Register = (on, options) => {
   config.guardiaPegados = options['guardiaPegados'] !== false
   config.busquedas = options['resumirBusquedas'] !== false
   config.guardiaEmpresa = options[OPCION_EMPRESA] === true
+  config.mcpDiferidos = leerDiferidos(options[OPCION_DIFERIDOS])
   // Si el guardia de empresa se salta prompt.compose se decide de nuevo, con un turno visto entero.
   vivo.composeVisto = false
   vivo.turnoVisto = undefined
@@ -4038,7 +4253,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'toki-por-que', description: x.cmdPorQue })
     await $.command.register({ name: 'toki-modelo', description: xr().cmd, argumentHint: `preguntar | siempre | automatico | no | ${vivo.idioma === 'en' ? 'undo' : 'deshacer'}` })
     await $.command.register({ name: 'toki-sonnet', description: xr().sonnet.cmd, argumentHint: xr().sonnet.pista })
-    await $.command.register({ name: 'toki-dieta', description: cmdDieta(vivo.idioma) })
+    await $.command.register({ name: 'toki-dieta', description: cmdDieta(vivo.idioma), argumentHint: txDieta(vivo.idioma).pista })
     await $.command.register({
       name: 'toki-semana',
       description: vivo.idioma === 'en' ? 'Toki: your weekly savings card' : 'Toki: tu tarjeta semanal de ahorro',
@@ -4060,10 +4275,22 @@ export const register: Register = (on, options) => {
       // Sin preferencia guardada: la de /plugin.
     }
     try {
-      // El uso de MCP se cuenta desde la primera sesión con esta versión.
-      if ((await $.store.get(CLAVE_USO_MCP)) === undefined) await $.store.set(CLAVE_USO_MCP, leerUsoMcp(undefined, await $.clock.now()))
+      // El uso de MCP y de skills se cuenta desde la primera sesión con la versión que lo mide.
+      if ((await $.store.get(CLAVE_USO_MCP)) === undefined) await $.store.set(CLAVE_USO_MCP, leerUsoMcp(undefined, ahora))
+      if ((await $.store.get(CLAVE_USO_SKILLS)) === undefined) await $.store.set(CLAVE_USO_SKILLS, leerUsoSkills(undefined, ahora))
     } catch {
       // Sin store: /toki-dieta cuenta desde hoy.
+    }
+    try {
+      // Cambió qué MCP van bajo demanda (o la guardia de empresa): Claude Code vuelve a preguntar por las herramientas.
+      const efectiva = config.guardiaEmpresa ? '' : config.mcpDiferidos.join(', ')
+      const aplicada = await $.store.get(CLAVE_DIFERIDOS)
+      if ((typeof aplicada === 'string' ? aplicada : '') !== efectiva) {
+        $.ui.invalidate('tool.describe')
+        await $.store.set(CLAVE_DIFERIDOS, efectiva)
+      }
+    } catch {
+      // Sin store: queda lo que Claude Code ya tenía.
     }
     try {
       const guardada = await $.store.get(CLAVE_ENTREVISTA)
@@ -4903,11 +5130,30 @@ export const register: Register = (on, options) => {
     return { text: [...x.estado(entrevista.modo, s), '', x.uso].join('\n') }
   })
 
+  // MCP bajo demanda (/toki-dieta mcp): las herramientas de esos servidores quedan tras ToolSearch.
+  // Solo con servidores elegidos y sin guardia de empresa, que podría saltarse el hook.
+  if (!config.guardiaEmpresa && config.mcpDiferidos.length > 0) {
+    on('tool.describe', { tool: /^mcp__/ }, async ($, e, next) => {
+      const r = await next(e)
+      return esDiferido(e.tool, e.provider.plugin, config.mcpDiferidos) ? { ...r, isDeferred: true } : r
+    })
+  }
+
+  // Toda skill usada, por Claude o con /nombre (también en subagentes): /toki-dieta dice cuáles no usaste.
+  on('tool.call', { tool: 'Skill' }, async ($, e, next) => {
+    await anotarSkill($, (e as { skill?: unknown }).skill)
+    return next(e)
+  })
+  on('command.run', async ($, e, next) => {
+    await anotarSkill($, e.command)
+    return next(e)
+  })
+
   // Toda llamada a MCP, también de subagentes: /toki-dieta dice qué servidor no usaste.
   on('tool.call', { tool: /^mcp__/ }, async ($, e, next) => {
     try {
       const ahora = await $.clock.now()
-      await $.store.set(CLAVE_USO_MCP, anotarUsoMcp(leerUsoMcp(await $.store.get(CLAVE_USO_MCP), ahora), String(e.tool), ahora))
+      await $.store.set(CLAVE_USO_MCP, anotarUso(leerUsoMcp(await $.store.get(CLAVE_USO_MCP), ahora), String(e.tool), ahora))
     } catch {
       // Es solo estadística.
     }
@@ -4934,29 +5180,16 @@ export const register: Register = (on, options) => {
     return ran
   })
 
-  on('command.run', { command: 'toki-dieta' }, async $ => {
-    const ahora = await $.clock.now()
-    const uso = leerUsoMcp(await $.store.get(CLAVE_USO_MCP).catch(() => undefined), ahora)
-    let dieta: Dieta | undefined
-    try {
-      const desglose = (await $.session.usage({ breakdown: 'summary' })).context.breakdown
-      if (desglose !== undefined) dieta = armarDieta(desglose, uso)
-    } catch {
-      // Sin desglose: lo dice.
-    }
-    const modelo = ruta.modeloPrincipal ?? vivo.modelo
-    const familia = familiaDe(modelo) ?? 'opus'
-    const pedidosSemana = (await leerSemanasDe($).catch(() => ({}) as Semanas))[lunesDe(ahora)]?.pedidos ?? 0
-    const text = textoDieta(dieta, {
-      ahora,
-      idioma: vivo.idioma,
-      modelo: modelo !== undefined ? nombreCorto(modelo) : 'Opus',
-      desde: uso.desde,
-      pedidosSemana,
-      lectura: t => valorLectura(t, familia),
-      escritura: t => valorEscritura(t, familia, ttl1hSesion()),
-    })
-    return { text }
+  // /toki-dieta informa; con `mcp`, `memoria` o `restaurar` arregla o deshace. Tras el informe, si hay
+  // algo que arreglar y alguien mirando, lo pregunta.
+  on('command.run', { command: 'toki-dieta' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    if (/^(restaurar|restore|deshacer|undo)$/.test(arg)) return { text: await restaurarDieta($) }
+    const r = await revisarDieta($)
+    if (arg === 'mcp') return { text: diferirMcp($, r) }
+    if (/^(memoria|memory)$/.test(arg)) return { text: await adelgazarMemoria($, r) }
+    if ((r.arreglos.mcp.length > 0 || r.arreglos.memoria.length > 0) && (await hayAlguien($))) $.clock.after(DEMORA_DIETA, () => void ofrecerArreglos($, r))
+    return { text: textoDieta(r.dieta, r.opciones) }
   })
 
   on('command.run', { command: 'toki-mapa' }, async $ => {

@@ -148,6 +148,12 @@
       "description": "En cuentas Team o Enterprise, Claude Code corre un guardia que se salta algunos hooks de Toki y le deja a Claude un aviso de ~200 tokens por cada uno (otra vez tras cada compactación). Prendida, Toki no registra esos hooks y usa sus alternativas. Toki la prende solo al notar el guardia y la apaga cada 30 días para ver si sigue; si cambias de cuenta antes, apágala tú. / On Team or Enterprise accounts, Toki stops registering the hooks Claude Code's guard skips (~200 tokens per notice). It turns this on when it notices the guard and off every 30 days to recheck.",
       "default": false
     },
+    "mcpDiferidos": {
+      "type": "string",
+      "title": "MCP bajo demanda / On-demand MCP",
+      "description": "Servidores MCP, separados por coma, cuyas herramientas Toki deja tras ToolSearch: no van en cada pedido y Claude las carga si las busca. /toki-dieta mcp agrega los que no usas hace 7 días; /toki-dieta restaurar vacía la lista. / Comma-separated MCP servers whose tools Toki keeps behind ToolSearch; /toki-dieta mcp adds the ones unused for 7 days, /toki-dieta restore clears it.",
+      "default": ""
+    },
     "idioma": {
       "type": "string",
       "title": "Idioma / Language",
