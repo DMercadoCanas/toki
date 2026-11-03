@@ -2,15 +2,9 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   agrupar,
-  bytesDeBase64,
   caracteresRecortados,
   compactar,
-  decodificarUtf16,
   encabezado,
-  envolver,
-  envolverPs,
-  envolverRescate,
-  envolverRescatePs,
   esCompactable,
   esError,
   esRuidoso,
@@ -18,17 +12,19 @@ import {
   rescatarErrores,
   separarComando,
   separarComandoPs,
+  separarCorte,
+  agrandarCorte,
   separarSelectLast,
   separarTail,
+  ultimasLineas,
 } from '../hooks/compresor'
 
-describe('captura', () => {
-  test('conserva un cd inicial fuera del subshell', async () => {
+describe('comandos', () => {
+  test('separa un cd inicial', async () => {
     expect(separarComando('cd app && npm test')).toEqual({ prefijo: 'cd app && ', cuerpo: 'npm test' })
-    expect(envolver('cd app && ', 'npm test', '/p/s.txt')).toBe("cd app && ( set -o pipefail; { npm test\n} 2>&1 | tee '/p/s.txt' ) # Toki: guarda una copia completa de la salida")
   })
 
-  test('no envuelve comandos que cambian el estado del shell o van en segundo plano', async () => {
+  test('rechaza comandos que cambian el estado del shell o van en segundo plano', async () => {
     expect(separarComando('npm test && cd dist')).toBe(undefined)
     expect(separarComando('export CI=1 && npm test')).toBe(undefined)
     expect(separarComando('source .env; pytest')).toBe(undefined)
@@ -171,11 +167,34 @@ describe('rescate tras un | tail', () => {
     expect(separarTail('npm test')).toBe(undefined)
   })
 
-  test('el envoltorio no cambia lo que ve Claude ni el código de salida', async () => {
-    expect(envolverRescate('', 'npm test 2>&1', 'tail -n 80', '/p/s.txt')).toBe("{ npm test 2>&1 | tee '/p/s.txt'; } | tail -n 80 # Toki: guarda una copia completa de la salida")
-    expect(envolverRescate('cd app && ', 'npm test 2>&1', 'tail', '/p/s.txt')).toBe("cd app && { npm test 2>&1 | tee '/p/s.txt'; } | tail # Toki: guarda una copia completa de la salida")
+  test('rehace el corte solo si stderr pasa por el pipe y el corte toma todo el comando', async () => {
+    expect(separarCorte('npm test 2>&1 | tail -n 80')).toEqual({ base: 'npm test 2>&1', filtro: 'tail -n 80', lineas: 80 })
+    expect(separarCorte('cd app && npm test 2>&1 | tail')).toEqual({ base: 'cd app && npm test 2>&1', filtro: 'tail', lineas: 10 })
+    expect(separarCorte('pytest -q 2>&1 | tail -40')).toEqual({ base: 'pytest -q 2>&1', filtro: 'tail -40', lineas: 40 })
+    expect(separarCorte('go test ./... 2>&1 | tail --lines=25')).toEqual({ base: 'go test ./... 2>&1', filtro: 'tail --lines=25', lineas: 25 })
+    // Sin 2>&1, Claude Code mezcla el stderr con lo que deja el tail: no se puede rehacer.
+    expect(separarCorte('flutter test | tail -50')).toBe(undefined)
+    // El tail solo toma el último comando.
+    expect(separarCorte('npm run build && npm test 2>&1 | tail -n 40')).toBe(undefined)
+    expect(separarCorte('npm test 2>&1 | Select-Object -Last 30', true)).toEqual({ base: 'npm test 2>&1', filtro: 'Select-Object -Last 30', lineas: 30 })
+    expect(separarCorte('npm test | Select-Object -Last 30', true)).toBe(undefined)
     expect(esRuidoso('npm test 2>&1')).toBe(true)
     expect(esRuidoso('cat archivo.log')).toBe(false)
+  })
+
+  test('agranda el mismo corte, con la misma forma', async () => {
+    expect(agrandarCorte('tail -n 80', 10_000)).toBe('tail -n 10000')
+    expect(agrandarCorte('tail -n80', 10_000)).toBe('tail -n10000')
+    expect(agrandarCorte('tail -40', 10_000)).toBe('tail -10000')
+    expect(agrandarCorte('tail --lines=25', 10_000)).toBe('tail --lines=10000')
+    expect(agrandarCorte('tail', 10_000)).toBe('tail -n 10000')
+    expect(agrandarCorte('select -last 50', 10_000)).toBe('select -last 10000')
+  })
+
+  test('corta como tail -n', async () => {
+    expect(ultimasLineas('a\nb\nc\n', 2)).toBe('b\nc')
+    expect(ultimasLineas('a\nb\nc', 5)).toBe('a\nb\nc')
+    expect(ultimasLineas('a\nb\n', 0)).toBe('')
   })
 
   test('distingue errores de tests que pasan con "error" en el nombre', async () => {
@@ -217,36 +236,20 @@ describe('lo que Claude Code ya recortó', () => {
 })
 
 describe('PowerShell', () => {
-  test('envuelve con Tee-Object sin cambiar el comando', async () => {
+  test('separa un comando simple, con un cd inicial', async () => {
     expect(separarComandoPs('npm test')).toEqual({ prefijo: '', cuerpo: 'npm test' })
     expect(separarComandoPs('cd app; flutter test')).toEqual({ prefijo: 'cd app; ', cuerpo: 'flutter test' })
     expect(separarComandoPs("Set-Location 'C:\\mi app' && dotnet test")).toEqual({ prefijo: "Set-Location 'C:\\mi app' && ", cuerpo: 'dotnet test' })
     expect(separarComandoPs('npm ci; npm test')).toBe(undefined)
     expect(separarComandoPs('$r = npm test')).toBe(undefined)
     expect(separarComandoPs('npm test | Out-File x.txt')).toBe(undefined)
-    expect(envolverPs('', 'npm test', "C:\\p\\it's.txt")).toBe("npm test 2>&1 | Tee-Object -FilePath 'C:\\p\\it''s.txt' # Toki: guarda una copia completa de la salida")
-    expect(envolverPs('', 'npm test 2>&1', 'x.txt')).toBe("npm test 2>&1 | Tee-Object -FilePath 'x.txt' # Toki: guarda una copia completa de la salida")
   })
 
   test('el Select-Object -Last de PowerShell también se rescata', async () => {
     expect(separarSelectLast('npm test | Select-Object -Last 30')).toEqual({ base: 'npm test', filtro: 'Select-Object -Last 30' })
     expect(separarSelectLast('flutter test 2>&1 | select -last 50')).toEqual({ base: 'flutter test 2>&1', filtro: 'select -last 50' })
     expect(separarSelectLast('npm test | Select-Object -First 30')).toBe(undefined)
-    expect(envolverRescatePs('', 'npm test', 'Select-Object -Last 30', 'x.txt')).toBe("npm test | Tee-Object -FilePath 'x.txt' | Select-Object -Last 30 # Toki: guarda una copia completa de la salida")
-  })
-
-  test('lee las copias en UTF-16 de Windows PowerShell 5.1', async () => {
-    const texto = 'Error: falla ✕ ñ\n'
-    const bytes = [0xff, 0xfe]
-    for (const ch of texto) {
-      const c = ch.charCodeAt(0)
-      bytes.push(c & 255, c >> 8)
-    }
-    let binario = ''
-    for (const b of bytes) binario += String.fromCharCode(b)
-    const b64 = btoa(binario)
-    expect([...bytesDeBase64(b64)]).toEqual(bytes)
-    expect(decodificarUtf16(bytesDeBase64(b64))).toBe(texto)
+    expect(separarCorte('flutter test 2>&1 | select -last 50', true)).toEqual({ base: 'flutter test 2>&1', filtro: 'select -last 50', lineas: 50 })
   })
 
   test('respeta filtros y lecturas de PowerShell', async () => {

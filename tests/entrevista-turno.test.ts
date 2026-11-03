@@ -19,10 +19,10 @@ type Revision = { tool: string; input: unknown; tool_use_id?: string }
  * Lo que Toki anotó en .claude/toki/diagnostico.txt sobre la entrevista, sin la hora.
  * `alRevisar` ve cada decisión de permiso del motor; `preguntas` junta la etiqueta de cada pregunta que se te hizo.
  */
-function mundo(on: On, o: { shell?: string; alRevisar?: (e: Revision) => void; preguntas?: string[] } = {}): string[] {
+function mundo(on: On, o: { alRevisar?: (e: Revision) => void; preguntas?: string[] } = {}): string[] {
   const diagnostico: string[] = []
   mock.store(on)
-  on('env.get', ($, e) => ({ value: e.name === 'SHELL' ? o.shell : undefined }))
+  on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
   on('session.cwd', () => ({ value: '/p' }))
   on('fs.exists', () => ({ value: false }))
@@ -188,12 +188,11 @@ describe('el turno de la entrevista', () => {
     expect(diagnostico).toEqual(['entrevista: proyecto', 'entrevista: Claude no preguntó'])
   })
 
-  test('mientras frena, Toki no envuelve los comandos: el permiso se decide sobre el comando de Claude', async ($, on) => {
+  test('mientras frena, Toki no reescribe los comandos: el permiso se decide sobre el comando de Claude', async ($, on) => {
     mock.clock(on, { now: 1_000_000 })
     // Sobre qué comando decide el motor el permiso de cada llamada real, y qué corre.
     const decididos: string[] = []
     mundo(on, {
-      shell: '/bin/zsh',
       alRevisar: e => {
         if (e.tool === 'Bash' && e.tool_use_id !== undefined) decididos.push(String((e.input as { command?: unknown }).command))
       },
@@ -201,21 +200,20 @@ describe('el turno de la entrevista', () => {
     const corridos: string[] = []
     on('tool.call', { tool: 'Bash' }, ($, e) => {
       corridos.push(String((e as { command?: unknown }).command))
-      return { result: { stdout: 'src/citas.ts:12:  buscarCita(id)', stderr: '', interrupted: false } }
+      return { result: { stdout: ' ✓ src/citas.test.ts (3 tests)', stderr: '', interrupted: false } }
     })
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
     await mensaje($, 't0', PROYECTO, {
       durante: async () => {
-        await $.tool.call({ tool: 'Bash', command: 'rg -n buscarCita src' })
+        await $.tool.call({ tool: 'Bash', command: 'npm test 2>&1 | tail -n 20' })
         await pregunta($, 'Alcance', '¿Qué alcance tiene la primera versión?')
-        await $.tool.call({ tool: 'Bash', command: 'rg -n buscarCita src' })
+        await $.tool.call({ tool: 'Bash', command: 'npm test 2>&1 | tail -n 20' })
       },
     })
-    // Antes de la pregunta llega tal cual: en Claude Code una búsqueda de solo lectura pasa.
-    // (El motor de prueba no marca nada de solo lectura, así que aquí se frena y no corre.)
-    expect(decididos[0]).toBe('rg -n buscarCita src')
-    // Con la pregunta hecha, la captura vuelve a guardar la salida completa.
-    expect(decididos[1]).toContain("tee '/p/.claude/toki/salidas/")
+    // Antes de la pregunta llega tal cual, y se frena: no corre.
+    expect(decididos[0]).toBe('npm test 2>&1 | tail -n 20')
+    // Con la pregunta hecha, Toki rehace el corte: corre el mismo, agrandado.
+    expect(decididos[1]).toBe('npm test 2>&1 | tail -n 10000')
     expect(corridos).toEqual([decididos[1]])
   })
 })

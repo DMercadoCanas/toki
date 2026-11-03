@@ -77,12 +77,10 @@ describe('motor', () => {
     expect((r.result as { stdout: string }).stdout).toBe(original)
   })
 
-  test('Bash: si Claude corta con | tail, Toki agrega el error que quedó fuera', async ($, on) => {
+  test('Bash: si Claude corta con | tail, Toki corta él mismo y agrega el error que quedó fuera', async ($, on) => {
     mock.clock(on, { now: 5_000_000 })
     mock.store(on)
-    mock.env(on, { SHELL: '/bin/zsh' })
     const archivos = disco(on)
-    on('session.cwd', () => ({ value: '/proyecto' }))
     on('tool.check', () => ({ decision: 'allow' as const }))
     // El fallo queda en medio: el tail solo ve los últimos tests y el resumen.
     const lineas = salidaRuidosa(false).split('\n')
@@ -92,51 +90,88 @@ describe('motor', () => {
     let ejecutado = ''
     on('tool.call', ($, e) => {
       ejecutado = String((e as { command?: unknown }).command)
-      const ruta = ejecutado.match(/tee '\/proyecto\/([^']+)'/)?.[1]
-      const clave = [...archivos.keys()].find(k => ruta !== undefined && k.endsWith(ruta))
-      if (clave !== undefined) archivos.set(clave, completa)
-      return { result: { stdout: cola, stderr: '', interrupted: false } }
+      return { result: { stdout: completa, stderr: '', interrupted: false } }
     })
 
     const r = await $.tool.call({ tool: 'Bash', command: 'dotnet test 2>&1 | tail -n 20' })
-    expect(ejecutado).toContain("{ dotnet test 2>&1 | tee '/proyecto/.claude/toki/salidas/")
-    expect(ejecutado).toContain('; } | tail -n 20')
+    // El mismo tail, agrandado: mismo código de salida, mismo permiso.
+    expect(ejecutado).toBe('dotnet test 2>&1 | tail -n 10000')
     const salida = (r.result as { stdout: string }).stdout
-    expect(salida.startsWith(cola)).toBe(true) // lo que pidió Claude, intacto
+    expect(salida.startsWith(cola)).toBe(true) // lo que habría visto Claude, intacto
+    expect(salida).not.toContain('Caso100 [')
     expect(salida).toContain('dejó fuera')
     expect(salida).toContain('Expected 200, Actual 402')
+    expect(salida).toContain('Copia completa, por si necesitas')
+    expect([...archivos.entries()].some(([ruta, texto]) => ruta.includes('.claude/toki/salidas/') && texto === completa)).toBe(true)
   })
 
-  test('PowerShell: con permiso igual, guarda la copia completa con Tee-Object y rescata el fallo del medio', async ($, on) => {
-    mock.clock(on, { now: 6_000_000 })
+  test('Bash: sin errores escondidos, Claude ve justo lo que dejaba su tail', async ($, on) => {
+    mock.clock(on, { now: 5_200_000 })
     mock.store(on)
-    const archivos = disco(on)
-    on('session.cwd', () => ({ value: 'C:\\proyecto' }))
+    disco(on)
     on('tool.check', () => ({ decision: 'allow' as const }))
     const lineas = salidaRuidosa(false).split('\n')
-    lineas.splice(150, 0, '  Failed App.Tests.Pagos.CobraConTarjetaVencida [12 ms]', '   Assert.Equal() Failure: Expected 200, Actual 402')
-    const completa = lineas.join('\n')
-    let ejecutado = ''
-    on('tool.call', ($, e) => {
-      ejecutado = String((e as { command?: unknown }).command)
-      const ruta = ejecutado.match(/Tee-Object -FilePath 'C:\\proyecto\/([^']+)'/)?.[1]
-      const clave = [...archivos.keys()].find(k => ruta !== undefined && k.endsWith(ruta))
-      if (clave !== undefined) archivos.set(clave, completa)
-      // Claude Code entrega la salida de un fallo recortada por el medio, con su marca.
-      return { isError: true as const, result: undefined, text: `Exit code 1\n${lineas.slice(0, 60).join('\n')}\n\n... [9000 characters truncated] ...\n\n${lineas.slice(-40).join('\n')}` }
-    })
-
-    const r = await $.tool.call(powershell('dotnet test'))
-    expect(ejecutado).toContain("dotnet test 2>&1 | Tee-Object -FilePath 'C:\\proyecto/.claude/toki/salidas/")
-    expect(r.deny).toContain('Expected 200, Actual 402')
-    expect(r.deny).toContain('Copia completa, por si necesitas')
+    on('tool.call', () => ({ result: { stdout: lineas.join('\n'), stderr: '', interrupted: false } }))
+    const r = await $.tool.call({ tool: 'Bash', command: 'cd app && dotnet test 2>&1 | tail -5' })
+    expect((r.result as { stdout: string }).stdout).toBe(lineas.slice(-5).join('\n'))
   })
 
-  test('PowerShell: si Claude corta con Select-Object -Last, Toki agrega el error que quedó fuera', async ($, on) => {
+  test('Bash: si el corte agrandado cambia el permiso, el comando corre tal como lo escribió Claude', async ($, on) => {
+    mock.clock(on, { now: 5_500_000 })
+    mock.store(on)
+    disco(on)
+    on('tool.check', ($, e) => {
+      const command = String((e as { input?: { command?: string } }).input?.command)
+      return { decision: command.endsWith('| tail -n 10000') ? ('ask' as const) : ('allow' as const) }
+    })
+    const ejecutados: string[] = []
+    on('tool.call', ($, e) => {
+      ejecutados.push(String((e as { command?: unknown }).command))
+      return { result: { stdout: salidaRuidosa(false), stderr: '', interrupted: false } }
+    })
+    await $.tool.call({ tool: 'Bash', command: 'dotnet test 2>&1 | tail -n 20' })
+    expect(ejecutados).toEqual(['dotnet test 2>&1 | tail -n 20'])
+  })
+
+  test('Bash: sin la salida entera (llegó al tope, o Claude Code le cortó el medio), Claude ve justo lo que dejaba su tail', async ($, on) => {
+    mock.clock(on, { now: 5_600_000 })
+    mock.store(on)
+    disco(on)
+    on('tool.check', () => ({ decision: 'allow' as const }))
+    const lineas = Array.from({ length: 10_000 }, (_, i) => (i === 5_000 ? '  Failed App.Tests.Pagos.CobraConTarjetaVencida [12 ms]' : `  Passed App.Tests.Caso${i} [1 ms]`))
+    let falla = false
+    on('tool.call', () =>
+      falla
+        ? { isError: true as const, result: undefined, text: `Exit code 1\n${lineas.slice(0, 60).join('\n')}\n\n... [9000 characters truncated] ...\n\n${lineas.slice(-30).join('\n')}` }
+        : { result: { stdout: `${lineas.join('\n')}\n`, stderr: '', interrupted: false } },
+    )
+    const r = await $.tool.call({ tool: 'Bash', command: 'dotnet test 2>&1 | tail -n 20' })
+    expect((r.result as { stdout: string }).stdout).toBe(lineas.slice(-20).join('\n'))
+    // Con pipefail el pipe falla, y Claude Code corta el medio de los errores largos.
+    falla = true
+    const f = await $.tool.call({ tool: 'Bash', command: 'dotnet test 2>&1 | tail -n 20' })
+    expect(f.deny).toBe(`Exit code 1\n${lineas.slice(-20).join('\n')}`)
+  })
+
+  test('Bash: en segundo plano o sin 2>&1, el corte queda como está', async ($, on) => {
+    mock.clock(on, { now: 5_700_000 })
+    mock.store(on)
+    disco(on)
+    on('tool.check', () => ({ decision: 'allow' as const }))
+    const ejecutados: string[] = []
+    on('tool.call', ($, e) => {
+      ejecutados.push(String((e as { command?: unknown }).command))
+      return { result: { stdout: 'ok', stderr: '', interrupted: false } }
+    })
+    await $.tool.call({ tool: 'Bash', command: 'dotnet test 2>&1 | tail -n 20', run_in_background: true })
+    await $.tool.call({ tool: 'Bash', command: 'dotnet test | tail -n 20' })
+    expect(ejecutados).toEqual(['dotnet test 2>&1 | tail -n 20', 'dotnet test | tail -n 20'])
+  })
+
+  test('PowerShell: si Claude corta con Select-Object -Last, Toki corta él mismo y agrega el error que quedó fuera', async ($, on) => {
     mock.clock(on, { now: 7_000_000 })
     mock.store(on)
-    const archivos = disco(on)
-    on('session.cwd', () => ({ value: 'C:\\proyecto' }))
+    disco(on)
     on('tool.check', () => ({ decision: 'allow' as const }))
     const lineas = salidaRuidosa(false).split('\n')
     lineas.splice(150, 0, '  Failed App.Tests.Pagos.CobraConTarjetaVencida [12 ms]', '   Assert.Equal() Failure: Expected 200, Actual 402')
@@ -144,25 +179,32 @@ describe('motor', () => {
     let ejecutado = ''
     on('tool.call', ($, e) => {
       ejecutado = String((e as { command?: unknown }).command)
-      const ruta = ejecutado.match(/Tee-Object -FilePath 'C:\\proyecto\/([^']+)'/)?.[1]
-      const clave = [...archivos.keys()].find(k => ruta !== undefined && k.endsWith(ruta))
-      if (clave !== undefined) archivos.set(clave, lineas.join('\n'))
-      return { result: { stdout: cola, stderr: '', interrupted: false } }
+      return { result: { stdout: lineas.join('\n'), stderr: '', interrupted: false } }
     })
-    const r = await $.tool.call(powershell('dotnet test | Select-Object -Last 20'))
-    expect(ejecutado).toContain("| Tee-Object -FilePath 'C:\\proyecto/.claude/toki/salidas/")
-    expect(ejecutado).toContain('| Select-Object -Last 20')
+    const r = await $.tool.call(powershell('dotnet test 2>&1 | Select-Object -Last 20'))
+    expect(ejecutado).toBe('dotnet test 2>&1 | Select-Object -Last 10000')
     const salida = (r.result as { stdout: string }).stdout
     expect(salida.startsWith(cola)).toBe(true)
     expect(salida).toContain('Expected 200, Actual 402')
   })
 
-  test('PowerShell: si el permiso del comando envuelto cambia, no lo toca y lo dice con honestidad', async ($, on) => {
+  test('PowerShell: con el código de salida del test, el corte se rehace igual', async ($, on) => {
+    mock.clock(on, { now: 7_500_000 })
+    mock.store(on)
+    disco(on)
+    on('tool.check', () => ({ decision: 'allow' as const }))
+    const lineas = salidaRuidosa(false).split('\n')
+    lineas.splice(150, 0, '  Failed App.Tests.Pagos.CobraConTarjetaVencida [12 ms]', '   Assert.Equal() Failure: Expected 200, Actual 402')
+    on('tool.call', () => ({ isError: true as const, result: undefined, text: `Exit code 1\n${lineas.join('\n')}` }))
+    const r = await $.tool.call(powershell('dotnet test 2>&1 | Select-Object -Last 20'))
+    expect(r.deny?.startsWith(`Exit code 1\n${lineas.slice(-20).join('\n')}`)).toBe(true)
+    expect(r.deny).toContain('Expected 200, Actual 402')
+  })
+
+  test('PowerShell: un test que falla corre tal cual y, si Claude Code ya cortó el medio, lo dice con honestidad', async ($, on) => {
     mock.clock(on, { now: 8_000_000 })
     mock.store(on)
     disco(on)
-    on('session.cwd', () => ({ value: 'C:\\proyecto' }))
-    on('tool.check', ($, e) => ({ decision: String((e as { input?: { command?: string } }).input?.command).includes('Tee-Object') ? ('ask' as const) : ('allow' as const) }))
     let ejecutado = ''
     const lineas = salidaRuidosa(true).split('\n')
     on('tool.call', ($, e) => {
@@ -171,33 +213,41 @@ describe('motor', () => {
     })
     const r = await $.tool.call(powershell('dotnet test'))
     expect(ejecutado).toBe('dotnet test')
+    expect(r.deny).toContain('Expected 200, Actual 402')
     expect(r.deny).toContain('Claude Code ya había recortado')
     expect(r.deny).toContain('[9000 characters truncated]')
   })
 
-  test('Bash: lee la copia completa capturada y cuenta el ahorro con honestidad', async ($, on) => {
+  test('Bash: un test que falla corre tal cual y, con la salida entera, deja una copia completa', async ($, on) => {
     mock.clock(on, { now: 4_000_000 })
     mock.store(on)
-    mock.env(on, { SHELL: '/bin/bash' })
-    const archivos = disco(on)
-    on('session.cwd', () => ({ value: '/proyecto' }))
-    on('tool.check', () => ({ decision: 'allow' as const }))
-    const completa = salidaRuidosa(true)
+    disco(on)
     let ejecutado = ''
     on('tool.call', ($, e) => {
       ejecutado = String((e as { command?: unknown }).command)
-      // El comando envuelto escribe la copia completa con tee; Claude Code entrega solo el principio.
-      const ruta = ejecutado.match(/tee '\/proyecto\/([^']+)'/)?.[1]
-      // Toki dejó el archivo vacío antes de correr el comando; tee lo llena.
-      const clave = [...archivos.keys()].find(k => ruta !== undefined && k.endsWith(ruta))
-      if (clave !== undefined) archivos.set(clave, completa)
-      return { isError: true as const, result: undefined, text: `Exit code 1\n${completa.slice(0, 9_000)}` }
+      return { isError: true as const, result: undefined, text: `Exit code 1\n${salidaRuidosa(true)}` }
     })
-
     const r = await $.tool.call({ tool: 'Bash', command: 'npm test' })
-    expect(ejecutado).toContain("2>&1 | tee '/proyecto/.claude/toki/salidas/")
-    expect(r.deny).toContain('Expected 200, Actual 402') // el error del final, que Claude Code había cortado
+    expect(ejecutado).toBe('npm test')
+    expect(r.deny).toContain('Expected 200, Actual 402')
     expect(r.deny).toContain('Copia completa, por si necesitas')
+  })
+
+  test('Bash: lee la salida entera que Claude Code guardó en un archivo por larga', async ($, on) => {
+    mock.clock(on, { now: 4_500_000 })
+    mock.store(on)
+    const archivos = disco(on)
+    const completa = salidaRuidosa(false)
+    archivos.set('/sesion/tool-results/b1.txt', completa)
+    on('tool.call', () => ({
+      // Claude Code guardó la salida entera y entrega solo el comienzo.
+      result: { stdout: completa.slice(0, 2000), stderr: '', interrupted: false, persistedOutputPath: '/sesion/tool-results/b1.txt', persistedOutputSize: completa.length },
+    }))
+    const r = await $.tool.call({ tool: 'Bash', command: 'npm test' })
+    const resultado = r.result as { stdout: string; persistedOutputPath?: string }
+    expect(resultado.stdout).toContain('[Toki] Salida compactada')
+    expect(resultado.stdout).toContain('Passed!  - Failed: 0, Passed: 400') // el final, que la vista previa no traía
+    expect(resultado.persistedOutputPath).toBe(undefined)
   })
 
   test('trae una sola vez el total y el historial de ahorro-tokens', async ($, on) => {

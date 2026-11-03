@@ -6,7 +6,7 @@
 
 **Cada token cuenta.** Toki es un robot de limpieza que vive sobre tu prompt en Claude Code: aspira el ruido para que Claude lea solo lo que importa. Lo instalas una vez y se encarga solo: compacta las salidas ruidosas, rescata los errores que se esconden, recuerda lo importante cuando Claude Code compacta, mapea tu proyecto y te avisa justo cuando conviene actuar. Toma las mejores ideas de las herramientas de ahorro más populares, las combina sin que se pisen y nunca sacrifica calidad para ahorrar.
 
-Habla español e inglés. Lo único fijo que agrega a tu contexto son ~200 tokens (en el caché) para pedir respuestas breves, y lo que cuestan se resta de lo que ahorran.
+Habla español e inglés. Lo fijo que agrega a tu contexto, en el caché, son ~200 tokens para pedir respuestas breves (lo que cuestan se resta de lo que ahorran) y ~230 de la lista de sus comandos.
 
 > Versión 0.17.6. Requiere Claude Code 2.1.287 o posterior. [English below](#english).
 
@@ -40,6 +40,8 @@ Responde `y` para agregar el marketplace y elige el alcance (Enter para "usuario
 - **0.17.5: planear en Opus, ejecutar en Sonnet, y `/toki-dieta`.** Cuando Claude cierra un plan o guarda el spec de la entrevista, Toki ofrece una vez seguir en Sonnet, que cuesta la mitad; sube a Opus si algo falla. `/toki-dieta` muestra cuánto pesa el contexto fijo en cada pedido (memoria, skills, agentes, servidores MCP), cuánto cuesta con el caché vivo y vencido, y sugiere apagar en `/mcp` los servidores que no usaste en 7 días. La tarjeta semanal dice cuántas tareas hiciste, ~$ por tarea y correcciones por tarea. En la app de escritorio, la barra lleva a Toki dentro de un anillo que marca el contexto, sin borde. «Compactar ahora» ya no falla en silencio: si un hook lo veta (por ejemplo, una política de la empresa) o Claude está en un turno, te lo dice y deja `/compact` listo en el cuadro.
 - **0.17.6: el mapa entiende tu framework, MCP más liviano y exploración en subagentes.** El mapa del proyecto suma, si reconoce el framework, dónde se define y se hereda cada modelo: en Odoo (módulos con sus `depends`, `_name`/`_inherit` y vistas) y en Django (modelos y URLs con nombre). Las salidas largas de texto de MCP se compactan como las de la terminal, con el original guardado; JSON, imágenes y errores van enteros. Si Claude hace muchas búsquedas y lecturas grandes en un turno, Toki le sugiere una vez seguir con un subagente Explore, más barato.
 - **¿Quedó bien?** De vez en cuando, después de un mensaje que Toki bajó solo de modelo o esfuerzo, o de un testigo que dejó con el tuyo para comparar, Toki te pregunta si la respuesta quedó bien. Es la misma pregunta en los dos casos, sale después de que lees la respuesta y no gasta tokens: pregunta Toki, no Claude. Pregunta por 1 de cada 10 mensajes bajados y por cada testigo, nunca dos veces en menos de 30 minutos, y deja de preguntar por un grupo cuando junta 30 respuestas. También cuenta, sin preguntar, cuántas veces tu mensaje siguiente corrigió el anterior («no era eso»). `/toki-modelo` compara los dos grupos; «No preguntes más» la apaga y `/toki-modelo calidad` la vuelve a activar. Lo que bajaste tú, al responderle a Toki o con el modo ahorro, no cuenta: no tiene testigos con qué compararlo. Solo se guardan cuentas, nunca tu texto, y no salen de tu máquina.
+- **El rescate del `| tail` ya no pide permisos.** Toki guardaba la copia completa envolviendo el comando con `tee`, y con permisos normales Claude Code lo veía como un comando nuevo: Toki lo dejaba pasar sin rescate. Ahora agranda el mismo corte (`| tail -n 40` pasa a `| tail -n 10000`: el mismo programa de solo lectura, con el mismo permiso) y corta él mismo: Claude ve las mismas líneas que pidió, más los errores que el corte escondía. Las salidas largas las lee del archivo donde Claude Code las guarda, sin envolver nada.
+- **Eval completa en Opus y Sonnet.** `bash evals/correr.sh` corre los 11 casos con y sin Toki, 5 veces por brazo, y reporta aprobadas, costo por tarea exitosa e intervalos de 95 %. Lo que Toki gana y lo que cuesta está en [Resultados medidos](#resultados-medidos-con-y-sin-toki).
 
 ## Lo nuevo en 0.16
 
@@ -194,7 +196,7 @@ Medido con `claude -p` y Opus 5.5 de modelo:
 
 ### Reglas que nunca rompe
 
-1. **Casi cero tokens fijos.** No agrega skills. Lo único fijo es la sección de respuestas breves (~200 tokens, en el caché): lo que cuesta mandarla se resta de lo que ahorra, y puedes apagarla en `/plugin`.
+1. **Pocos tokens fijos.** No agrega skills. Lo fijo es la sección de respuestas breves (~200 tokens, en el caché), que se resta de lo que ahorra y puedes apagar en `/plugin`, y la lista de sus comandos (~230 tokens, medidos en la eval).
 2. **No rompe el caché.** Todo lo que agrega va al final; nunca modifica lo que ya se envió. Cambiar de modelo sí lo reescribe. Toki lo hace sin preguntar solo si el caché está frío o la conversación es chica; si no, te muestra cuánto cuesta y decides tú.
 3. **Todo es reversible.** La salida original queda en `.claude/toki/salidas/` y Claude la puede leer cuando la necesite.
 4. **Nunca provoca reintentos.** Si no está seguro, no toca nada. No compacta lecturas de archivos, diffs ni salidas que Claude ya filtró con `| grep`.
@@ -249,21 +251,30 @@ En `/plugin`, elige Toki y abre su configuración. Puedes apagar cualquier pieza
 
 ## Resultados medidos (con y sin Toki)
 
-**Con `claude plugin eval` (0.16, Claude Code 2.1.308, Opus 5.5, 3 corridas por brazo; costo = mediana por corrida según Claude Code, sin el juez):**
+**Con `claude plugin eval` (Toki 0.17.6, Claude Code 2.1.316, 3 nov 2026):** Opus 5.5 y Sonnet 5.5, 5 corridas por caso y brazo, una a la vez. "Aprobadas" son las corridas que cumplieron todo lo que pide el caso, con Toki · sin Toki. El costo es la mediana por corrida sin el juez, con Toki frente a sin Toki (negativo = Toki gastó menos), con su intervalo de 95 %: si cruza el 0 %, con estas corridas no se distingue del azar.
 
-| Caso | Con Toki | Sin Toki | Diferencia | Nota (con / sin) |
+| Caso | Opus: aprobadas | Opus: costo | Sonnet: aprobadas | Sonnet: costo |
 |---|---|---|---|---|
-| `ruta-trivial`: "Renombra la función sumar a add" | $0.038 | $0.085 | **−55 %** | 100 % / 100 % |
-| `ruta-compleja`: por qué falla un test de citas que se pisan | $0.074 | $0.073 | +1 % | 100 % / 100 % |
-| `lockfile-version`: qué versión hay en un `package-lock.json` de 200 KB | $0.066 | $0.066 | 0 % | 100 % / 100 % |
+| `tail-esconde-error`: el fallo queda fuera de un `\| tail -n 40` | **5/5** · 0/5 | **−58 %** [−59 %, +11 %] | **5/5** · 0/5 | −3 % [−4 %, −1 %] |
+| `test-con-fallo`: 421 tests, uno falla a la mitad | 2/5 · 0/5 | +4 % [−6 %, +7 %] | **5/5** · 0/5 | −2 % [−5 %, 0 %] |
+| `ruta-trivial`: "Renombra la función sumar a add" | 5/5 · 5/5 | **−43 %** [−51 %, −42 %] | 5/5 · 5/5 | +1 % [−5 %, +19 %] |
+| `ruta-compleja`: por qué falla un test de citas que se pisan | 5/5 · 5/5 | 0 % [−4 %, +8 %] | 5/5 · 5/5 | +2 % [+1 %, +4 %] |
+| `lockfile-version`: una versión en un `package-lock.json` de 200 KB | 5/5 · 5/5 | +2 % [−2 %, +3 %] | 5/5 · 5/5 | +2 % [+2 %, +4 %] |
+| `busqueda-enorme`: `grep -rn` sobre 60 archivos | 5/5 · 5/5 | +3 % [+2 %, +6 %] | 5/5 · 5/5 | +3 % [−25 %, +22 %] |
+| `salida-enorme`: 1,6 MB con el error en la última línea | no vale (abajo) | — | 4/5 · 5/5 | +3 % [−22 %, +11 %] |
+| `breve-causa`: un diagnóstico, sin tope de largo | 5/5 · 5/5 | +1 % [0 %, +5 %] | 5/5 · 5/5 | +1 % [−1 %, +6 %] |
+| `breve-abierta`: una pregunta abierta | 5/5 · 5/5 | +3 % [−3 %, +6 %] | 5/5 · 5/5 | +4 % [+1 %, +12 %] |
+| **Por corrida, sumando los casos** | | **−11 %** ($0.754 frente a $0.847) | | +1 % ($0.441 frente a $0.437) |
 
-En la tarea mecánica, Toki la mandó en Sonnet con esfuerzo bajo en las tres corridas, sin perder la respuesta. En la que pide razonar, no tocó el modelo: en las trazas, el contexto que recibió Claude difirió en 8 tokens entre los dos brazos, y el +1 % (menos de $0.001) es una respuesta unas decenas de tokens más larga. En el lockfile, Opus fue directo a Grep, así que Toki no tuvo que frenar nada. Con 0.16, el primer pedido medía lo mismo con y sin Toki (~15k tokens); desde 0.17 lleva además la sección de respuestas breves (~200 tokens).
+- **Donde gana.** Cuando el `| tail` esconde el fallo, Claude lo encontró a la primera en las 10 corridas con Toki y en ninguna sin él: sin Toki vuelve a correr los tests. En Opus eso costó 58 % menos; en Sonnet, que vuelve a correr más barato, 3 % menos. En `test-con-fallo` Claude también cortó con `| tail`: Sonnet acertó con una sola corrida 5 de 5 veces con Toki y 0 de 5 sin él, y Opus volvió a correr los tests en 3 de 5 aunque ya tenía el error (en una corrida de diagnóstico, para sacar números de línea con `grep -n`). En la tarea mecánica en Opus, Toki la mandó a Sonnet con esfuerzo bajo: 43 % menos, con el mismo resultado.
+- **Lo que cuesta.** Donde no tiene nada que hacer, Toki cuesta de 1 % a 4 % más: el primer pedido lleva ~230 tokens más (17 067 frente a 16 838 en una traza). Al iniciar, lo único que cambia entre los dos brazos son sus 9 comandos, así que todo apunta a la lista de comandos que Claude Code le muestra al modelo.
+- **Respuestas breves: sin efecto en esta eval.** Corre en una cuenta de empresa, donde Claude Code no deja a Toki agregar la sección al system prompt, y la nota de respaldo llega desde el segundo mensaje: estos casos tienen uno. Como referencia, "Answer concisely." en el system prompt bajó los tokens de salida entre 21 % y 30 %, y en Sonnet perdió una corrida de 5 en la pregunta abierta. `evals/README.md` tiene los tres brazos.
+- **`salida-enorme` no vale en Opus.** Opus arma comandos compuestos (`npm run enorme > "$TMPDIR/…" 2>&1; echo …`) que los permisos de la eval (`Bash(npm *)`, `Bash(grep *)`) no cubren, y Claude Code los niega en los dos brazos. En Sonnet, la corrida perdida con Toki llamó dos veces a Bash; en 4 corridas más de diagnóstico no se repitió.
 
 Los casos con Bash (`test-con-fallo`, `tail-esconde-error`, `salida-enorme`, `busqueda-enorme`) necesitan el sandbox del sistema: se corren en macOS, o en Linux con bubblewrap y socat. Usa `-j 1`: el comienzo del prompt es igual en los dos brazos y queda en el caché, así que si varias corridas arrancan a la vez, el brazo que va primero paga la escritura del caché y sale más caro sin que Toki tenga que ver.
 
 ```bash
-claude plugin eval . --scaffold --trust-plugin --allow-tools Edit "Bash(npm *)" "Bash(grep *)" --model claude-opus-5-5 --runs 3 -j 1 --json evals/results/r.json
-python3 evals/benchmark.py evals/results/r.json
+bash evals/correr.sh
 ```
 
 **Antes, a mano con `claude -p`:** misma pregunta, mismo modelo (Haiku), dos corridas por escenario, tokens de entrada totales que reporta Claude Code (incluye caché):
@@ -286,9 +297,9 @@ En `evals/` está la suite para `claude plugin eval`: corre cada caso con y sin 
 
 ## Límites conocidos
 
-- La copia completa y los rescates funcionan con bash y zsh (macOS, Linux, WSL, Git Bash) y con PowerShell. PowerShell está probado con la herramienta real de Claude Code y PowerShell 7; con Windows PowerShell 5.1 (que guarda la copia en UTF-16) solo con pruebas automáticas. Si ves algo raro, `/toki-por-que` lo explica y puedes apagar el compactador en la configuración.
-- Toki solo envuelve un comando si Claude Code le da exactamente el mismo permiso que al original. Si tienes reglas finas (por ejemplo `Bash(npm test:*)`), el comando envuelto ya no calza con la regla, así que Toki compacta lo que entrega Claude Code sin copia completa, y lo dice en el encabezado si Claude Code ya había recortado algo.
-- En cuentas de empresa (Team o Enterprise), Claude Code carga un guardia que no deja a los plugins intervenir en la compactación, recibir el evento de cambio de modelo ni agregar secciones al system prompt. Las dos primeras, Toki las detecta por su cuenta. Las respuestas breves no se aplican ahí, y por eso tampoco se cuentan: `/output-style` → `toki:conciso` hace lo mismo.
+- El rescate del `| tail` (y del `| Select-Object -Last` en PowerShell) necesita que el comando mande stderr por el pipe (`2>&1`), como suele escribirlo Claude: si no, Toki no toca el corte. En PowerShell, el rescate solo está probado con pruebas automáticas. Si ves algo raro, `/toki-por-que` lo explica y puedes apagar el compactador en la configuración.
+- Toki no envuelve comandos. Para el rescate agranda el corte (`| tail -n 40` pasa a `| tail -n 10000`) y corta él mismo, solo si Claude Code le da exactamente el mismo permiso que al original; si no, el comando corre tal como lo escribió Claude. Si la salida pasa de 10.000 líneas, Claude ve lo que dejaba su corte, sin rescate. Las salidas largas las lee del archivo donde Claude Code las guarda. Si un comando falla con una salida muy larga, Claude Code le corta el medio antes de que Toki la vea, y el encabezado lo dice.
+- En cuentas de empresa (Team o Enterprise), Claude Code carga un guardia que no deja a los plugins intervenir en la compactación, recibir el evento de cambio de modelo ni agregar secciones al system prompt. Las dos primeras, Toki las detecta por su cuenta. Las respuestas breves van ahí como una nota a Claude desde el segundo mensaje, y no se cuentan: `/output-style` → `toki:conciso` las aplica desde el primero.
 - La franja se dibuja en la terminal y en la app de escritorio. En la extensión de VS Code y en `claude -p` el motor funciona igual, sin franja; `/toki` responde con el reporte en texto.
 - El mapa es análisis de texto, no un árbol sintáctico completo: puede omitir símbolos en código poco convencional.
 
@@ -296,7 +307,7 @@ En `evals/` está la suite para `claude plugin eval`: corre cada caso con y sin 
 
 **Toki: your token-saving companion. Every token counts.**
 
-Toki is a little cleaning robot that lives above your Claude Code prompt and vacuums up the noise so Claude reads only what matters. Install it once and it takes care of the rest: on 1M-context models it compacts at 300k instead of waiting until ~500k–967k (every message re-reads the whole conversation), it shows what each request really cost according to the API, it collapses identical repeated outputs into one line, it compacts noisy command output (tests, builds, installs, linters, logs) while keeping every error, rescues the errors Claude Code's truncation or a `| tail` would hide, reminds Claude of the task after a compaction, maps your project without using the model, and tells you when it is the right moment to compact or clear. The only always-on tokens it adds are ~200 (cached) asking for brief replies, and their cost is subtracted from what they save. It never touches file reads or diffs.
+Toki is a little cleaning robot that lives above your Claude Code prompt and vacuums up the noise so Claude reads only what matters. Install it once and it takes care of the rest: on 1M-context models it compacts at 300k instead of waiting until ~500k–967k (every message re-reads the whole conversation), it shows what each request really cost according to the API, it collapses identical repeated outputs into one line, it compacts noisy command output (tests, builds, installs, linters, logs) while keeping every error, rescues the errors Claude Code's truncation or a `| tail` would hide, reminds Claude of the task after a compaction, maps your project without using the model, and tells you when it is the right moment to compact or clear. The always-on tokens it adds, cached, are ~200 asking for brief replies (their cost is subtracted from what they save) and ~230 for the list of its commands. It never touches file reads or diffs.
 
 ```
 /plugin install toki --marketplace DMercadoCanas/toki
@@ -326,9 +337,11 @@ Toki is a little cleaning robot that lives above your Claude Code prompt and vac
 - **Plan on Opus, execute on Sonnet, and `/toki-dieta` (0.17.5).** When Claude finishes a plan or saves the interview spec, Toki offers once to continue on Sonnet, which costs half; it goes up to Opus if something fails. `/toki-dieta` shows how much the fixed context weighs on every request (memory, skills, agents, MCP servers), what it costs with a warm and a cold cache, and suggests turning off in `/mcp` the servers you haven't used in 7 days. The weekly card shows how many tasks you did, ~$ per task and corrections per task. In the desktop app, the bar puts Toki inside a ring that shows the context, with no border. "Compact now" no longer fails silently: if a hook vetoes it (for example, a company policy) or Claude is mid-turn, it tells you and leaves `/compact` ready in the box.
 - **The map understands your framework, lighter MCP, and exploring in subagents (0.17.6).** When it recognizes the framework, the project map adds where each model is defined and extended: in Odoo (modules with their `depends`, `_name`/`_inherit` and views) and in Django (models and named URLs). Long text outputs from MCP are compacted like terminal ones, with the original saved; JSON, images and errors go through whole. If Claude makes many large searches and reads in one turn, Toki suggests once that it continue with a cheaper Explore subagent.
 - **Did it turn out right?** Now and then, after a message Toki lowered on its own (model or effort), or after a control it kept at yours to compare, Toki asks whether the answer turned out right. It is the same question in both cases, it comes after you read the answer, and it spends no tokens: Toki asks, not Claude. It asks about 1 in 10 lowered messages and every control, never twice within 30 minutes, and stops asking about a group once it has 30 answers. It also counts, without asking, how often your next message corrected the last one ("that's not it"). `/toki-modelo` compares the two groups; "Stop asking" turns it off and `/toki-modelo calidad` turns it back on. What you lowered yourself, when Toki asked or in savings mode, does not count: there are no controls to compare it with. Only counts are stored, never your text, and nothing leaves your machine.
-- Measured with `claude plugin eval` on Opus: a mechanical rename cost **55% less** with Toki (it routed to Sonnet on low effort) with the same result. A task that needs reasoning was left untouched.
+- **The `| tail` rescue no longer needs new permissions.** Toki used to save the full copy by wrapping the command with `tee`, and with normal permissions Claude Code saw it as a new command, so Toki let it run without the rescue. It now enlarges the same cut (`| tail -n 40` becomes `| tail -n 10000`: the same read-only program, same permission) and cuts the output itself: Claude sees the lines it asked for, plus the errors the cut was hiding. Long outputs are read from the file where Claude Code saves them, without wrapping anything.
+- **Full eval on Opus and Sonnet.** `bash evals/correr.sh` runs the 11 cases with and without Toki, 5 times per arm, and reports passes, cost per successful task and 95% intervals.
+- Measured with `claude plugin eval` (0.17.6, Opus 5.5 and Sonnet 5.5, 5 runs per case and arm): when a `| tail` hid the failing test, Claude found it on the first run in 10 of 10 runs with Toki and 0 of 10 without (58% cheaper on Opus, 3% on Sonnet). A mechanical rename on Opus cost **43% less** (Toki routed it to Sonnet on low effort) with the same result. Where Toki has nothing to do, it costs 1–4% more (~230 tokens per request, most likely its command list). Brief replies had no effect in this run: on Team and Enterprise accounts Claude Code blocks the system prompt section, and the fallback note starts on the second message.
 - Optional for API (pay-per-token) users: keep the 5-minute prompt cache warm while you read or think, at ~10% of the cost of reprocessing.
-- On Team and Enterprise accounts, a Claude Code guard stops plugins from adding to the system prompt, so brief replies don't apply there and aren't counted: `/output-style` → `toki:conciso` does the same.
+- On Team and Enterprise accounts, a Claude Code guard stops plugins from adding to the system prompt, so brief replies go as a note to Claude from the second message on and aren't counted: `/output-style` → `toki:conciso` applies them from the first.
 
 ## Para desarrollar
 

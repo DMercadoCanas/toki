@@ -48,7 +48,6 @@ describe('búsquedas enormes', () => {
   test('con el motor: rg sin filtrar de 50 KB llega resumido, con copia completa', async ($, on) => {
     mock.clock(on, { now: 5_000_000 })
     mock.store(on)
-    mock.env(on, { SHELL: '/bin/zsh' })
     const archivos = new Map<string, string>()
     on('fs.exists', ($, e) => ({ value: archivos.has(e.path) }))
     on('fs.write', ($, e) => {
@@ -61,20 +60,20 @@ describe('búsquedas enormes', () => {
     })
     on('ui.toast', () => ({ value: undefined }))
     on('ui.log', () => ({ value: undefined }))
-    on('session.cwd', () => ({ value: '/proyecto' }))
-    on('tool.check', () => ({ decision: 'allow' as const }))
     const salida = grepGrande()
+    // Claude Code guarda en un archivo la salida que pasa de 30 KB y entrega solo el comienzo.
+    archivos.set('/sesion/tool-results/b1.txt', salida)
+    let ejecutado = ''
     on('tool.call', ($, e) => {
-      const ruta = String((e as { command?: unknown }).command).match(/tee '\/proyecto\/([^']+)'/)?.[1]
-      const clave = [...archivos.keys()].find(k => ruta !== undefined && k.endsWith(ruta))
-      if (clave !== undefined) archivos.set(clave, salida)
-      return { result: { stdout: salida, stderr: '', interrupted: false } }
+      ejecutado = String((e as { command?: unknown }).command)
+      return { result: { stdout: salida.slice(0, 2000), stderr: '', interrupted: false, persistedOutputPath: '/sesion/tool-results/b1.txt', persistedOutputSize: salida.length } }
     })
     const r = await $.tool.call({ tool: 'Bash', command: 'rg -n buscarPaciente' })
+    expect(ejecutado).toBe('rg -n buscarPaciente')
     const texto = (r.result as { stdout: string }).stdout
     expect(texto).toContain('[Toki] La búsqueda devolvió')
     expect(texto.length < salida.length / 4).toBe(true)
-    expect([...archivos.values()].some(v => v === salida)).toBe(true)
+    expect([...archivos.entries()].some(([ruta, v]) => ruta.includes('.claude/toki/salidas/') && v === salida)).toBe(true)
   })
 })
 

@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: breve-causa
+description: 'Respuestas breves, tres brazos: un diagnóstico sin tope de largo. Su par -conciso agrega "Answer concisely." sin Toki.'
+context:
+  scaffold_script: fixture.sh

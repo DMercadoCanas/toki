@@ -261,10 +261,8 @@ export function compactar(salida: string, idioma: Idioma = 'es'): Compactado | n
 }
 
 /**
- * Prepara la captura completa de la salida (Claude Code recorta a la mitad las
- * salidas largas de los comandos que fallan, y ahí suele estar el error).
- * Separa un `cd carpeta &&` inicial para que el cambio de carpeta siga valiendo,
- * y rechaza comandos en segundo plano o que cambian el estado del shell.
+ * Separa un `cd carpeta &&` inicial del resto del comando, y rechaza comandos en
+ * segundo plano o que cambian el estado del shell.
  */
 export function separarComando(comando: string): { prefijo: string; cuerpo: string } | undefined {
   const texto = comando.trim()
@@ -282,7 +280,7 @@ export function separarComando(comando: string): { prefijo: string; cuerpo: stri
 
 const PREFIJO_PS = /^((?:cd|set-location|sl|chdir|push-location|pushd)\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:;|&&)\s*)([\s\S]+)$/i
 
-/** Un comando de PowerShell simple (con un `cd carpeta;` opcional al inicio) que se puede envolver. */
+/** Un comando de PowerShell simple, con un `cd carpeta;` opcional al inicio. */
 export function separarComandoPs(comando: string): { prefijo: string; cuerpo: string } | undefined {
   const texto = comando.trim()
   if (texto === '' || /[\n`]/.test(texto) || /&\s*$/.test(texto)) return undefined
@@ -291,17 +289,6 @@ export function separarComandoPs(comando: string): { prefijo: string; cuerpo: st
   const cuerpo = (m?.[2] ?? texto).trim()
   if (/[;|]|&&/.test(cuerpo) || cuerpo.startsWith('$') || /^[.&]\s/.test(cuerpo)) return undefined
   return { prefijo, cuerpo }
-}
-
-/** Comillas simples de PowerShell: una comilla se escribe doble. */
-export function citarPs(texto: string): string {
-  return `'${texto.replace(/'/g, "''")}'`
-}
-
-/** Mismo comando, mismo código de salida; además, la copia completa en `ruta` (Tee-Object). */
-export function envolverPs(prefijo: string, cuerpo: string, ruta: string): string {
-  const redireccion = /\s2>&1\s*$/.test(cuerpo) ? '' : ' 2>&1'
-  return `${prefijo}${cuerpo}${redireccion} | Tee-Object -FilePath ${citarPs(ruta)} # Toki: guarda una copia completa de la salida`
 }
 
 /** Separa un `| Select-Object -Last N` final, el `| tail` de PowerShell. */
@@ -313,57 +300,11 @@ export function separarSelectLast(comando: string): { base: string; filtro: stri
   return { base: m[1] ?? '', filtro: m[2] ?? '' }
 }
 
-/** Mismo comando y mismo corte; además, la copia completa en `ruta`. */
-export function envolverRescatePs(prefijo: string, cuerpo: string, filtro: string, ruta: string): string {
-  return `${prefijo}${cuerpo} | Tee-Object -FilePath ${citarPs(ruta)} | ${filtro} # Toki: guarda una copia completa de la salida`
-}
-
-/** Windows PowerShell 5.1 guarda las copias en UTF-16: se pasan a texto. */
-export function decodificarUtf16(bytes: Uint8Array): string {
-  const partes: string[] = []
-  let i = bytes[0] === 0xff && bytes[1] === 0xfe ? 2 : 0
-  while (i + 1 < bytes.length) {
-    const fin = Math.min(bytes.length - 1, i + 16_384)
-    const codigos: number[] = []
-    for (; i < fin; i += 2) codigos.push((bytes[i] ?? 0) | ((bytes[i + 1] ?? 0) << 8))
-    partes.push(String.fromCharCode(...codigos))
-  }
-  return partes.join('')
-}
-
-const ALFABETO_B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-
-export function bytesDeBase64(b64: string): Uint8Array {
-  const limpio = b64.replace(/[^A-Za-z0-9+/]/g, '')
-  const salida = new Uint8Array(Math.floor((limpio.length * 3) / 4))
-  let j = 0
-  for (let i = 0; i + 1 < limpio.length; i += 4) {
-    const a = ALFABETO_B64.indexOf(limpio[i] ?? 'A')
-    const b = ALFABETO_B64.indexOf(limpio[i + 1] ?? 'A')
-    const c = i + 2 < limpio.length ? ALFABETO_B64.indexOf(limpio[i + 2] ?? 'A') : -1
-    const d = i + 3 < limpio.length ? ALFABETO_B64.indexOf(limpio[i + 3] ?? 'A') : -1
-    salida[j++] = (a << 2) | (b >> 4)
-    if (c >= 0) salida[j++] = ((b & 15) << 4) | (c >> 2)
-    if (d >= 0) salida[j++] = ((c & 3) << 6) | d
-  }
-  return salida.slice(0, j)
-}
-
-/** Comillas simples seguras para el shell. */
-export function citar(texto: string): string {
-  return `'${texto.replace(/'/g, `'\\''`)}'`
-}
-
-/** El comando envuelto: misma salida en vivo, mismo código de salida, copia completa en `ruta`. */
-export function envolver(prefijo: string, cuerpo: string, ruta: string): string {
-  return `${prefijo}( set -o pipefail; { ${cuerpo}\n} 2>&1 | tee ${citar(ruta)} ) # Toki: guarda una copia completa de la salida`
-}
-
 // ---------- Rescate: lo que un `| tail` deja fuera ----------
 // Claude suele cortar la salida de los tests con `| tail -n 80`, y el fallo
 // queda en medio, fuera del corte: luego tiene que volver a correr todo para
-// encontrarlo. Toki guarda la salida completa en el camino y le agrega solo los
-// errores que el corte escondió.
+// encontrarlo. Toki agranda el corte hasta TOPE_CORTE líneas, corta él mismo lo
+// que Claude habría visto y le agrega solo los errores que el corte escondió.
 
 const ERROR_GRAVE =
   /\b(errors?|err!|fail(ed|ing|ure|ures)?|exception|traceback|panic(ked)?|fatal|assert(ion)?(error)?|segmentation fault|undefined reference)\b|[✕✗✖❌]|\bFAIL\b|\bERROR\b/i
@@ -387,11 +328,36 @@ export function separarTail(comando: string): { base: string; filtro: string } |
 }
 
 /**
- * Mismo comando, mismo corte, mismo código de salida; además, la copia completa en `ruta`.
- * Va entre llaves: así los permisos de Claude Code lo ven igual que el original.
+ * Un `| tail` (o `| Select-Object -Last N`) final que Toki puede rehacer: la base y cuántas
+ * líneas deja ver el corte. Claude Code junta stdout y stderr en una sola salida, así que la
+ * base tiene que mandar stderr por el pipe (`2>&1`): si no, lo que el corte dejaba ver no se
+ * puede rehacer. Y un solo comando (con un `cd carpeta &&` opcional): tras `&&`, `||` o `;`
+ * el corte solo toma el último.
  */
-export function envolverRescate(prefijo: string, cuerpo: string, filtro: string, ruta: string): string {
-  return `${prefijo}{ ${cuerpo} | tee ${citar(ruta)}; } | ${filtro} # Toki: guarda una copia completa de la salida`
+export function separarCorte(comando: string, powershell = false): { base: string; filtro: string; lineas: number } | undefined {
+  const partes = powershell ? separarSelectLast(comando) : separarTail(comando)
+  if (partes === undefined || !/\s2>&1\s*$/.test(partes.base)) return undefined
+  const base = powershell ? separarComandoPs(partes.base) : separarComando(partes.base)
+  if (base === undefined || /&&|\|\||;/.test(base.cuerpo)) return undefined
+  const n = /\d+/.exec(partes.filtro)
+  return { base: partes.base, filtro: partes.filtro, lineas: n === null ? 10 : Number(n[0]) }
+}
+
+/**
+ * Hasta dónde agranda Toki el corte: deja pasar entero un test o build normal, y nunca algo
+ * que no pueda leer (Claude Code guarda las salidas largas en un archivo, y Toki lee hasta 4 MiB).
+ */
+export const TOPE_CORTE = 10_000
+
+/** El mismo corte con otro número de líneas: mismo programa y misma forma, así que el mismo permiso. */
+export function agrandarCorte(filtro: string, n: number): string {
+  return /\d/.test(filtro) ? filtro.replace(/\d+/, String(n)) : `${filtro} -n ${n}`
+}
+
+/** Las últimas `n` líneas, como las deja `tail -n` o `Select-Object -Last`. */
+export function ultimasLineas(texto: string, n: number): string {
+  if (n <= 0) return ''
+  return texto.replace(/\n$/, '').split('\n').slice(-n).join('\n')
 }
 
 export type Rescate = { texto: string[]; errores: number; incluidos: number; total: number }

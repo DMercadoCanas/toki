@@ -40,25 +40,20 @@ import type { DecisionBreve } from './breve'
 import { avisoBucle, registrar, UMBRAL_FALLOS } from './bucles'
 import { debeMantenerCache, evaluarPing } from './cache'
 import {
-  bytesDeBase64,
   compactar,
   salidaMcp,
-  decodificarUtf16,
   esMcpRuidosa,
   encabezado,
-  envolver,
-  envolverPs,
-  envolverRescate,
-  envolverRescatePs,
   esCorta,
   esRuidoso,
   porQueNoCompactable,
   rescatarErrores,
-  separarComando,
-  separarComandoPs,
-  separarSelectLast,
-  separarTail,
+  separarCorte,
+  agrandarCorte,
+  caracteresRecortados,
+  TOPE_CORTE,
   tokensAprox,
+  ultimasLineas,
 } from './compresor'
 import type { Compactado } from './compresor'
 import { agregarAlRegistro, agregarLeccion, filasGrafica, fusionarHistorial, hayAhorro, leccionCambioModelo, LOGROS, logrosNuevos, nombreModelo, racha, sumarAlDia, totalDesde } from './historial'
@@ -211,6 +206,8 @@ const CLAVE_AVISO_SIN_SECCION = 'avisoSinSeccionDado'
 const RANURAS = 40
 /** Lo que Claude Code entrega de una salida exitosa sin ayuda: 30 KB. */
 const LIMITE_CLAUDE_CODE = 30_000
+/** Si pasa de eso, Claude Code la guarda en un archivo y muestra una vista previa de ~2 KB. */
+const VISTA_PREVIA_CLAUDE_CODE = 2200
 const HORAS_MAPA_VIGENTE = 24
 /** Por debajo de esto, una compactación o un cambio de modelo cuestan poco: Toki no avisa. */
 const CONTEXTO_RELEVANTE = 20_000
@@ -545,8 +542,6 @@ async function archivar($: $, contenido: string): Promise<string | undefined> {
   }
 }
 
-type Captura = { comando: string; ruta: string; absoluta: string }
-
 /** Claude Code recorta la salida a 30 KB; mientras corre un comando ruidoso la dejamos llegar a 150 KB (luego se compacta). */
 let comandosRuidososEnCurso = 0
 let limiteOriginal: string | undefined
@@ -570,40 +565,29 @@ async function restaurarLimite($: $): Promise<void> {
   }
 }
 
+/** Un `| tail` que Toki rehace: el comando que corre en su lugar, cuántas líneas habría visto Claude y con qué programa. */
+type Corte = { comando: string; lineas: number; programa: string }
+
 /**
- * Prepara la copia completa de la salida mientras el comando corre.
- * Solo en bash o zsh, y solo si el comando envuelto no pediría un permiso nuevo.
+ * Un test o build cortado con `| tail` (o `| Select-Object -Last N`): corre con el corte
+ * agrandado a TOPE_CORTE líneas y Toki corta después (rehacerCorte). Solo si el comando nuevo
+ * tiene la misma decisión de permisos que el original: nunca genera una pregunta nueva.
  */
-async function planearCaptura($: $, comando: string): Promise<Captura | undefined> {
-  const partes = separarComando(comando)
-  if (partes === undefined) return undefined
-  return prepararEnvoltura($, 'Bash', comando, absoluta => envolver(partes.prefijo, partes.cuerpo, absoluta))
-}
-
-/** Lo mismo en PowerShell, con Tee-Object. */
-async function planearCapturaPs($: $, comando: string): Promise<Captura | undefined> {
-  const partes = separarComandoPs(comando)
-  if (partes === undefined) return undefined
-  return prepararEnvoltura($, 'PowerShell', comando, absoluta => envolverPs(partes.prefijo, partes.cuerpo, absoluta))
-}
-
-/** El `| Select-Object -Last N` de PowerShell, que esconde errores igual que un `| tail`. */
-async function planearRescatePs($: $, comando: string): Promise<Captura | undefined> {
-  const partes = separarSelectLast(comando)
-  if (partes === undefined || !esRuidoso(partes.base)) return undefined
-  const base = separarComandoPs(partes.base)
-  if (base === undefined) return undefined
-  return prepararEnvoltura($, 'PowerShell', comando, absoluta => envolverRescatePs(base.prefijo, base.cuerpo, partes.filtro, absoluta))
-}
-
-/** Un test o build cortado con `| tail`: se guarda la salida completa en el camino, sin cambiar lo que Claude ve. */
-async function planearRescate($: $, comando: string): Promise<Captura | undefined> {
-  const partes = separarTail(comando)
-  if (partes === undefined || !esRuidoso(partes.base)) return undefined
-  // Un `cd carpeta &&` inicial queda fuera de las llaves para que el cambio de carpeta siga valiendo.
-  const base = separarComando(partes.base)
-  if (base === undefined) return undefined
-  return prepararEnvoltura($, 'Bash', comando, absoluta => envolverRescate(base.prefijo, base.cuerpo, partes.filtro, absoluta))
+async function planearCorte($: $, herramienta: 'Bash' | 'PowerShell', comando: string): Promise<Corte | undefined> {
+  const powershell = herramienta === 'PowerShell'
+  const partes = separarCorte(comando, powershell)
+  if (partes === undefined || partes.lineas >= TOPE_CORTE || !esRuidoso(partes.base)) return undefined
+  try {
+    const original = await decisionDePermiso($, herramienta, comando)
+    if (original === 'deny') return undefined
+    const nuevo = `${partes.base} | ${agrandarCorte(partes.filtro, TOPE_CORTE)}`
+    const permiso = await decisionDePermiso($, herramienta, nuevo)
+    $.ui.log(`corte (${herramienta}): original=${original} agrandado=${permiso}`, { to: 'debug' })
+    if (permiso === original) return { comando: nuevo, lineas: partes.lineas, programa: powershell ? 'Select-Object -Last' : 'tail' }
+  } catch (err) {
+    $.ui.log(`corte falló: ${String(err)}`, { to: 'debug' })
+  }
+  return undefined
 }
 
 /** La decisión de permisos de Claude Code para un comando (allow, ask o deny). */
@@ -613,44 +597,16 @@ async function decisionDePermiso($: $, herramienta: 'Bash' | 'PowerShell', comma
   return String((r as { decision?: unknown }).decision)
 }
 
-async function prepararEnvoltura($: $, herramienta: 'Bash' | 'PowerShell', comando: string, construir: (absoluta: string) => string): Promise<Captura | undefined> {
+/**
+ * La salida entera. Claude Code guarda en un archivo la que pasa de su límite y entrega solo el
+ * comienzo: se lee de ahí. Nada si no se puede leer (más de 4 MiB).
+ */
+async function salidaEntera<T extends SalidaShell>($: $, r: T): Promise<T | undefined> {
+  if (r.persistedOutputPath === undefined) return r
   try {
-    if (herramienta === 'Bash') {
-      const shell = (await $.env.get('SHELL')) ?? ''
-      if (!/(^|\/)(bash|zsh)$/.test(shell)) {
-        $.ui.log(`captura: shell no compatible: ${shell}`, { to: 'debug' })
-        return undefined
-      }
-    }
-    const ruta = await reservarRuta($)
-    const absoluta = `${(await $.session.cwd()).replace(/[\\/]$/, '')}/${ruta}`
-    const envuelto = construir(absoluta)
-    // Solo si envolverlo no cambia la decisión de permisos: nunca genera una pregunta nueva.
-    const [original, permiso] = await Promise.all([decisionDePermiso($, herramienta, comando), decisionDePermiso($, herramienta, envuelto)])
-    $.ui.log(`captura (${herramienta}): original=${original} envuelto=${permiso}`, { to: 'debug' })
-    if (permiso === 'deny' || permiso !== original) return undefined
-    await $.fs.write(ruta, '')
-    return { comando: envuelto, ruta, absoluta }
-  } catch (err) {
-    $.ui.log(`captura falló: ${String(err)}`, { to: 'debug' })
-    return undefined
-  }
-}
-
-/** La copia capturada. Si pesa más de 4 MiB no se puede leer entera, pero existe y Claude puede buscar en ella. */
-async function leerCaptura($: $, captura: Captura | undefined): Promise<{ texto?: string; existe: boolean }> {
-  if (captura === undefined) return { existe: false }
-  try {
-    let texto = await $.fs.read(captura.ruta)
-    // Windows PowerShell 5.1 escribe la copia en UTF-16: se vuelve a leer como bytes.
-    if (texto.includes('\u0000')) texto = decodificarUtf16(bytesDeBase64((await $.fs.read(captura.ruta, { as: 'bytes' })).base64))
-    return texto.length > 0 ? { texto, existe: true } : { existe: false }
+    return { ...r, stdout: await $.fs.read(r.persistedOutputPath) }
   } catch {
-    try {
-      return { existe: (await $.fs.stat(captura.ruta)).size > 0 }
-    } catch {
-      return { existe: false }
-    }
+    return undefined
   }
 }
 
@@ -1336,7 +1292,6 @@ async function revisarRepetida(
   comando: string,
   agente: string | undefined,
   r: SalidaShell | undefined,
-  captura: Captura | undefined,
 ): Promise<{ stdout: string; stderr: string } | undefined> {
   if (!config.repetidas || r === undefined || vivo.sinCompactar.has(comando.trim())) return undefined
   if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) return undefined
@@ -1351,13 +1306,13 @@ async function revisarRepetida(
     vivo.repetidas = { ...recientes, [clave]: actual }
     return undefined
   }
-  const copia = await leerCaptura($, captura)
-  const ruta = copia.existe && captura !== undefined ? captura.ruta : await archivar($, texto)
+  const ruta = await archivar($, texto)
   if (ruta === undefined) return undefined
   const x = tx()
   const linea = x.salidaRepetida(Math.round((actual.cuando - (previa?.cuando ?? actual.cuando)) / 60_000), kb(texto.length), ruta)
-  // Contrafactual honesto: sin Toki, Claude habría leído lo que entrega Claude Code (máx. 30 KB).
-  const ahorrado = Math.max(0, Math.min(texto.length, LIMITE_CLAUDE_CODE) - linea.length)
+  // Contrafactual honesto: sin Toki, Claude habría leído lo que entrega Claude Code (máx. 30 KB, o la vista previa).
+  const leidoSinToki = r.persistedOutputPath !== undefined ? VISTA_PREVIA_CLAUDE_CODE : Math.min(texto.length, LIMITE_CLAUDE_CODE)
+  const ahorrado = Math.max(0, leidoSinToki - linea.length)
   await sumarAhorro($, ahorrado, comando, agente, 'repetida', { ruta, caracteres: texto.length })
   anotar(comando, 'compactado', x.detalleRepetida, tokensAprox(ahorrado))
   return { stdout: linea, stderr: '' }
@@ -1772,64 +1727,65 @@ async function despuesDeEjecutar($: $, comando: string, fallo: boolean, texto: s
   return avisoBucle(vivo.idioma)
 }
 
-/** Un comando que falló: Claude Code solo entrega ~10 KB, y el error suele estar al final. */
-async function compactarFallo($: $, comando: string, texto: string, captura: Captura | undefined, agente: string | undefined): Promise<string | undefined> {
+/**
+ * Un comando que falló: Claude Code corta el medio de las salidas largas, y el error suele
+ * estar ahí o al final. Con el límite ampliado llega entera hasta 150 KB.
+ */
+async function compactarFallo($: $, comando: string, texto: string, agente: string | undefined): Promise<string | undefined> {
   const idioma = vivo.idioma
-  const copia = await leerCaptura($, captura)
   const salida = texto.match(/^(Exit code \d+)\n?/)
-  const cuerpo = copia.texto ?? (salida ? texto.slice(salida[0].length) : texto)
+  const cuerpo = salida ? texto.slice(salida[0].length) : texto
   const c = compactar(cuerpo, idioma)
   if (c === null) {
     anotarMotivo(comando, esCorta(cuerpo) ? 'corta' : 'pocoAhorro')
     return undefined
   }
-  const ruta = copia.existe && captura !== undefined ? captura.ruta : await archivar($, texto)
+  const ruta = await archivar($, texto)
   if (ruta === undefined) {
     anotarMotivo(comando, 'archivar')
     return undefined
   }
-  // Contrafactual honesto: sin Toki, Claude habría leído lo que entregó Claude Code.
-  const ahorrado = Math.max(0, texto.length - c.caracteresDespues - 200)
+  const entera = c.recortadoAntes === 0
+  // Contrafactual honesto: sin Toki (y sin el límite ampliado), Claude habría leído lo que entrega Claude Code.
+  const ahorrado = Math.max(0, Math.min(texto.length, LIMITE_CLAUDE_CODE) - c.caracteresDespues - 200)
   await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: cuerpo.length })
-  anotar(comando, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), copia.existe), tokensAprox(ahorrado))
+  anotar(comando, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), entera), tokensAprox(ahorrado))
   registrarSalidaGrande($, cuerpo.length)
-  return [salida?.[1], encabezado(c, ruta, copia.existe, tokensAprox(ahorrado), idioma), c.texto].filter(Boolean).join('\n')
+  return [salida?.[1], encabezado(c, ruta, entera, tokensAprox(ahorrado), idioma), c.texto].filter(Boolean).join('\n')
 }
 
-/** Un comando que terminó bien. Devuelve el stdout y stderr nuevos, o nada si se deja igual. */
-async function compactarExito($: $, comando: string, r: SalidaShell, captura: Captura | undefined, agente: string | undefined): Promise<{ stdout: string; stderr: string } | undefined> {
+/** Un comando que terminó bien, con su salida entera. Devuelve el stdout y stderr nuevos, o nada si se deja igual. */
+async function compactarExito($: $, comando: string, r: SalidaShell, agente: string | undefined): Promise<{ stdout: string; stderr: string } | undefined> {
   const idioma = vivo.idioma
   if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) {
     anotarMotivo(comando, 'segundoPlano')
     return undefined
   }
-  const copia = await leerCaptura($, captura)
-  // Con captura, stdout y stderr vienen juntos en el orden real en que salieron.
-  const fuente = copia.texto ?? r.stdout
-  const cOut = compactar(fuente, idioma)
-  const cErr = !copia.existe && r.stderr ? compactar(r.stderr, idioma) : null
+  const cOut = compactar(r.stdout, idioma)
+  const cErr = r.stderr ? compactar(r.stderr, idioma) : null
   const principal: Compactado | null = cOut ?? cErr
   if (principal === null) {
-    anotarMotivo(comando, esCorta(fuente) ? 'corta' : 'pocoAhorro')
+    anotarMotivo(comando, esCorta(r.stdout) ? 'corta' : 'pocoAhorro')
     return undefined
   }
-  const ruta = copia.existe && captura !== undefined ? captura.ruta : await archivar($, `=== stdout ===\n${r.stdout}\n\n=== stderr ===\n${r.stderr}`)
+  const ruta = await archivar($, `=== stdout ===\n${r.stdout}\n\n=== stderr ===\n${r.stderr}`)
   if (ruta === undefined) {
     anotarMotivo(comando, 'archivar')
     return undefined
   }
-  // Contrafactual honesto: sin Toki, Claude Code entrega como máximo 30 KB,
-  // o una vista previa de ~2 KB cuando guarda la salida en un archivo.
-  const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
+  // Contrafactual honesto: sin Toki, Claude Code entrega hasta 30 KB; si es más, la guarda en
+  // un archivo y entrega una vista previa de ~2 KB (también la que llegó entera por el límite ampliado).
+  const total = r.stdout.length + r.stderr.length
+  const leidoSinToki = r.persistedOutputPath !== undefined || total > LIMITE_CLAUDE_CODE ? VISTA_PREVIA_CLAUDE_CODE : total
   const leidoConToki = (cOut?.caracteresDespues ?? 0) + (cErr?.caracteresDespues ?? 0) + 300
   const ahorrado = Math.max(0, leidoSinToki - leidoConToki)
-  await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: fuente.length })
-  anotar(comando, 'compactado', tx().detalleCompactado(kb(principal.caracteresAntes), kb(principal.caracteresDespues), copia.existe), tokensAprox(ahorrado))
-  registrarSalidaGrande($, fuente.length)
-  const cabecera = encabezado(principal, ruta, copia.existe, tokensAprox(ahorrado), idioma)
+  await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: r.stdout.length })
+  anotar(comando, 'compactado', tx().detalleCompactado(kb(principal.caracteresAntes), kb(principal.caracteresDespues), true), tokensAprox(ahorrado))
+  registrarSalidaGrande($, r.stdout.length)
+  const cabecera = encabezado(principal, ruta, true, tokensAprox(ahorrado), idioma)
   return {
     stdout: cOut ? `${cabecera}\n${cOut.texto}` : r.stdout,
-    stderr: copia.existe ? '' : cErr ? (cOut ? cErr.texto : `${cabecera}\n${cErr.texto}`) : r.stderr,
+    stderr: cErr ? (cOut ? cErr.texto : `${cabecera}\n${cErr.texto}`) : r.stderr,
   }
 }
 
@@ -1907,40 +1863,53 @@ async function resumirBusquedaShell(
   comando: string,
   tipo: TipoBusqueda,
   r: SalidaShell,
-  captura: Captura | undefined,
   agente: string | undefined,
 ): Promise<{ stdout: string; stderr: string } | undefined> {
   if (r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) return undefined
-  const copia = await leerCaptura($, captura)
-  const fuente = copia.texto ?? r.stdout
+  const fuente = r.stdout
   if (fuente.length <= LIMITE_CLAUDE_CODE) return undefined
-  const ruta = copia.existe && captura !== undefined ? captura.ruta : await archivar($, fuente)
+  const ruta = await archivar($, fuente)
   if (ruta === undefined) return undefined
   const resumen = resumirBusqueda(fuente, tipo, ruta, vivo.idioma)
   if (resumen === undefined) return undefined
   // Contrafactual honesto, como con las salidas ruidosas: sin Toki, como mucho 30 KB (o la vista previa de 2 KB).
-  const leidoSinToki = r.persistedOutputPath !== undefined ? 2200 : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
+  const leidoSinToki = r.persistedOutputPath !== undefined ? VISTA_PREVIA_CLAUDE_CODE : Math.min(r.stdout.length + r.stderr.length, LIMITE_CLAUDE_CODE)
   const ahorrado = Math.max(0, leidoSinToki - resumen.caracteresDespues)
   await sumarAhorro($, ahorrado, comando, agente, 'busqueda', { ruta, caracteres: fuente.length })
   anotar(comando, 'compactado', tx().detalleCompactado(kb(resumen.caracteresAntes), kb(resumen.caracteresDespues), true), tokensAprox(ahorrado))
   registrarSalidaGrande($, fuente.length)
-  return { stdout: resumen.texto, stderr: copia.existe ? '' : r.stderr }
+  return { stdout: resumen.texto, stderr: r.stderr }
 }
 
-/** Agrega a lo que entregó el `| tail` los errores que quedaron fuera. Nada si no había. */
-async function rescatar($: $, comando: string, captura: Captura, entregado: string, programa = 'tail'): Promise<string | undefined> {
-  const copia = await leerCaptura($, captura)
-  if (copia.texto === undefined) return undefined
-  const r = rescatarErrores(copia.texto, entregado)
-  if (r === undefined) return undefined
+/**
+ * Lo que Claude habría visto con su corte (las últimas líneas de la salida entera) y, si el
+ * corte escondía errores, esos errores con su contexto y la ruta de la copia completa.
+ */
+async function rehacerCorte($: $, comando: string, corte: Corte, completa: string): Promise<string> {
+  const visto = ultimasLineas(completa, corte.lineas)
+  // Sin la salida entera (llegó al tope, o Claude Code le cortó el medio), solo lo que el corte dejaba ver.
+  if (caracteresRecortados(completa) > 0 || completa.replace(/\n$/, '').split('\n').length >= TOPE_CORTE) return visto
+  const r = rescatarErrores(completa, visto)
+  if (r === undefined) return visto
   const x = tx()
-  const lineas = [x.rescateEncabezado(programa, r.errores, r.total), ...r.texto]
-  if (r.incluidos < r.errores) lineas.push(x.rescateMas(r.errores - r.incluidos))
-  lineas.push(x.copiaCompleta(captura.ruta))
+  const lineas = [x.rescateEncabezado(corte.programa, r.errores, r.total), ...r.texto]
+  // Sin copia guardada, igual van los errores: es más de lo que el corte dejaba ver.
+  const ruta = await archivar($, completa)
+  if (ruta !== undefined) {
+    if (r.incluidos < r.errores) lineas.push(x.rescateMas(r.errores - r.incluidos))
+    lineas.push(x.copiaCompleta(ruta))
+  }
   reanotar(comando, 'rescatado', x.detalleRescate(r.errores))
   $.ui.toast(x.toastRescate(r.errores, recortar(comando, 40)), { timeoutMs: 7000 })
   if ((await revisarLogros($, { rescate: true })).length === 0) sonar($, 'ahorro')
-  return lineas.join('\n')
+  return `${visto.replace(/\n+$/, '')}\n\n${lineas.join('\n')}`
+}
+
+/** Lo mismo cuando el pipe salió con error (en PowerShell manda el comando; en bash, con pipefail): el código de salida va arriba. */
+async function rehacerCorteFallido($: $, comando: string, corte: Corte, texto: string): Promise<string> {
+  const salida = texto.match(/^(Exit code \d+)\n?/)
+  const visto = await rehacerCorte($, comando, corte, salida ? texto.slice(salida[0].length) : texto)
+  return salida ? `${salida[1]}\n${visto}` : visto
 }
 
 async function conAvisoMapa($: $, herramienta: string, comando: string | undefined, ran: ToolCallResult): Promise<ToolCallResult> {
@@ -4483,63 +4452,59 @@ export const register: Register = (on, options) => {
     const comando = e.command
     const compactable = prepararComando(comando, e.agentId)
     const busqueda = !compactable && config.compresion && config.busquedas && !vivo.sinCompactar.has(comando.trim()) ? tipoBusqueda(comando) : undefined
-    const captura = compactable || busqueda !== undefined ? await planearCaptura($, comando) : undefined
-    const rescate = !compactable && busqueda === undefined && config.compresion ? await planearRescate($, comando) : undefined
-    const ampliado = compactable || (busqueda !== undefined && captura !== undefined)
-    if (ampliado) await ampliarLimite($)
-    // El modelo sigue viendo su comando original en el historial; solo cambia cómo se ejecuta.
-    const envuelto = captura ?? rescate
+    // En segundo plano, Claude lee la salida después y por otro lado: ahí el corte queda como está.
+    const corte = !compactable && busqueda === undefined && config.compresion && e.run_in_background !== true ? await planearCorte($, 'Bash', comando) : undefined
+    if (compactable) await ampliarLimite($)
     let ran
     try {
-      ran = await next(envuelto ? { ...e, command: envuelto.comando } : e)
+      // El modelo sigue viendo su comando original en el historial; solo cambia cómo se ejecuta.
+      ran = await next(corte ? { ...e, command: corte.comando } : e)
     } finally {
-      if (ampliado) await restaurarLimite($)
+      if (compactable) await restaurarLimite($)
     }
     if (ran.deny !== undefined) return ran
-    if (busqueda !== undefined && ran.isError !== true) {
-      const nuevo = await resumirBusquedaShell($, comando, busqueda, ran.result, captura, e.agentId)
-      if (nuevo !== undefined) return { result: { ...ran.result, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
+    const entera = ran.isError === true ? undefined : await salidaEntera($, ran.result)
+    if (busqueda !== undefined && entera !== undefined) {
+      const nuevo = await resumirBusquedaShell($, comando, busqueda, entera, e.agentId)
+      if (nuevo !== undefined) return { result: { ...entera, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
     }
     const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text, e.agentId)
-    if (ran.isError !== true) {
-      const repetida = await revisarRepetida($, 'Bash', comando, e.agentId, ran.result, envuelto)
-      if (repetida !== undefined) return { result: { ...ran.result, ...repetida, persistedOutputPath: undefined, persistedOutputSize: undefined } }
+    if (entera !== undefined && corte === undefined) {
+      const repetida = await revisarRepetida($, 'Bash', comando, e.agentId, entera)
+      if (repetida !== undefined) return { result: { ...entera, ...repetida, persistedOutputPath: undefined, persistedOutputSize: undefined } }
     }
     if (compactable) {
       if (ran.isError === true) {
-        const texto = await compactarFallo($, comando, ran.text ?? '', captura, e.agentId)
+        const texto = await compactarFallo($, comando, ran.text ?? '', e.agentId)
         if (texto !== undefined) return { deny: aviso !== undefined ? `${texto}\n${aviso}` : texto }
-      } else {
-        const nuevo = await compactarExito($, comando, ran.result, captura, e.agentId)
-        if (nuevo !== undefined) return { result: { ...ran.result, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
+      } else if (entera !== undefined) {
+        const nuevo = await compactarExito($, comando, entera, e.agentId)
+        if (nuevo !== undefined) return { result: { ...entera, ...nuevo, persistedOutputPath: undefined, persistedOutputSize: undefined } }
       }
     }
-    if (rescate !== undefined) {
-      if (ran.isError === true) {
-        const bloque = await rescatar($, comando, rescate, ran.text ?? '')
-        if (bloque !== undefined) return { deny: [ran.text ?? '', bloque, aviso].filter(Boolean).join('\n\n') }
-      } else if (ran.result.backgroundTaskId === undefined && !ran.result.interrupted) {
-        const bloque = await rescatar($, comando, rescate, `${ran.result.stdout}\n${ran.result.stderr}`)
-        if (bloque !== undefined) return { result: { ...ran.result, stdout: `${ran.result.stdout.replace(/\n+$/, '')}\n\n${bloque}` } }
+    if (corte !== undefined) {
+      if (ran.isError === true) return { deny: [await rehacerCorteFallido($, comando, corte, ran.text ?? ''), aviso].filter(Boolean).join('\n\n') }
+      if (entera !== undefined && entera.backgroundTaskId === undefined && entera.isImage !== true) {
+        return { result: { ...entera, stdout: await rehacerCorte($, comando, corte, entera.stdout), persistedOutputPath: undefined, persistedOutputSize: undefined } }
       }
     }
     if (aviso !== undefined && ran.isError === true) return { deny: `${ran.text ?? ''}\n\n${aviso}` }
     return conAvisoMapa($, 'Bash', comando, ran)
   })
 
-  // Motor (PowerShell, Windows sin Git Bash): lo mismo, con Tee-Object. Ante cualquier sorpresa, la salida original.
+  // Motor (PowerShell, Windows sin Git Bash): lo mismo. Ante cualquier sorpresa, la salida original.
   on('tool.call', { tool: /^PowerShell$/ }, async ($, e, next) => {
     const comando = (e as { command?: unknown }).command
     if (typeof comando !== 'string') return next(e)
     const compactable = prepararComando(comando, e.agentId)
-    const captura = compactable ? await planearCapturaPs($, comando) : undefined
-    const rescate = !compactable && config.compresion ? await planearRescatePs($, comando) : undefined
-    const envuelto = captura ?? rescate
-    const ran = await next(envuelto ? ({ ...e, command: envuelto.comando } as typeof e) : e)
+    const enFondo = (e as { run_in_background?: unknown }).run_in_background === true
+    const corte = !compactable && config.compresion && !enFondo ? await planearCorte($, 'PowerShell', comando) : undefined
+    const ran = await next(corte ? ({ ...e, command: corte.comando } as typeof e) : e)
     if (ran.deny !== undefined) return ran
     const aviso = await despuesDeEjecutar($, comando, ran.isError === true, ran.text, e.agentId)
     try {
-      const r = ran.isError === true ? undefined : comoSalidaShell(ran.result)
+      const salida = ran.isError === true ? undefined : comoSalidaShell(ran.result)
+      const r = salida === undefined ? undefined : await salidaEntera($, salida)
       const conSalida = (nuevo: { stdout: string; stderr: string }) => {
         const base = ran.result as Record<string, unknown>
         const resultado: Record<string, unknown> = { ...base, ...nuevo }
@@ -4547,27 +4512,24 @@ export const register: Register = (on, options) => {
         if ('persistedOutputSize' in base) resultado['persistedOutputSize'] = undefined
         return { result: resultado }
       }
-      if (r !== undefined) {
-        const repetida = await revisarRepetida($, 'PowerShell', comando, e.agentId, r, envuelto)
+      if (r !== undefined && corte === undefined) {
+        const repetida = await revisarRepetida($, 'PowerShell', comando, e.agentId, r)
         if (repetida !== undefined) return conSalida(repetida)
       }
       if (compactable) {
         if (ran.isError === true) {
-          const texto = await compactarFallo($, comando, ran.text ?? '', captura, e.agentId)
+          const texto = await compactarFallo($, comando, ran.text ?? '', e.agentId)
           if (texto !== undefined) return { deny: aviso !== undefined ? `${texto}\n${aviso}` : texto }
-        } else if (r === undefined) anotarMotivo(comando, 'formato')
-        else {
-          const nuevo = await compactarExito($, comando, r, captura, e.agentId)
+        } else if (salida === undefined) anotarMotivo(comando, 'formato')
+        else if (r !== undefined) {
+          const nuevo = await compactarExito($, comando, r, e.agentId)
           if (nuevo !== undefined) return conSalida(nuevo)
         }
       }
-      if (rescate !== undefined) {
-        if (ran.isError === true) {
-          const bloque = await rescatar($, comando, rescate, ran.text ?? '', 'Select-Object -Last')
-          if (bloque !== undefined) return { deny: [ran.text ?? '', bloque, aviso].filter(Boolean).join('\n\n') }
-        } else if (r !== undefined) {
-          const bloque = await rescatar($, comando, rescate, `${r.stdout}\n${r.stderr}`, 'Select-Object -Last')
-          if (bloque !== undefined) return conSalida({ stdout: `${r.stdout.replace(/\n+$/, '')}\n\n${bloque}`, stderr: r.stderr })
+      if (corte !== undefined) {
+        if (ran.isError === true) return { deny: [await rehacerCorteFallido($, comando, corte, ran.text ?? ''), aviso].filter(Boolean).join('\n\n') }
+        if (r !== undefined && r.backgroundTaskId === undefined && r.isImage !== true) {
+          return conSalida({ stdout: await rehacerCorte($, comando, corte, r.stdout), stderr: r.stderr })
         }
       }
     } catch (err) {

@@ -18,9 +18,9 @@ Lista para el día que decidas enviarlo. Nada de esto se ha enviado.
 - [ ] Nombre permanente: `toki`. No se cambia nunca; para otra etiqueta se usa `displayName`.
 - [ ] `version` subida en `plugin.json` (ahora 0.17.6) y el mismo número en `VERSION` de `hooks/register.tsx`.
 - [ ] `claude plugin validate --strict .` → `Validation passed` sin advertencias (hoy pasa).
-- [ ] `claude plugin test .` → todo verde (hoy 344/344).
+- [ ] `claude plugin test .` → todo verde (hoy 350/350).
 - [ ] Instalar desde el marketplace en una carpeta limpia y abrir una sesión: `claude plugin marketplace add DMercadoCanas/toki`, luego `claude plugin install toki@toki`.
-- [ ] Correr en el Mac los casos con Bash (necesitan el sandbox; el comando, con `-j 1`, está en `evals/README.md`), juntarlos con los demás (`python3 evals/benchmark.py evals/results/2026-10-22-sin-bash.json evals/results/bash.json`) y pegar la tabla en el README. Los casos sin Bash ya están medidos con 0.16.
+- [x] Correr la eval completa en el Mac (`bash evals/correr.sh`: los casos con Bash necesitan el sandbox; 11 casos, Opus y Sonnet, 5 corridas por brazo; ~$15, con tope de $15 por modelo) y pegar la tabla de `evals/results/<fecha>.md` en el README y en `evals/README.md`, con los intervalos y las corridas perdidas. Hecho el 3 nov 2026 con 0.17.6: $15.33, ninguna corrida perdida.
 - [x] `homepage` y `repository` en `plugin.json` apuntan a `https://github.com/DMercadoCanas/toki`, igual que tu `origin` local.
 - [ ] Licencia MIT en `LICENSE`. Los sonidos son sintéticos, sin derechos de terceros.
 
@@ -34,7 +34,7 @@ El directorio corre un escaneo de seguridad y una revisión de políticas que `v
 | Agrega una sección fija al system prompt (respuestas breves) | ~200 tokens al final, en el caché; no toca código, comandos ni errores. Lo que cuesta se resta del ahorro. Respeta el `/output-style` que elijas y se apaga en `/plugin` → Toki → Respuestas breves. |
 | Rechaza herramientas que cambian algo mientras falta la entrevista | Solo en pedidos grandes con entrevista, hasta que Claude pregunte, con el motivo y a lo sumo 3 veces por mensaje. Leer siempre pasa, y nunca frena lo que hace un subagente que ya corre ni lo que hace otro plugin. `/toki-entrevista no` lo apaga, y «sin preguntas» lo salta. |
 | Hace una pregunta corta a Haiku para clasificar mensajes dudosos | Unos cientos de tokens, con tiempo límite. Si tarda, usa la heurística local. |
-| Envuelve comandos de Bash/PowerShell para guardar la salida completa | Solo si Claude Code le da exactamente el mismo permiso que al original. La copia queda en `.claude/toki/` del proyecto. |
+| Agranda el `\| tail` de un test o build a 10.000 líneas | Para agregar los errores que el corte escondía; Claude ve las mismas líneas que pidió. Solo si Claude Code le da exactamente el mismo permiso que al original. La copia completa queda en `.claude/toki/` del proyecto. |
 | Baja el umbral de autocompactación en modelos de 1M | Opción "Compactar a los…". No toca un valor que tú ya fijaste. |
 | Ping de caché cada ~4 min | Solo API, **apagado por defecto**. Máximo 30 min. |
 | Guarda historial y logros | En el store local de Claude Code y en `.claude/toki/`. Nada sale de tu máquina. |
