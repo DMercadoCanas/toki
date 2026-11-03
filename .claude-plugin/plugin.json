@@ -1,7 +1,7 @@
 {
   "name": "toki",
   "version": "0.17.6",
-  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, pone un presupuesto por tarea, compacta antes en modelos de 1M, recorta salidas ruidosas y búsquedas enormes, frena lecturas de archivos generados, guarda en un archivo los textos pegados enormes, rescata errores escondidos, recuerda lo importante al compactar y cada lunes te muestra una tarjeta con tu semana. Español e inglés. Cero dependencias; lo fijo en el contexto son ~200 tokens de respuestas breves, que puedes apagar, y ~230 de sus comandos.",
+  "description": "Toki, tu acompañante de ahorro de tokens para Claude Code. Lee cada mensaje antes de mandarlo y te recomienda modelo y esfuerzo (con lo que cuesta cada opción), te avisa antes de enviar si el caché venció, proyecta cuándo se acaban tus límites, pone un presupuesto por tarea, compacta antes en modelos de 1M, recorta salidas ruidosas y búsquedas enormes, frena lecturas de archivos generados, guarda en un archivo los textos pegados enormes, rescata errores escondidos, recuerda lo importante al compactar y cada lunes te muestra una tarjeta con tu semana. Español e inglés. Cero dependencias; lo único fijo en el contexto son ~200 tokens de respuestas breves, que puedes apagar.",
   "author": {
     "name": "DMercadoCanas"
   },
@@ -141,6 +141,12 @@
       "title": "Respuestas breves / Brief replies",
       "description": "Desde el primer mensaje le pide a Claude respuestas breves, sin recortar código, comandos ni errores (medido: ~12 % menos salida). Si eliges tu propio /output-style, se respeta. / Brief replies from the first message, without cutting code, commands or errors (measured: ~12% less output).",
       "default": true
+    },
+    "guardiaEmpresa": {
+      "type": "boolean",
+      "title": "Guardia de empresa / Company guard",
+      "description": "En cuentas Team o Enterprise, Claude Code corre un guardia que se salta algunos hooks de Toki y le deja a Claude un aviso de ~200 tokens por cada uno (otra vez tras cada compactación). Prendida, Toki no registra esos hooks y usa sus alternativas. Toki la prende solo al notar el guardia y la apaga cada 30 días para ver si sigue; si cambias de cuenta antes, apágala tú. / On Team or Enterprise accounts, Toki stops registering the hooks Claude Code's guard skips (~200 tokens per notice). It turns this on when it notices the guard and off every 30 days to recheck.",
+      "default": false
     },
     "idioma": {
       "type": "string",

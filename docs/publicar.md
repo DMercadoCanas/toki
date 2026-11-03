@@ -18,7 +18,7 @@ Lista para el día que decidas enviarlo. Nada de esto se ha enviado.
 - [ ] Nombre permanente: `toki`. No se cambia nunca; para otra etiqueta se usa `displayName`.
 - [ ] `version` subida en `plugin.json` (ahora 0.17.6) y el mismo número en `VERSION` de `hooks/register.tsx`.
 - [ ] `claude plugin validate --strict .` → `Validation passed` sin advertencias (hoy pasa).
-- [ ] `claude plugin test .` → todo verde (hoy 350/350).
+- [ ] `claude plugin test .` → todo verde (hoy 372/372).
 - [ ] Instalar desde el marketplace en una carpeta limpia y abrir una sesión: `claude plugin marketplace add DMercadoCanas/toki`, luego `claude plugin install toki@toki`.
 - [x] Correr la eval completa en el Mac (`bash evals/correr.sh`: los casos con Bash necesitan el sandbox; 11 casos, Opus y Sonnet, 5 corridas por brazo; ~$15, con tope de $15 por modelo) y pegar la tabla de `evals/results/<fecha>.md` en el README y en `evals/README.md`, con los intervalos y las corridas perdidas. Hecho el 3 nov 2026 con 0.17.6: $15.33, ninguna corrida perdida.
 - [x] `homepage` y `repository` en `plugin.json` apuntan a `https://github.com/DMercadoCanas/toki`, igual que tu `origin` local.
@@ -37,6 +37,7 @@ El directorio corre un escaneo de seguridad y una revisión de políticas que `v
 | Agranda el `\| tail` de un test o build a 10.000 líneas | Para agregar los errores que el corte escondía; Claude ve las mismas líneas que pidió. Solo si Claude Code le da exactamente el mismo permiso que al original. La copia completa queda en `.claude/toki/` del proyecto. |
 | Baja el umbral de autocompactación en modelos de 1M | Opción "Compactar a los…". No toca un valor que tú ya fijaste. |
 | Ping de caché cada ~4 min | Solo API, **apagado por defecto**. Máximo 30 min. |
+| Cambia su propia opción «Guardia de empresa» | Solo cuando el guardia de las cuentas Team y Enterprise se salta sus hooks durante un mensaje entero: prendida, no los registra y Claude deja de recibir un aviso de ~200 tokens por cada uno. Avisa al prenderla, la apaga cada 30 días para revisar y nunca la toca en `claude -p`. No toca otras opciones ni las de Claude Code, y se cambia en `/plugin` → Toki. |
 | Guarda historial y logros | En el store local de Claude Code y en `.claude/toki/`. Nada sale de tu máquina. |
 
 ## Texto para el listado

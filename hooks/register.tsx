@@ -56,6 +56,8 @@ import {
   ultimasLineas,
 } from './compresor'
 import type { Compactado } from './compresor'
+import { detectarEmpresa, DIAS_REVISION_EMPRESA, leerEstadoEmpresa, OPCION_EMPRESA, revisarEmpresa, terminarRevision } from './empresa'
+import type { EstadoEmpresa } from './empresa'
 import { agregarAlRegistro, agregarLeccion, filasGrafica, fusionarHistorial, hayAhorro, leccionCambioModelo, LOGROS, logrosNuevos, nombreModelo, racha, sumarAlDia, totalDesde } from './historial'
 import type { Historial, Leccion, Logro } from './historial'
 import { detectarIdioma, idiomaDeTexto, quitarEtiquetasDeSistema, t } from './idioma'
@@ -203,6 +205,8 @@ const CLAVE_VENTANA_NATIVA = 'ventanaNativa'
 /** Ya se avisó (una vez, desde siempre) que Toki pide respuestas breves. */
 const CLAVE_AVISO_BREVE = 'avisoBreveDado'
 const CLAVE_AVISO_SIN_SECCION = 'avisoSinSeccionDado'
+/** Lo que Toki recuerda del guardia de empresa (EstadoEmpresa). */
+const CLAVE_EMPRESA = 'guardiaEmpresa'
 const RANURAS = 40
 /** Lo que Claude Code entrega de una salida exitosa sin ayuda: 30 KB. */
 const LIMITE_CLAUDE_CODE = 30_000
@@ -231,6 +235,8 @@ const config = {
   guardiaGenerados: true,
   guardiaPegados: true,
   busquedas: true,
+  /** El guardia de empresa se salta prompt.compose y otros hooks: Toki no los registra. */
+  guardiaEmpresa: false,
 }
 
 // Estado vivo del acompañante (se pierde al recargar el plugin; es efímero a propósito).
@@ -360,6 +366,16 @@ const vivo: {
   breveAvisado: boolean
   /** La sección ya se mandó en un pedido del hilo principal: desde ahí está en el caché. */
   breveEnCache: boolean
+  /** prompt.compose corrió en esta activación: el guardia de empresa no lo salta. */
+  composeVisto: boolean
+  /** El último turno principal que esta activación vio empezar: uno visto a medias no prueba nada. */
+  turnoVisto?: string
+  /** Ya se intentó prender «Guardia de empresa» en esta activación. */
+  empresaIntentada: boolean
+  /** Ya se revisó el plazo de «Guardia de empresa» en esta activación. */
+  empresaRevisada: boolean
+  /** Lo que Toki recuerda del guardia de empresa, leído al empezar. */
+  empresa: EstadoEmpresa
 } = {
   idioma: 'es',
   idiomaFijo: false,
@@ -419,6 +435,10 @@ const vivo: {
   cuentaBreve: { usd: 0, tokens: 0 },
   breveAvisado: false,
   breveEnCache: false,
+  composeVisto: false,
+  empresaIntentada: false,
+  empresaRevisada: false,
+  empresa: {},
 }
 
 /** Toki en pixel art, animado dentro del SVG (fuera de la terminal). */
@@ -1010,6 +1030,82 @@ async function respaldoBreve($: $): Promise<void> {
     $.ui.toast(x.toastConciso, { timeoutMs: 10_000 })
   } catch {
     // Sin store: no se avisa, para no repetirlo en cada sesión.
+  }
+}
+
+/**
+ * Hay alguien mirando: la terminal o la app (que llega con isInteractive en false). Un -p o una
+ * eval no: ahí Toki no cambia tu configuración.
+ */
+async function hayAlguien($: $): Promise<boolean> {
+  return ruta.interactivo || (await $.session.surfaces().catch(() => [])).length > 0
+}
+
+/**
+ * Cambia «Guardia de empresa» como si lo hicieras en /plugin; Claude Code recarga el plugin.
+ * Devuelve si se pudo.
+ */
+async function cambiarOpcionEmpresa($: $, valor: boolean): Promise<boolean> {
+  const propia = `${$.plugin.name}.${OPCION_EMPRESA}`
+  let clave = propia
+  try {
+    clave = (await $.config.list()).find(f => f.key === propia || (f.key.endsWith(`.${OPCION_EMPRESA}`) && f.provider.plugin === $.plugin.name))?.key ?? propia
+  } catch {
+    // Sin la lista: la clave de siempre.
+  }
+  let motivo: string | undefined
+  try {
+    motivo = (await $.config.set({ key: clave, value: valor })).deny
+  } catch (err) {
+    motivo = String(err)
+  }
+  if (motivo !== undefined) void anotarDiagnostico($, `guardia de empresa: Claude Code no dejó ${valor ? 'prender' : 'apagar'} la opción (${motivo})`)
+  return motivo === undefined
+}
+
+/**
+ * Una vez por activación, con alguien mirando (al empezar, al recargar tras cambiar la opción o,
+ * si la app aún no se veía, al final del primer mensaje): corre el plazo de «Guardia de empresa»,
+ * la apaga cumplidos los 30 días para ver si el guardia sigue y avisa si Toki la prendió.
+ */
+async function revisarGuardiaEmpresa($: $, ahora: number): Promise<void> {
+  vivo.empresaRevisada = true
+  try {
+    const antes = leerEstadoEmpresa(await $.store.get(CLAVE_EMPRESA))
+    const r = revisarEmpresa(antes, config.guardiaEmpresa, ahora)
+    const { nota, ...estado } = r.estado
+    // La nota de respuestas breves se mandó en esta conversación antes de recargar: no se repite.
+    if (nota !== undefined && nota === (await $.session.id().catch(() => undefined))) vivo.nudgeConciso = true
+    vivo.empresa = estado
+    if (JSON.stringify(estado) !== JSON.stringify(antes)) await $.store.set(CLAVE_EMPRESA, estado)
+    if (r.avisar) $.ui.toast(tx().toastEmpresa, { timeoutMs: 12_000 })
+    if (r.apagar) {
+      void anotarDiagnostico($, `guardia de empresa: ${DIAS_REVISION_EMPRESA} días con la opción prendida; Toki la apaga para ver si sigue`)
+      // Fuera de session.start: cambiar la opción recarga el plugin.
+      $.clock.after(1_000, () => void cambiarOpcionEmpresa($, false))
+    }
+  } catch {
+    // Sin store: la opción queda como está.
+  }
+}
+
+/**
+ * Un turno entero sin prompt.compose: el guardia de empresa se salta los hooks de Toki y le
+ * avisa a Claude cada vez. Toki prende «Guardia de empresa»: al recargar ya no los registra.
+ */
+async function prenderGuardiaEmpresa($: $, ahora: number): Promise<void> {
+  const antes = vivo.empresa
+  try {
+    // La nota de respuestas breves ya va en esta conversación: al recargar no se repite.
+    const nota = vivo.nudgeConciso ? await $.session.id().catch(() => undefined) : undefined
+    await $.store.set(CLAVE_EMPRESA, detectarEmpresa(antes, ahora, nota))
+    void anotarDiagnostico($, 'guardia de empresa: prompt.compose no corrió en un turno entero; Toki prende la opción')
+    if (await cambiarOpcionEmpresa($, true)) return
+    vivo.empresa = { ...antes, negada: true }
+    await $.store.set(CLAVE_EMPRESA, vivo.empresa)
+    if (antes.negada !== true) $.ui.toast(tx().toastEmpresaNegada, { timeoutMs: 12_000 })
+  } catch {
+    // Sin store ni sesión: se intenta en la próxima sesión.
   }
 }
 
@@ -3846,6 +3942,12 @@ export const register: Register = (on, options) => {
   config.guardiaGenerados = options['guardiaGenerados'] !== false
   config.guardiaPegados = options['guardiaPegados'] !== false
   config.busquedas = options['resumirBusquedas'] !== false
+  config.guardiaEmpresa = options[OPCION_EMPRESA] === true
+  // Si el guardia de empresa se salta prompt.compose se decide de nuevo, con un turno visto entero.
+  vivo.composeVisto = false
+  vivo.turnoVisto = undefined
+  vivo.empresaIntentada = false
+  vivo.empresaRevisada = false
   vivo.sonidos = options['sonidos'] !== false
   ruta.modoConfig = leerModo(options['recomendarModelo'])
   ruta.modo = ruta.modoConfig
@@ -3987,6 +4089,7 @@ export const register: Register = (on, options) => {
     await alaSemana($, { sesiones: 1 })
     if (e.isInteractive) await avisarSemana($, ahora)
     if (e.isInteractive && config.acompanante && vivo.mensaje === undefined) decir(ahora, x.saludo(totalAhorrado(), vivo.racha), 'normal', 15_000)
+    if (await hayAlguien($)) await revisarGuardiaEmpresa($, ahora)
     return next(e)
   })
 
@@ -4103,6 +4206,7 @@ export const register: Register = (on, options) => {
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
+      vivo.turnoVisto = e.turnId
       // Si este turno es un mensaje tuyo ya contado, su primer pedido dice qué modelo respondió.
       modeloPorContar.turno = modeloPorContar.pendiente ? e.turnId : undefined
       modeloPorContar.pendiente = false
@@ -4297,6 +4401,22 @@ export const register: Register = (on, options) => {
       }
       // Hubo pedidos y prompt.compose no corrió: las respuestas breves van por otro lado.
       if (config.conciso && vivo.breve === undefined && !vivo.nudgeConciso && vivo.pedidoPrevio !== undefined) await respaldoBreve($)
+      // Un turno entero, con pedidos, sin prompt.compose: el guardia de empresa.
+      const porDetectar = !config.guardiaEmpresa && !vivo.composeVisto && !vivo.empresaIntentada && e.usage !== undefined && vivo.turnoVisto === e.turnId
+      if ((porDetectar || !vivo.empresaRevisada) && (await hayAlguien($))) {
+        // En la app, al empezar a veces aún no hay superficie: la revisión de los 30 días va aquí.
+        if (!vivo.empresaRevisada) await revisarGuardiaEmpresa($, ahora)
+        // Prender la opción recarga el plugin: fuera del turno.
+        if (porDetectar) {
+          vivo.empresaIntentada = true
+          $.clock.after(1_000, () => void prenderGuardiaEmpresa($, ahora))
+        }
+      }
+      if (vivo.composeVisto && vivo.empresa.revisando === true) {
+        vivo.empresa = terminarRevision(vivo.empresa)
+        void anotarDiagnostico($, 'guardia de empresa: ya no está (prompt.compose corrió); la opción queda apagada')
+        await $.store.set(CLAVE_EMPRESA, vivo.empresa).catch(() => undefined)
+      }
       $.clock.after(12_000, () => {
         if (vivo.actividad === 'listo') {
           vivo.actividad = 'tranquilo'
@@ -4307,19 +4427,25 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Respuestas breves desde el primer mensaje: una sección fija al final del system prompt.
-  on('prompt.compose', async ($, e, next) => {
-    const r = await next(e)
-    try {
-      const d = decidirBreve({ activo: config.conciso, estilo: e.outputStyle?.name ?? null, traits: e.traits })
-      // /context mide sin mandar nada y un compañero arma el prompt de su líder: no cuentan para tu conversación.
-      if (!e.traits.includes('analysis') && !e.traits.includes('teammate')) vivo.breve = d
-      if (d !== 'agregar' || r.sections.some(sec => sec.id === ID_BREVE)) return r
-      return { sections: [...r.sections, { id: ID_BREVE, text: SECCION_BREVE, scope: 'session' as const }] }
-    } catch {
-      return r
-    }
-  })
+  // Con el guardia de empresa, Claude Code se salta estos hooks y le avisa a Claude cada vez
+  // (~200 tokens): con la opción prendida no se registran y van sus alternativas (la nota de
+  // respuestas breves, detectarMarca, revisarModelo).
+  if (!config.guardiaEmpresa) {
+    // Respuestas breves desde el primer mensaje: una sección fija al final del system prompt.
+    on('prompt.compose', async ($, e, next) => {
+      vivo.composeVisto = true
+      const r = await next(e)
+      try {
+        const d = decidirBreve({ activo: config.conciso, estilo: e.outputStyle?.name ?? null, traits: e.traits })
+        // /context mide sin mandar nada y un compañero arma el prompt de su líder: no cuentan para tu conversación.
+        if (!e.traits.includes('analysis') && !e.traits.includes('teammate')) vivo.breve = d
+        if (d !== 'agregar' || r.sections.some(sec => sec.id === ID_BREVE)) return r
+        return { sections: [...r.sections, { id: ID_BREVE, text: SECCION_BREVE, scope: 'session' as const }] }
+      } catch {
+        return r
+      }
+    })
+  }
 
   // La entrevista se cumple: hasta que Claude pregunte, Toki frena los cambios y los subagentes
   // (leer para preparar las preguntas pasa). A lo sumo FRENOS_ENTREVISTA veces por turno.
@@ -4405,47 +4531,50 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // Sin guardia corporativo, Toki también muestra cuándo Claude espera tu permiso.
-  on('classic.PermissionRequest', async ($, e, next) => {
-    const anterior = vivo.actividad
-    vivo.actividad = 'esperando'
-    $.ui.invalidate('ui.render')
-    try {
-      return await next(e)
-    } finally {
-      vivo.actividad = anterior
-    }
-  })
-
-  // Sin guardia corporativo llega el evento con el costo estimado; con guardia, revisarModelo() lo nota igual.
-  on('classic.PostModelSwitch', async ($, e, next) => {
-    if (e.source !== 'resume' && e.prompt_cache_warm) await avisarCambioModelo($, e.from_model, e.to_model, e.context_tokens, e.estimated_cache_write_usd, true)
-    return next(e)
-  })
-
-  // Sin guardia corporativo, además guiamos el resumen de la compactación.
-  on('session.compact', async ($, e, next) => {
-    if (e.agentId !== undefined || e.trigger === 'precompute') return next(e)
-    const anterior = vivo.actividad
-    vivo.actividad = 'compactando'
-    $.ui.invalidate('ui.render')
-    let entrada = e
-    if (config.memoria) {
-      await guardarMemoria($)
-      if (!estaVacia(vivo.memoria)) {
-        const extra = instruccionesDeCompactacion(vivo.memoria, vivo.idioma)
-        // El botón de la barra ya la manda en el /compact: no se repite.
-        if (e.instructions?.includes(extra) !== true) entrada = { ...e, instructions: e.instructions ? `${e.instructions}\n\n${extra}` : extra }
+  // Lo que el guardia de empresa se salta: con la opción prendida no se registra (ver prompt.compose).
+  if (!config.guardiaEmpresa) {
+    // Sin guardia corporativo, Toki también muestra cuándo Claude espera tu permiso.
+    on('classic.PermissionRequest', async ($, e, next) => {
+      const anterior = vivo.actividad
+      vivo.actividad = 'esperando'
+      $.ui.invalidate('ui.render')
+      try {
+        return await next(e)
+      } finally {
+        vivo.actividad = anterior
       }
-    }
-    try {
-      const resultado = await next(entrada)
-      if (resultado.messages !== undefined) await registrarCompactacion($, 'resumen')
-      return resultado
-    } finally {
-      vivo.actividad = anterior === 'compactando' ? 'tranquilo' : anterior
-    }
-  })
+    })
+
+    // Sin guardia corporativo llega el evento con el costo estimado; con guardia, revisarModelo() lo nota igual.
+    on('classic.PostModelSwitch', async ($, e, next) => {
+      if (e.source !== 'resume' && e.prompt_cache_warm) await avisarCambioModelo($, e.from_model, e.to_model, e.context_tokens, e.estimated_cache_write_usd, true)
+      return next(e)
+    })
+
+    // Sin guardia corporativo, además guiamos el resumen de la compactación.
+    on('session.compact', async ($, e, next) => {
+      if (e.agentId !== undefined || e.trigger === 'precompute') return next(e)
+      const anterior = vivo.actividad
+      vivo.actividad = 'compactando'
+      $.ui.invalidate('ui.render')
+      let entrada = e
+      if (config.memoria) {
+        await guardarMemoria($)
+        if (!estaVacia(vivo.memoria)) {
+          const extra = instruccionesDeCompactacion(vivo.memoria, vivo.idioma)
+          // El botón de la barra ya la manda en el /compact: no se repite.
+          if (e.instructions?.includes(extra) !== true) entrada = { ...e, instructions: e.instructions ? `${e.instructions}\n\n${extra}` : extra }
+        }
+      }
+      try {
+        const resultado = await next(entrada)
+        if (resultado.messages !== undefined) await registrarCompactacion($, 'resumen')
+        return resultado
+      } finally {
+        vivo.actividad = anterior === 'compactando' ? 'tranquilo' : anterior
+      }
+    })
+  }
 
   // Motor (Bash): compactar salidas ruidosas, rescatar el error del final y detectar bucles.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {

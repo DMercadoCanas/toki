@@ -118,6 +118,10 @@ export type Textos = {
   toastModelo: (modelo: string, tokens: string) => string
   toastCompacto: (resumen: string) => string
   toastConciso: string
+  /** Toki prendió «Guardia de empresa» al notar el guardia: qué hizo y cómo apagarla si cambias de cuenta. */
+  toastEmpresa: string
+  /** Claude Code no dejó prender «Guardia de empresa»: puedes hacerlo tú. */
+  toastEmpresaNegada: string
   /** La primera vez que Toki pide respuestas breves: qué hace, cuánto ahorra (medido) y cómo apagarlo. */
   toastBreve: (pct: number) => string
   toastSalidasGrandes: string
@@ -310,6 +314,8 @@ const es: Textos = {
   toastModelo: (m, t) => `Toki: cambiaste a ${m} con el caché caliente. Tu próximo mensaje reprocesará ~${t} tokens. Para una tarea chica, mejor un subagente con model: haiku.`,
   toastCompacto: r => `Toki: se compactó el contexto y le recordé a Claude ${r}. Sigue donde quedó.`,
   toastConciso: 'Toki: Claude Code no me deja agregar las respuestas breves al system prompt (lo administra tu organización u otro plugin). Se las pedí a Claude con una nota; para que valgan siempre: /output-style → toki:conciso.',
+  toastEmpresa: 'Toki: tu cuenta tiene el guardia de empresa de Claude Code, que se salta algunos hooks de Toki y le deja a Claude un aviso de ~200 tokens por cada uno. Prendí /plugin → Toki → Guardia de empresa para no registrarlos; si cambias de cuenta, apágala ahí (cada 30 días reviso solo).',
+  toastEmpresaNegada: 'Toki: tu cuenta tiene el guardia de empresa de Claude Code, que le deja a Claude un aviso de ~200 tokens por cada hook de Toki que se salta. Claude Code no me dejó cambiar la opción: prende /plugin → Toki → Guardia de empresa y dejo de registrarlos.',
   toastBreve: p => `Toki le pide a Claude respuestas breves, sin recortar código, comandos ni errores: ~${p} % menos salida, medido. Si quieres más detalle, pídeselo; para apagarlo, /plugin → Toki → Respuestas breves / Brief replies.`,
   toastSalidasGrandes: 'Toki: varias salidas enormes seguidas. Para esto, un subagente con Haiku sale más barato.',
   toastLogro: n => `🏅 Logro desbloqueado: ${n}`,
@@ -537,6 +543,8 @@ const en: Textos = {
   toastModelo: (m, t) => `Toki: you switched to ${m} with a warm cache. Your next message will reprocess ~${t} tokens. For a small task, a subagent with model: haiku is cheaper.`,
   toastCompacto: r => `Toki: the context was compacted and I reminded Claude of ${r}. It continues where it left off.`,
   toastConciso: "Toki: Claude Code won't let me add brief replies to the system prompt (your organization manages it, or another plugin). I asked Claude with a note instead; to make it stick: /output-style → toki:conciso.",
+  toastEmpresa: "Toki: your account has Claude Code's company guard, which skips some of Toki's hooks and leaves Claude a ~200-token notice for each one. I turned on /plugin → Toki → Guardia de empresa / Company guard so I don't register them; if you switch accounts, turn it off there (I recheck every 30 days on my own).",
+  toastEmpresaNegada: "Toki: your account has Claude Code's company guard, which leaves Claude a ~200-token notice for each Toki hook it skips. Claude Code didn't let me change the setting: turn on /plugin → Toki → Guardia de empresa / Company guard and I'll stop registering them.",
   toastBreve: p => `Toki asks Claude for brief replies, without cutting code, commands or errors: ~${p}% less output, measured. If you want more detail, just ask; to turn it off, /plugin → Toki → Respuestas breves / Brief replies.`,
   toastSalidasGrandes: 'Toki: several huge outputs in a row. A Haiku subagent is cheaper for this.',
   toastLogro: n => `🏅 Achievement unlocked: ${n}`,
