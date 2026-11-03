@@ -58,6 +58,8 @@ import {
 import type { Compactado } from './compresor'
 import { detectarEmpresa, DIAS_REVISION_EMPRESA, leerEstadoEmpresa, OPCION_EMPRESA, revisarEmpresa, terminarRevision } from './empresa'
 import type { EstadoEmpresa } from './empresa'
+import { anotar as anotarReescritura, clasificarEscritura, conSesion, costoReescritura, leerCachePorSesion, leerLibro, lineaReescritura, porCausa, totalLibro } from './escrituras'
+import type { LibroCache, PedidoCache } from './escrituras'
 import { agregarAlRegistro, agregarLeccion, filasGrafica, fusionarHistorial, hayAhorro, leccionCambioModelo, LOGROS, logrosNuevos, nombreModelo, racha, sumarAlDia, totalDesde } from './historial'
 import type { Historial, Leccion, Logro } from './historial'
 import { detectarIdioma, idiomaDeTexto, quitarEtiquetasDeSistema, t } from './idioma'
@@ -196,6 +198,8 @@ const CLAVE_USD_SEMBRADO = 'ahorroUsdSembrado'
 const CLAVE_USD_ESTIMADO = 'ahorroUsdEstimado'
 /** El último pedido del hilo principal y el comienzo medido: el caché que sigue vivo entre sesiones. */
 const CLAVE_ULTIMO_PEDIDO = 'ultimoPedido'
+/** Lo que dejó en el caché el último pedido de cada sesión: al reanudarla se mide contra eso. */
+const CLAVE_CACHE_SESIONES = 'cachePorSesion'
 const CLAVE_SEMANAS = 'semanas'
 const CLAVE_TARJETA = 'tarjetaSemanalMostrada'
 /** El valor que Toki puso en la variable, para no confundirlo con uno tuyo. */
@@ -346,6 +350,10 @@ const vivo: {
   repetidas: Record<string, Repetida>
   /** El último pedido del hilo principal: contra él se mide el caché que habría tenido tu modelo. */
   pedidoPrevio?: PedidoPrevio
+  /** Lo que el último pedido de esta conversación dejó en el caché: contra él se mide si el siguiente lo reescribió. */
+  cachePrevio?: PedidoCache
+  /** Cuándo un ping de Toki leyó el caché por última vez. */
+  ultimoPing?: number
   /** Lo que el caché sirve al empezar de cero (herramientas e instrucciones), medido. */
   prefijoSistema?: number
   /** Recién /clear o compactado: con el pedido anterior solo queda en común el comienzo. */
@@ -1164,8 +1172,9 @@ function usoDe(r: unknown): UsoMedido | undefined {
 /**
  * Cada pedido contra el mismo pedido sin Toki: tu modelo, tu esfuerzo y el caché
  * que tu modelo habría tenido. Va a la cuenta del mensaje, que se acredita al terminarlo.
+ * `reescritoPorToki`: lo que un cambio de esfuerzo de Toki hizo reescribir; sin Toki se habría leído.
  */
-function medirPedido(e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, sin: Familia, ahora: number): { real: number; sin: number } {
+function medirPedido(e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, sin: Familia, ahora: number, reescritoPorToki = 0): { real: number; sin: number } {
   const familia = familiaDe(u.model) ?? familiaDe(pedido.model) ?? 'opus'
   const uso: UsoMedido = { entrada: u.input_tokens, leido: u.cache_read_input_tokens, escrito: u.cache_creation_input_tokens, salida: u.output_tokens }
   if (e.agentId !== undefined) {
@@ -1193,7 +1202,7 @@ function medirPedido(e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, sin:
   })
   // Al bajar el esfuerzo: cuánta más salida habría escrito el tuyo, con lo que miden los testigos de ese tipo de mensaje.
   const fSalida = factorCalibrado(e.effort, pedido.effort, celdaDelPedido(e, pedido))
-  const c = { real: costoMedido(familia, uso, ttl1h), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h, factorSalida: fSalida, leido }) }
+  const c = { real: costoMedido(familia, uso, ttl1h), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h, factorSalida: fSalida, leido: leido + reescritoPorToki }) }
   sumarCuenta(c.real, c.sin)
   // Con respuestas breves, la salida que Claude no escribió (en tu modelo y con tu esfuerzo habría sido más),
   // menos lo que costó mandar la sección: leída del caché, o escrita si el pedido reescribió la conversación.
@@ -1264,6 +1273,58 @@ async function guardarUltimoPedido($: $): Promise<void> {
   } catch {
     // La próxima sesión mide desde su primer pedido.
   }
+}
+
+/** Lo que dejó en el caché el último pedido de esta sesión: si la reanudas, el primero se mide contra eso. */
+async function guardarCacheSesion($: $): Promise<void> {
+  const c = vivo.cachePrevio
+  if (c === undefined) return
+  try {
+    const id = await $.session.id()
+    await $.store.set(CLAVE_CACHE_SESIONES, conSesion(leerCachePorSesion(await $.store.get(CLAVE_CACHE_SESIONES)), id, c))
+  } catch {
+    // Al reanudarla, su primer pedido no se mide.
+  }
+}
+
+/**
+ * ¿Este pedido del hilo principal volvió a escribir lo que ya estaba en el caché? Lo anota con
+ * su causa probable y lo que costó de más, en la sesión, la semana y el diagnóstico. Si fue por
+ * un cambio de esfuerzo de Toki, Toki deja de cambiarlo en esta sesión y devuelve esos tokens:
+ * sin Toki se habrían leído del caché.
+ */
+async function anotarEscritura($: $, e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, salida: number): Promise<number> {
+  const previo = vivo.cachePrevio
+  const actual: PedidoCache = { cacheado: u.cache_read_input_tokens + u.cache_creation_input_tokens, modelo: u.model ?? pedido.model, cuando: salida }
+  if (pedido.effort !== undefined) actual.esfuerzo = String(pedido.effort)
+  if (pedido.model !== e.model) actual.modeloToki = true
+  if (pedido.effort !== e.effort) actual.esfuerzoToki = true
+  vivo.cachePrevio = actual
+  // /clear borra la última compactación: si la hay después del pedido anterior, se compactó.
+  const limpio = !vivo.trasLimpiar ? undefined : vivo.ultimaCompactacion > (previo?.cuando ?? 0) ? 'compactacion' : 'clear'
+  const r = clasificarEscritura({
+    previo,
+    actual,
+    leido: u.cache_read_input_tokens,
+    escrito: u.cache_creation_input_tokens,
+    limpio,
+    comienzo: vivo.prefijoSistema ?? COMIENZO_TIPICO,
+    ttlMs: ttlMs(),
+    ultimoPing: vivo.ultimoPing,
+  })
+  if (r === undefined || previo === undefined) return 0
+  const usd = costoReescritura(r.tokens, familiaDe(actual.modelo) ?? 'opus', ttl1hSesion(), actual.cacheado)
+  await update($, sesion, s => ({ ...s, reescrito: anotarReescritura(leerLibro(s.reescrito), r.causa, r.tokens, usd) }))
+  await alaSemana($, { reescritura: { causa: r.causa, tokens: r.tokens, usd } })
+  void anotarDiagnostico($, lineaReescritura(r, previo, actual, usd))
+  if (r.causa !== 'esfuerzo') return 0
+  // Con este modelo y proveedor, cambiar el esfuerzo vacía el caché (aunque lo hayas cambiado tú): Toki deja de cambiarlo.
+  if (!ruta.esfuerzoRompe) {
+    ruta.esfuerzoRompe = true
+    void anotarDiagnostico($, 'esfuerzo: aquí cambiarlo reescribe el caché; Toki deja el tuyo en esta sesión')
+    if (r.porToki === true) $.ui.toast(xr().esfuerzoReescribe, { timeoutMs: 8000 })
+  }
+  return r.porToki === true ? r.tokens : 0
 }
 
 /** Cada pedido al modelo: lo que costó de verdad y lo que Toki evitó que se releyera (`familia`: la que lo habría hecho sin Toki). */
@@ -1721,6 +1782,7 @@ async function mantenerCaliente($: $): Promise<void> {
     vivo.conPings = true
     vivo.tokensLeidosPing += leidos
     vivo.ultimoUsoCache = await $.clock.now()
+    vivo.ultimoPing = vivo.ultimoUsoCache
     $.ui.invalidate('ui.render')
   } catch {
     vivo.apagadoEnPausa = true
@@ -2167,14 +2229,17 @@ function textoVentana(x: Textos): string | undefined {
   return x.ventanaNativa(v)
 }
 
-/** Lo que costó la sesión, con las cifras que la API reportó pedido por pedido. */
-function lineasGasto(x: Textos, g: Gasto): string[] {
+/** Lo que costó la sesión, con las cifras que la API reportó pedido por pedido, y lo que se reescribió del caché. */
+function lineasGasto(x: Textos, g: Gasto, reescrito?: LibroCache): string[] {
   if (g.pedidos === 0) return []
   const lineas = [
     x.gastoLinea(formatearTokens(g.cacheLeido), porcentajeRelectura(g), formatearTokens(g.cacheEscrito), formatearTokens(g.entrada), formatearTokens(g.salida)),
     x.gastoPedidos(g.pedidos, formatearTokens(Math.round((g.entrada + g.cacheLeido + g.cacheEscrito) / g.pedidos))),
   ]
   if (g.subPedidos > 0) lineas.push(x.gastoSub(g.subPedidos, formatearTokens(g.subTokens)))
+  const libro = leerLibro(reescrito)
+  const r = totalLibro(libro)
+  if (r.veces > 0) lineas.push(x.gastoReescrito(formatearTokens(r.tokens), cifraUsd(r.usd), porCausa(libro, vivo.idioma)))
   return lineas
 }
 
@@ -2323,7 +2388,7 @@ async function textoDecisiones($: $): Promise<string> {
   const x = tx()
   const s = await read($, sesion)
   const g = await read($, gasto)
-  const cuentas = [...lineasGasto(x, g)]
+  const cuentas = [...lineasGasto(x, g, s.reescrito)]
   if ((s.relecturasEvitadas ?? 0) > 0) cuentas.push(x.relecturasLinea(formatearTokens(s.relecturasEvitadas)))
   const ventana = textoVentana(x)
   if (ventana !== undefined) cuentas.push(ventana)
@@ -2369,7 +2434,7 @@ function reporteEnTexto(r: Reporte): string {
     lineas.push(x.contextoLinea(r.contexto.pct === undefined ? x.sinDatos : `${r.contexto.pct}% ${x.usado}`, formatearTokens(r.contexto.ventana)))
   }
   if (vivo.pingsTotales > 0) lineas.push(x.cacheMantenido(vivo.pingsTotales, formatearTokens(vivo.tokensLeidosPing)))
-  const cuentas = lineasGasto(x, r.gasto)
+  const cuentas = lineasGasto(x, r.gasto, r.sesion.reescrito)
   // Las relecturas ya están en el desglose, en dólares; sin desglose van aquí, en tokens.
   if ((r.sesion.relecturasEvitadas ?? 0) > 0 && r.desglose.length === 0) cuentas.push(x.relecturasLinea(formatearTokens(r.sesion.relecturasEvitadas)))
   if (r.ventanaTexto !== undefined) cuentas.push(r.ventanaTexto)
@@ -2597,6 +2662,8 @@ const ruta: {
   confirmado?: string
   /** Toki cambió el esfuerzo de algún pedido en esta sesión: la barra de Claude Code no lo muestra. */
   cambioEsfuerzo: boolean
+  /** Un cambio de esfuerzo de Toki reescribió el caché (pasa en algunos modelos y proveedores): ya no lo cambia en esta sesión. */
+  esfuerzoRompe: boolean
 } = {
   modo: 'preguntar',
   modoConfig: 'preguntar',
@@ -2618,6 +2685,7 @@ const ruta: {
   deshechos: {},
   mensajesEn: {},
   cambioEsfuerzo: false,
+  esfuerzoRompe: false,
   defectos: {},
   calibracion: {},
   pedidosMedidos: {},
@@ -3124,6 +3192,7 @@ async function planearTurno($: $, textoCrudo: string, silenciar = false): Promis
     ttl1h,
     // Tras un cierre no se sabe qué viene: cambiar de modelo por un mensaje no se paga.
     permitirModelo: !ruta.modeloRoto && !cierre,
+    permitirEsfuerzo: !ruta.esfuerzoRompe,
     cacheFrio,
     reescribe,
     sonnetPrimero: base !== undefined,
@@ -4059,6 +4128,12 @@ export const register: Register = (on, options) => {
     } catch {
       // Sin dato: se mide desde el primer pedido.
     }
+    // Una conversación reanudada: lo que su último pedido dejó en el caché (una nueva no tiene nada).
+    try {
+      vivo.cachePrevio = leerCachePorSesion(await $.store.get(CLAVE_CACHE_SESIONES))[await $.session.id()]
+    } catch {
+      vivo.cachePrevio = undefined
+    }
     vivo.trasLimpiar = false
     vivo.conPings = false
     vivo.breveEnCache = false
@@ -4120,6 +4195,8 @@ export const register: Register = (on, options) => {
     }
     // Otro final (salir, reanudar otra): lo propuesto ya no aplica.
     vivo.limpioPropuesto = undefined
+    // La conversación que siga no tiene este caché (tras /clear sí comparte el comienzo).
+    if (e.reason !== 'clear') vivo.cachePrevio = undefined
     return next(e)
   })
 
@@ -4292,6 +4369,8 @@ export const register: Register = (on, options) => {
         if (e.index === 0) void anotarDiagnostico($, `pedido: ${e.model}/${String(e.effort)} → ${modelo}/${String(esfuerzo)}`)
       }
     }
+    // Desde que sale corre el plazo del caché: contra esta hora se mide la pausa del siguiente.
+    const salida = e.agentId === undefined ? await $.clock.now() : 0
     const respuesta = yield* next(pedido)
     if (e.agentId === undefined && e.index === 0 && e.turnId === modeloPorContar.turno) {
       modeloPorContar.turno = undefined
@@ -4323,9 +4402,18 @@ export const register: Register = (on, options) => {
       } catch {
         // Sin cifras de este pedido: no cambia nada para Claude.
       }
+      // Entre alPedido (que anota la compactación) y medirPedido (que la da por pasada).
+      let reescritoPorToki = 0
+      if (e.agentId === undefined) {
+        try {
+          reescritoPorToki = await anotarEscritura($, e, pedido, u, salida)
+        } catch {
+          // Solo estadística.
+        }
+      }
       try {
         // Después de alPedido: si este pedido trae la compactación, ya quedó anotada.
-        const c = medirPedido(e, pedido, u, sin, await $.clock.now())
+        const c = medirPedido(e, pedido, u, sin, await $.clock.now(), reescritoPorToki)
         const m = ruta.medicion
         if (e.agentId === undefined && m !== undefined && m.turno === e.turnId) {
           m.pedidos += 1
@@ -4382,6 +4470,7 @@ export const register: Register = (on, options) => {
       await acreditar($)
       if (vivo.breve === 'agregar') await avisarBreve($)
       await guardarUltimoPedido($)
+      await guardarCacheSesion($)
       if (config.memoria) await guardarMemoria($)
       await refrescarUso($, true)
       const uso = vivo.usoCache
@@ -5008,7 +5097,7 @@ export const register: Register = (on, options) => {
         {(r.gasto.pedidos > 0 || r.ventanaTexto !== undefined) && (
           <Box flexDirection="column" marginTop={1}>
             <Text bold>{x.gastoTitulo}</Text>
-            {lineasGasto(x, r.gasto).map(l => (
+            {lineasGasto(x, r.gasto, r.sesion.reescrito).map(l => (
               <Text wrap="wrap">
                 {'  '}
                 {l}

@@ -37,7 +37,9 @@ import {
 import type { EstadoRuta } from '../hooks/modelo'
 import { CADA_TESTIGO, factorCalibrado, TESTIGOS_META } from '../hooks/ahorro'
 import { CADA_PREGUNTA } from '../hooks/calidad'
+import { leerCachePorSesion } from '../hooks/escrituras'
 import { claveDia } from '../hooks/historial'
+import { leerSemanas, lunesDe } from '../hooks/semana'
 
 // Qué modelo y esfuerzo merece cada mensaje: primero lo puro, después con el motor simulado.
 
@@ -1589,5 +1591,89 @@ describe('planear en Opus, ejecutar en Sonnet', () => {
     await $.tool.call({ tool: 'ExitPlanMode', plan: 'x' } as never)
     await mensaje($, 't2', 'no, eso no es lo que pedí', 1, 'Listo.', 'high')
     expect(preguntas.filter(p => p.includes('el plan está listo'))).toHaveLength(0)
+  })
+})
+
+describe('el caché reescrito, con el motor', () => {
+  const DIAG = '.claude/toki/diagnostico.txt'
+  /** El primer pedido de `turno` no lee nada del caché y escribe `escrito`: se reescribió lo de antes. */
+  const frio = (turno: string, escrito: number) => (e: { turnId: string; index: number }) =>
+    e.turnId === turno && e.index === 0 ? { cache_read_input_tokens: 0, cache_creation_input_tokens: escrito } : {}
+
+  test('una pausa más larga que el plazo del caché: se anota con lo que costó de más, en /toki, la semana y el diagnóstico', { options: { recomendarModelo: 'no' } }, async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const guardado = new Map<string, unknown>()
+    mundo(on, { archivos, guardado, uso: frio('t1', 31_000) })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    // 29k leídos + ~1k escritos quedan en el caché; con API el plazo es de 5 min.
+    await mensaje($, 't0', BOTON, 1)
+    await reloj.advance(10 * 60_000)
+    await mensaje($, 't1', COLUMNA, 1)
+    await reloj.settle()
+    // Opus con plazo de 5 min: escribir 29 998 tokens cuesta $0.14 más que leerlos.
+    expect(archivos.get(DIAG)).toContain('caché reescrito: 30.0k por una pausa de 10 min, ~$0.14 de más\n')
+    const toki = ((await $.command.run({ command: 'toki', args: '' } as never)) as { text: string }).text
+    expect(toki).toContain('Reescribir lo que ya estaba en el caché: ~30.0k, ~$0.14 de más, por pausas.')
+    const semana = leerSemanas(guardado.get('semanas'))[lunesDe(1_000_000)]?.reescrito
+    expect(Object.keys(semana ?? {})).toEqual(['pausa'])
+    expect(semana?.pausa?.veces).toBe(1)
+    expect(semana?.pausa?.tokens).toBe(29_998)
+    expect(Math.round((semana?.pausa?.usd ?? 0) * 1000) / 1000).toBe(0.144)
+    // Sin pausa, el pedido siguiente lee lo de antes: nada más que anotar.
+    await mensaje($, 't2', FILTRO, 1)
+    await reloj.settle()
+    expect(archivos.get(DIAG)?.match(/caché reescrito/g)).toHaveLength(1)
+  })
+
+  test('reanudar una sesión: el primer pedido se mide contra lo que dejó su último pedido', { options: { recomendarModelo: 'no' } }, async ($, on) => {
+    const AHORA = 20_000_000
+    const reloj = mock.clock(on, { now: AHORA })
+    const archivos = new Map<string, string>()
+    const guardado = new Map<string, unknown>([['cachePorSesion', { s1: { cacheado: 80_000, modelo: OPUS, esfuerzo: 'medium', cuando: AHORA - 3 * 3_600_000 } }]])
+    mundo(on, { archivos, guardado, uso: frio('t0', 82_000) })
+    on('session.id', () => ({ value: 's1' }))
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', BOTON, 1)
+    await reloj.settle()
+    expect(archivos.get(DIAG)).toMatch(/caché reescrito: 80\.0k por una pausa de 180 min, ~\$\d+\.\d\d de más\n/)
+    // Lo que dejó este pedido queda para la próxima vez.
+    expect(leerCachePorSesion(guardado.get('cachePorSesion'))['s1']).toEqual({ cacheado: 82_000, modelo: OPUS, esfuerzo: 'medium', cuando: AHORA })
+  })
+
+  test('una sesión nueva no tiene nada que reescribir', { options: { recomendarModelo: 'no' } }, async ($, on) => {
+    const reloj = mock.clock(on, { now: 20_000_000 })
+    const archivos = new Map<string, string>()
+    const guardado = new Map<string, unknown>([['cachePorSesion', { s1: { cacheado: 80_000, modelo: OPUS, cuando: 10_000_000 } }]])
+    mundo(on, { archivos, guardado, uso: frio('t0', 82_000) })
+    on('session.id', () => ({ value: 's2' }))
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', BOTON, 1)
+    await reloj.settle()
+    expect(archivos.get(DIAG)).not.toContain('caché reescrito')
+  })
+
+  test('si bajar el esfuerzo reescribe el caché, Toki deja el tuyo en esta sesión y lo cobra a su cuenta', async ($, on) => {
+    const reloj = mock.clock(on, { now: 1_000_000 })
+    const archivos = new Map<string, string>()
+    const { vistos, toasts } = mundo(on, { archivos, uso: frio('t1', 31_000) })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    // Toki ya lo baja a medio; lo simple que sigue, a bajo, y en este proveedor eso vacía el caché.
+    await mensaje($, 't0', BOTON, 1, 'Listo.', 'high')
+    await mensaje($, 't1', 'renombra la variable foo a bar en utils', 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't1')).toEqual({ turnId: 't1', model: OPUS, effort: 'low' })
+    await reloj.settle()
+    const diag = archivos.get(DIAG) ?? ''
+    expect(diag).toContain('caché reescrito: 30.0k por cambio de esfuerzo medium → low (Toki), ~$0.14 de más\n')
+    expect(diag).toContain('esfuerzo: aquí cambiarlo reescribe el caché; Toki deja el tuyo en esta sesión\n')
+    expect(toasts.filter(t => t.includes('cambiar el esfuerzo reescribe el caché'))).toHaveLength(1)
+    // Sin Toki, ese pedido habría leído el caché: lo que costó de más va a la cuenta de Toki.
+    const [, t1] = [...diag.matchAll(/ uso: .* \$(\d+\.\d+) · sin Toki \$(\d+\.\d+)/g)].map(m => ({ real: Number(m[1]), sin: Number(m[2]) }))
+    expect(t1 !== undefined && t1.real > t1.sin).toBe(true)
+    // Desde el mensaje siguiente, lo simple va con tu esfuerzo.
+    await mensaje($, 't2', 'renombra la variable bar a baz en utils', 1, 'Listo.', 'high')
+    expect(vistos.find(v => v.turnId === 't2')).toEqual({ turnId: 't2', model: OPUS, effort: 'high' })
+    await reloj.settle()
+    expect(toasts.filter(t => t.includes('cambiar el esfuerzo reescribe el caché'))).toHaveLength(1)
   })
 })

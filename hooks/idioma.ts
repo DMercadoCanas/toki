@@ -243,6 +243,7 @@ export type Textos = {
   gastoLinea: (leido: string, pct: number, escrito: string, nueva: string, salida: string) => string
   gastoPedidos: (pedidos: number, promedio: string) => string
   gastoSub: (pedidos: number, tokens: string) => string
+  gastoReescrito: (tokens: string, usd: string, porCausa: { nombre: string; usd: string }[]) => string
   relecturasLinea: (tokens: string) => string
   ventanaToki: (ventana: string, nativa: string) => string
   ventanaTuya: (ventana: string) => string
@@ -461,6 +462,8 @@ const es: Textos = {
   gastoLinea: (l, p, w, n, o) => `Releer la conversación (caché): ~${l} (${p}%) · escribir al caché: ~${w} · entrada nueva: ~${n} · respuestas y razonamiento: ~${o}`,
   gastoPedidos: (n, prom) => `${n} ${n === 1 ? 'pedido' : 'pedidos'} al modelo; cada uno mandó en promedio ~${prom} de contexto.`,
   gastoSub: (n, t) => `Subagentes y tareas internas (compactar, memoria): ${n} ${n === 1 ? 'pedido' : 'pedidos'}, ~${t}.`,
+  gastoReescrito: (t, u, c) =>
+    `Reescribir lo que ya estaba en el caché: ~${t}, ${u} de más${c.length === 1 ? `, por ${c[0]?.nombre ?? ''}` : ` (${c.map(p => `${p.nombre} ${p.usd}`).join(' · ')})`}.`,
   relecturasLinea: t => `Relecturas evitadas: ~${t} tokens que Claude no volvió a leer porque Toki los sacó del contexto o compactó antes. Es la parte más barata de cada pedido, pero la más grande.`,
   ventanaToki: (v, n) => `Compactación: a los ${v} (Claude Code lo haría a los ${n}). La ajusta Toki; cámbiala en /plugin → Toki.`,
   ventanaTuya: v => `Compactación: a los ${v} (la elegiste tú; Toki no la toca).`,
@@ -690,6 +693,8 @@ const en: Textos = {
   gastoLinea: (l, p, w, n, o) => `Re-reading the conversation (cache): ~${l} (${p}%) · writing to cache: ~${w} · new input: ~${n} · replies and reasoning: ~${o}`,
   gastoPedidos: (n, avg) => `${n} ${n === 1 ? 'request' : 'requests'} to the model; each sent ~${avg} of context on average.`,
   gastoSub: (n, t) => `Subagents and internal tasks (compaction, memory): ${n} ${n === 1 ? 'request' : 'requests'}, ~${t}.`,
+  gastoReescrito: (t, u, c) =>
+    `Rewriting what was already cached: ~${t}, ${u} extra${c.length === 1 ? `, from ${c[0]?.nombre ?? ''}` : ` (${c.map(p => `${p.nombre} ${p.usd}`).join(' · ')})`}.`,
   relecturasLinea: t => `Re-reads avoided: ~${t} tokens Claude did not read again because Toki took them out of context or compacted earlier. It is the cheapest part of each request, but the largest.`,
   ventanaToki: (v, n) => `Compaction: at ${v} (Claude Code would wait until ${n}). Set by Toki; change it in /plugin → Toki.`,
   ventanaTuya: v => `Compaction: at ${v} (your choice; Toki leaves it alone).`,

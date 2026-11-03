@@ -18,7 +18,7 @@ Lista para el día que decidas enviarlo. Nada de esto se ha enviado.
 - [ ] Nombre permanente: `toki`. No se cambia nunca; para otra etiqueta se usa `displayName`.
 - [ ] `version` subida en `plugin.json` (ahora 0.17.6) y el mismo número en `VERSION` de `hooks/register.tsx`.
 - [ ] `claude plugin validate --strict .` → `Validation passed` sin advertencias (hoy pasa).
-- [ ] `claude plugin test .` → todo verde (hoy 372/372).
+- [ ] `claude plugin test .` → todo verde (hoy 385/385).
 - [ ] Instalar desde el marketplace en una carpeta limpia y abrir una sesión: `claude plugin marketplace add DMercadoCanas/toki`, luego `claude plugin install toki@toki`.
 - [x] Correr la eval completa en el Mac (`bash evals/correr.sh`: los casos con Bash necesitan el sandbox; 11 casos, Opus y Sonnet, 5 corridas por brazo; ~$15, con tope de $15 por modelo) y pegar la tabla de `evals/results/<fecha>.md` en el README y en `evals/README.md`, con los intervalos y las corridas perdidas. Hecho el 3 nov 2026 con 0.17.6: $15.33, ninguna corrida perdida.
 - [x] `homepage` y `repository` en `plugin.json` apuntan a `https://github.com/DMercadoCanas/toki`, igual que tu `origin` local.

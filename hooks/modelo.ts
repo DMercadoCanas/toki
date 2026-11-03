@@ -287,6 +287,8 @@ export function proponer(a: {
   contexto: number
   ttl1h: boolean
   permitirModelo: boolean
+  /** Cambiar el esfuerzo reescribió el caché en este modelo y proveedor: todas las opciones van con el de ahora. */
+  permitirEsfuerzo?: boolean
   /**
    * No hay caché que perder: sesión nueva, después de /clear o de compactar,
    * o el caché ya venció. Ahí cambiar de modelo no reescribe nada extra.
@@ -325,9 +327,10 @@ export function proponer(a: {
   const horizonte = sonnetPrimero ? HORIZONTE_BASE : HORIZONTE
   /** ¿Lo que `alla` ahorra frente a `aqui` en los próximos mensajes paga reescribir el caché? */
   const sePaga = (aqui: Opcion, alla: Opcion): boolean => (aqui.usd - alla.usd) * horizonte > alla.cambio
+  const esf = (e: Esfuerzo): Esfuerzo => (a.permitirEsfuerzo === false ? a.esfuerzo : e)
   const actual = opcion('actual', a.modelo, a.esfuerzo)
-  const calidad = opcion('calidad', alto, ESFUERZO.calidad[a.nivel])
-  const esfuerzoEquilibrio = ESFUERZO.equilibrio[a.nivel]
+  const calidad = opcion('calidad', alto, esf(ESFUERZO.calidad[a.nivel]))
+  const esfuerzoEquilibrio = esf(ESFUERZO.equilibrio[a.nivel])
   let modeloEquilibrio = a.nivel === 'complejo' || a.nivel === 'profundo' ? alto : a.modelo
   if (sonnetPrimero) {
     const haceFaltaOpus = a.nivel === 'profundo' || a.atascado === true
@@ -336,8 +339,8 @@ export function proponer(a: {
   }
   const equilibrio = opcion('equilibrio', modeloEquilibrio, esfuerzoEquilibrio)
   // Ahorro: el modelo más barato, si lo que ahorra en los próximos mensajes paga reescribir el caché.
-  const conCambio = opcion('ahorro', bajo, ESFUERZO.ahorro[a.nivel])
-  const sinCambio = opcion('ahorro', a.modelo, bajo === a.modelo ? ESFUERZO.ahorro[a.nivel] : bajarEsfuerzo(equilibrio.esfuerzo))
+  const conCambio = opcion('ahorro', bajo, esf(ESFUERZO.ahorro[a.nivel]))
+  const sinCambio = opcion('ahorro', a.modelo, esf(bajo === a.modelo ? ESFUERZO.ahorro[a.nivel] : bajarEsfuerzo(equilibrio.esfuerzo)))
   const ahorro = bajo !== a.modelo && sePaga(sinCambio, conCambio) ? conCambio : sinCambio
   const opciones = [calidad, equilibrio, ahorro].filter((o, i, todas) => todas.findIndex(p => p.modelo === o.modelo && p.esfuerzo === o.esfuerzo) === i)
   const tipoRecomendado = RECOMENDADA[a.nivel]
@@ -604,6 +607,7 @@ export type TextosRuta = {
   subagentes: string
   modeloNoDisponible: (m: string) => string
   esfuerzoRestaurado: (esfuerzo: string) => string
+  esfuerzoReescribe: string
   /** Al bajar el esfuerzo, cuánta salida cuenta Toki como ahorrada, por tipo de mensaje. */
   calibracion: (cada: number, meta: number) => string
   celdaCalibracion: (modelo: string, nivel: string, desde: string, hacia: string, factor: string, detalle: string) => string
@@ -700,6 +704,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     subagentes: 'Toki: Explore y los subagentes con encargos simples van en Sonnet (la mitad de precio; empiezan sin contexto, así que no se pierde caché).',
     modeloNoDisponible: m => `Toki: ${m} no respondió en esta cuenta; sigo con tu modelo y solo ajusto el esfuerzo.`,
     esfuerzoRestaurado: e => `Toki: esto resultó más largo de lo que parecía; lo que falta va con tu esfuerzo (${e}).`,
+    esfuerzoReescribe: 'Toki: aquí cambiar el esfuerzo reescribe el caché; desde tu próximo mensaje dejo el tuyo en esta sesión.',
     calibracion: (cada, meta) => `Al bajar el esfuerzo, la salida que Toki cuenta como ahorrada (1 de cada ${cada} mensajes va con tu esfuerzo, de testigo, hasta juntar ${meta}):`,
     celdaCalibracion: (m, n, d, h, f, det) => `• ${m} · ${n}, ${d} → ${h}: ×${f} · ${det}`,
     sinTestigos: (t, meta) => `${t} de ${meta} testigos; mientras tanto, la mitad de lo medido en pruebas`,
@@ -800,6 +805,7 @@ export const textosRuta: Record<Idioma, TextosRuta> = {
     subagentes: 'Toki: Explore and subagents with simple tasks run on Sonnet (half the price; they start with no context, so no cache is lost).',
     modeloNoDisponible: m => `Toki: ${m} did not answer on this account; keeping your model and only adjusting effort.`,
     esfuerzoRestaurado: e => `Toki: this turned out bigger than it looked; the rest goes with your effort (${e}).`,
+    esfuerzoReescribe: 'Toki: here, changing effort rewrites the cache; from your next message I keep yours for this session.',
     calibracion: (cada, meta) => `When lowering effort, the output Toki counts as saved (1 in ${cada} messages keeps your effort as a control, until ${meta}):`,
     celdaCalibracion: (m, n, d, h, f, det) => `• ${m} · ${n}, ${d} → ${h}: ×${f} · ${det}`,
     sinTestigos: (t, meta) => `${t} of ${meta} controls; meanwhile, half of what tests measured`,

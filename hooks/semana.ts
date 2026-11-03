@@ -2,6 +2,8 @@
 // con tus hábitos y un consejo con tus cifras. Funciones puras: el registro lo hace register.tsx.
 
 import { CENTAVO, cifraUsd, porcentajeAhorro } from './ahorro'
+import { anotar, leerLibro, porCausa, totalLibro } from './escrituras'
+import type { Causa, LibroCache } from './escrituras'
 import { claveDia } from './historial'
 import type { Historial } from './historial'
 import type { Idioma } from './idioma'
@@ -58,6 +60,8 @@ export type ResumenSemana = {
   consejos: number
   /** Mensajes que salieron con el caché vencido y mucho contexto: cada uno reescribe la conversación. */
   frios: number
+  /** Lo que el hilo principal volvió a escribir aunque ya estaba en el caché, por causa probable (medido). */
+  reescrito: LibroCache
   /** Tareas cerradas (de un pedido nuevo al siguiente), lo que costaron y sus correcciones. */
   tareas: number
   tareasUsd: number
@@ -91,6 +95,7 @@ export const SEMANA_VACIA: ResumenSemana = {
   entrevistas: { con: 0, conCorr: 0, sin: 0, sinCorr: 0 },
   consejos: 0,
   frios: 0,
+  reescrito: {},
   tareas: 0,
   tareasUsd: 0,
   tareasCorr: 0,
@@ -98,7 +103,7 @@ export const SEMANA_VACIA: ResumenSemana = {
 
 /** Una semana vacía con sus propios objetos (SEMANA_VACIA no se toca nunca). */
 function vacia(): ResumenSemana {
-  return { ...SEMANA_VACIA, porTipo: {}, porModelo: {}, entrevistas: { ...SEMANA_VACIA.entrevistas } }
+  return { ...SEMANA_VACIA, porTipo: {}, porModelo: {}, entrevistas: { ...SEMANA_VACIA.entrevistas }, reescrito: {} }
 }
 
 /** Lunes (hora local) de la semana de `ms`, como 'AAAA-MM-DD'. */
@@ -156,6 +161,7 @@ function leerResumen(valor: unknown): ResumenSemana {
     entrevistas: { con: e.con ?? 0, conCorr: e.conCorr ?? 0, sin: e.sin ?? 0, sinCorr: e.sinCorr ?? 0 },
     consejos: Math.max(0, numero(v['consejos'])),
     frios: Math.max(0, numero(v['frios'])),
+    reescrito: leerLibro(v['reescrito']),
     tareas: Math.max(0, numero(v['tareas'])),
     tareasUsd: Math.max(0, numero(v['tareasUsd'])),
     tareasCorr: Math.max(0, numero(v['tareasCorr'])),
@@ -199,6 +205,8 @@ export type Delta = {
   entrevista?: CampoEntrevista
   consejos?: number
   frios?: number
+  /** Una reescritura del caché: su causa, los tokens y lo que costó de más. */
+  reescritura?: { causa: Causa; tokens: number; usd: number }
   /** Una tarea cerrada: lo que costó y cuántas correcciones tuvo. */
   tarea?: { usd: number; correcciones: number }
 }
@@ -234,6 +242,7 @@ export function sumarSemana(semanas: Semanas, ms: number, d: Delta): Semanas {
     entrevistas,
     consejos: s.consejos + numero(d.consejos),
     frios: s.frios + numero(d.frios),
+    reescrito: d.reescritura !== undefined ? anotar(s.reescrito, d.reescritura.causa, numero(d.reescritura.tokens), numero(d.reescritura.usd)) : s.reescrito,
     tareas: s.tareas + (d.tarea !== undefined ? 1 : 0),
     tareasUsd: s.tareasUsd + Math.max(0, numero(d.tarea?.usd)),
     tareasCorr: s.tareasCorr + Math.max(0, numero(d.tarea?.correcciones)),
@@ -364,6 +373,8 @@ const ES = {
   porModelo: (lista: string) => `Mensajes por modelo: ${lista}`,
   pedidosGrandes: (partes: string) => `Pedidos grandes: ${partes}`,
   porTarea: (n: number, u: string, c: string) => `${n} ${n === 1 ? 'tarea' : 'tareas'}: ${u} por tarea · ${c} correcciones por tarea`,
+  reescrito: (u: string, n: number, porCausa: { nombre: string; usd: string }[]) =>
+    `Reescribir lo que ya estaba en el caché: ${u} de más en ${n} ${n === 1 ? 'vez' : 'veces'}${porCausa.length === 1 ? `, por ${porCausa[0]?.nombre ?? ''}` : ` (${porCausa.map(c => `${c.nombre} ${c.usd}`).join(' · ')})`}`,
   entrevistaCon: (n: number, r: string) => `${n} con preguntas antes (${r} correcciones por pedido)`,
   entrevistaSin: (n: number, r: string, ambos: boolean) => (ambos ? `${n} sin preguntas (${r} por pedido)` : `${n} sin preguntas antes (${r} correcciones por pedido)`),
   consejosDados: (n: number) => `${n} ${n === 1 ? 'consejo' : 'consejos'} para pedir mejor`,
@@ -433,6 +444,8 @@ const EN: Textos = {
   porModelo: lista => `Messages per model: ${lista}`,
   pedidosGrandes: partes => `Big requests: ${partes}`,
   porTarea: (n, u, c) => `${n} ${n === 1 ? 'task' : 'tasks'}: ${u} per task · ${c} corrections per task`,
+  reescrito: (u, n, c) =>
+    `Rewriting what was already cached: ${u} extra over ${n} ${n === 1 ? 'time' : 'times'}${c.length === 1 ? `, from ${c[0]?.nombre ?? ''}` : ` (${c.map(p => `${p.nombre} ${p.usd}`).join(' · ')})`}`,
   entrevistaCon: (n, r) => `${n} with questions first (${r} corrections each)`,
   entrevistaSin: (n, r, ambos) => (ambos ? `${n} without (${r} each)` : `${n} without questions first (${r} corrections each)`),
   consejosDados: n => `${n} ${n === 1 ? 'tip' : 'tips'} on asking better`,
@@ -528,6 +541,13 @@ function lineaBreve(s: ResumenSemana, x: Textos): string | undefined {
   return s.breve >= 0.005 ? x.breve(aprox(usd(s.breve))) : undefined
 }
 
+/** Lo que costó de más reescribir el caché, por causa (menos de medio centavo no se muestra). */
+function lineaReescrito(s: ResumenSemana, x: Textos, idioma: Idioma): string | undefined {
+  const total = totalLibro(s.reescrito)
+  if (total.veces === 0 || total.usd < CENTAVO) return undefined
+  return x.reescrito(cifraUsd(total.usd), total.veces, porCausa(s.reescrito, idioma))
+}
+
 /** Pedidos grandes con y sin preguntas antes, y cuántas correcciones siguieron a cada uno. */
 function lineaEntrevistas(s: ResumenSemana, x: Textos): string | undefined {
   const { con, conCorr, sin, sinCorr } = s.entrevistas
@@ -618,6 +638,8 @@ function piezas(semanas: Semanas, lunes: string, ms: number, historial: Historia
   const modelos = FAMILIAS.filter(f => (s.porModelo[f] ?? 0) > 0).sort((a, b) => (s.porModelo[b] ?? 0) - (s.porModelo[a] ?? 0))
   if (modelos.length > 0) uso.push(x.porModelo(modelos.map(f => `${NOMBRE_FAMILIA[f]} ${s.porModelo[f] ?? 0}`).join(' · ')))
   if (s.tareas > 0) uso.push(x.porTarea(s.tareas, cifraUsd(s.tareasUsd / s.tareas), (s.tareasCorr / s.tareas).toFixed(1)))
+  const reescrito = lineaReescrito(s, x, idioma)
+  if (reescrito !== undefined) uso.push(reescrito)
   const entrevistas = lineaEntrevistas(s, x)
   if (entrevistas !== undefined) uso.push(entrevistas)
   // Mejor día de la semana, con el historial diario.

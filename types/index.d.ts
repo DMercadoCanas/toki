@@ -58,6 +58,8 @@ export type Sesion = {
   breveTokens?: number
   /** Lo que de verdad costaron los pedidos de la conversación (principal y subagentes), a precio de API. */
   gastoMedidoUsd?: number
+  /** Lo que el hilo principal volvió a escribir aunque ya estaba en el caché, por causa probable: veces, tokens y USD de más. */
+  reescrito?: Partial<Record<'pausa' | 'modelo' | 'esfuerzo' | 'compactacion' | 'otro', { veces: number; tokens: number; usd: number }>>
   /**
    * Pedidos grandes al empezar algo nuevo: `con` entrevista previa y `sin` ella, y las
    * correcciones que siguieron a cada grupo; `consejos` son los tips para pedir mejor que se mostraron.
