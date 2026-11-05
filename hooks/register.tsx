@@ -180,6 +180,8 @@ import {
 import type { ArchivoMemoria, Arreglos, Dieta, OpcionesDieta } from './dieta'
 import { activarTtl, anotarPaso, fueraTtl, juntarDias, leerEstadoTtl, medirPaso, prendida, quitarTtl, revisarTtl, textoTtl, txTtl, veredicto as veredictoTtl } from './subagentes'
 import type { Capa, DiasTtl, EstadoTtl, Fuera, Regimen } from './subagentes'
+import { anotarTarea, CADA, elegir as elegirAyuda, leerTestigos, lineaCierre, reanudar as reanudarAyudas, textoTestigos, txTestigos, vence } from './testigos'
+import type { Ayuda, Brazo, Cierre, Intervencion } from './testigos'
 import { avisoSemana, CONTEXTO_LARGO, fecha as fechaCorta, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
@@ -2342,6 +2344,7 @@ async function compactarMcp($: $, herramienta: string, resultado: unknown, agent
   if (nivel === 2) return undefined
   const salida = salidaMcp(resultado)
   if (salida === undefined) return undefined
+  if ((await ayudar($, 'compactacion')) !== 'si') return undefined
   const idioma = vivo.idioma
   const c = compactar(salida.texto, idioma, limitesDe(nivel))
   if (c === null) return undefined
@@ -2469,6 +2472,8 @@ async function conAvisoMapa($: $, herramienta: string, comando: string | undefin
   if (ran.deny !== undefined || ran.isError === true || !esBusqueda(herramienta, comando)) return ran
   if (await read($, avisoMapaDado)) return ran
   if (!(await $.fs.exists(RUTA_MAPA).catch(() => false))) return ran
+  // De testigo, la nota queda para otra tarea.
+  if ((await ayudar($, 'mapa')) !== 'si') return ran
   await update($, avisoMapaDado, () => true)
   return { ...ran, context: [...(ran.context ?? []), avisoMapa(vivo.idioma)] }
 }
@@ -2499,6 +2504,8 @@ async function seguirExploracion($: $, herramienta: string, e: object, ran: Tool
   vivo.exploracion = sumarPaso(vivo.exploracion, paso, caracteres)
   const contexto = vivo.contextoPedido ?? 0
   if (vivo.avisoExploracion !== undefined || !tocaDelegar(vivo.exploracion, contexto) || familiaDe(vivo.modelo) === 'haiku') return undefined
+  // De testigo, el aviso queda para otra tarea.
+  if ((await ayudar($, 'explore')) !== 'si') return undefined
   vivo.avisoExploracion = 'dado'
   const { llamadas } = vivo.exploracion
   const tokens = formatearTokens(tokensAprox(vivo.exploracion.caracteres))
@@ -2993,7 +3000,7 @@ async function textoDecisiones($: $): Promise<string> {
   const cero = explicarCero(x, s, g)
   const pie = [...(cero !== undefined ? ['', cero] : []), ...(cuentas.length > 0 ? ['', `${x.gastoTitulo}:`, ...cuentas.map(l => `  ${l}`)] : [])]
   pie.push('', ...textoRuta(xr(), s))
-  const aprendido = await textoFamilias($)
+  const aprendido = [...(await textoFamilias($)), ...(await textoAyudas($))]
   if (vivo.decisiones.length === 0) return [x.sinComandos, ...aprendido, ...pie].join('\n')
   const lineas = [x.decisionesTitulo]
   for (const d of [...vivo.decisiones].reverse()) {
@@ -4421,10 +4428,14 @@ async function cerrarTarea($: $): Promise<void> {
   const t = tareaAbierta
   tareaAbierta = undefined
   if (t !== undefined) await alaSemana($, { tarea: t })
+  await cerrarCasos($, t)
 }
 
 /** Un mensaje tuyo que sale hacia Claude: a la tarjeta, con si corregía lo anterior y si salió frío. */
 async function contarMensaje($: $, textoCrudo: string, frio?: number): Promise<void> {
+  // La entrevista decidida para este mensaje se mide en la tarea que abre; si no abre ninguna, no se mide.
+  const pendientes = [...ayudas.pendientes]
+  ayudas.pendientes.clear()
   const texto = quitarEtiquetasDeSistema(textoCrudo)
   if (texto === '' || texto.startsWith('/')) return
   // El anterior fue bajado o testigo: si este lo corrige, no había quedado bien.
@@ -4434,6 +4445,10 @@ async function contarMensaje($: $, textoCrudo: string, frio?: number): Promise<v
   if (empiezaTarea(texto)) {
     await cerrarTarea($)
     tareaAbierta = { usd: 0, correcciones: 0 }
+    for (const [i, brazo] of pendientes) {
+      ayudas.casos.set(i, { brazo, desdeUsd: vivo.cuentaRuteo.real, desdeCorr: 0 })
+      ayudas.decidido.set(i, Promise.resolve(brazo === 'con' ? 'si' : 'testigo'))
+    }
   } else if (tareaAbierta !== undefined && esCorreccion(texto)) tareaAbierta.correcciones += 1
   const contarFrio = frio !== undefined && frio !== guardia.frioContado
   if (contarFrio) guardia.frioContado = frio
@@ -4454,6 +4469,137 @@ function devolverMensaje($: $): void {
       .then(() => $.ui.toast(xg().frio.devuelto, { timeoutMs: 8_000 }))
       .catch(() => undefined)
   })
+}
+
+// ---------- Testigos de cada ayuda ----------
+
+/** Lo medido por los testigos de cada ayuda (`hooks/testigos.ts`): vale entre sesiones. */
+const CLAVE_TESTIGOS = 'testigos'
+
+/** Una ayuda medida en la tarea en curso: con ella o de testigo, y desde dónde se cuenta lo que costó. */
+type Caso = { brazo: Brazo; desdeUsd: number; desdeCorr: number }
+
+const ayudas = {
+  /** Lo decidido para cada ayuda en la tarea en curso (o, fuera de una tarea, hasta que empiece la próxima). */
+  decidido: new Map<Intervencion, Promise<Ayuda>>(),
+  casos: new Map<Intervencion, Caso>(),
+  /** La entrevista se decide antes de que tu mensaje abra su tarea: se mide en la que abre. */
+  pendientes: new Map<Intervencion, Brazo>(),
+}
+
+/**
+ * ¿Toki da esta ayuda ahora? La primera vez en una tarea se decide para toda la tarea: con
+ * ella o, a 1 de cada CADA, de testigo. Fuera de una tarea no se mide, y en pausa no se da.
+ */
+function ayudar($: $, i: Intervencion): Promise<Ayuda> {
+  const ya = ayudas.decidido.get(i)
+  if (ya !== undefined) return ya
+  const decision = decidirAyuda($, i)
+  ayudas.decidido.set(i, decision)
+  return decision
+}
+
+/** Las lecturas y escrituras de los testigos van en fila: dos ayudas decididas en paralelo no se pisan. */
+let filaTestigos: Promise<unknown> = Promise.resolve()
+function enFilaTestigos<T>(f: () => Promise<T>): Promise<T> {
+  const turno = filaTestigos.then(f)
+  filaTestigos = turno.catch(() => undefined)
+  return turno
+}
+
+/**
+ * `abre`: la ayuda es para el mensaje que está por salir (la entrevista). Si abre una tarea, se
+ * mide en esa; si no, no se mide. Sin `abre`, se mide en la tarea en curso. Sin store, la ayuda va como siempre.
+ */
+async function decidirAyuda($: $, i: Intervencion, abre?: boolean): Promise<Ayuda> {
+  try {
+    const tarea = tareaAbierta
+    const r = await enFilaTestigos(async () => {
+      const ahora = await $.clock.now()
+      const eleccion = elegirAyuda(leerTestigos(await $.store.get(CLAVE_TESTIGOS), ahora), i, ahora, abre ?? tarea !== undefined)
+      if (eleccion.medido) await $.store.set(CLAVE_TESTIGOS, eleccion.testigos)
+      return eleccion
+    })
+    if (!r.medido) return r.ayuda
+    const brazo: Brazo = r.ayuda === 'testigo' ? 'testigo' : 'con'
+    if (abre === true) ayudas.pendientes.set(i, brazo)
+    else if (tarea !== undefined && tarea === tareaAbierta) ayudas.casos.set(i, { brazo, desdeUsd: tarea.usd + vivo.cuentaRuteo.real, desdeCorr: tarea.correcciones })
+    if (r.ayuda === 'testigo') void anotarDiagnostico($, `testigos: ${i} sin tocar en esta tarea (1 de cada ${CADA[i]})`)
+    return r.ayuda
+  } catch {
+    return 'si'
+  }
+}
+
+/** Un comando que Toki compactaría: ¿esta tarea va con compactación? Si no (testigo o pausa), queda anotado por qué. */
+async function conCompactacion($: $, comando: string): Promise<boolean> {
+  const a = await ayudar($, 'compactacion')
+  if (a === 'si') return true
+  const x = txTestigos(vivo.idioma)
+  anotar(comando, 'sin-cambio', a === 'testigo' ? x.motivo.testigo(CADA.compactacion) : x.motivo.pausa)
+  return false
+}
+
+/**
+ * La tarea terminó: lo que costó (y cuánto la corregiste) desde que cada ayuda pudo actuar va a
+ * su ronda. Si una ronda cierra con la ayuda peor que sin ella, la ayuda queda en pausa y lo dice.
+ */
+async function cerrarCasos($: $, tarea: { usd: number; correcciones: number } | undefined): Promise<void> {
+  const casos = [...ayudas.casos]
+  ayudas.casos.clear()
+  ayudas.decidido.clear()
+  if (tarea === undefined || casos.length === 0) return
+  try {
+    const ahora = await $.clock.now()
+    const { t, cierres } = await enFilaTestigos(async () => {
+      let nuevos = leerTestigos(await $.store.get(CLAVE_TESTIGOS), ahora)
+      const cierres: [Intervencion, Cierre][] = []
+      for (const [i, c] of casos) {
+        const r = anotarTarea(nuevos, i, c.brazo, { usd: tarea.usd - c.desdeUsd, correcciones: tarea.correcciones - c.desdeCorr }, ahora)
+        nuevos = r.testigos
+        if (r.cierre !== undefined) cierres.push([i, r.cierre])
+      }
+      await $.store.set(CLAVE_TESTIGOS, nuevos)
+      return { t: nuevos, cierres }
+    })
+    const x = txTestigos(vivo.idioma)
+    for (const [i, cierre] of cierres) {
+      void anotarDiagnostico($, lineaCierre(i, cierre, ahora))
+      const ronda = t[i]
+      const hasta = ronda === undefined ? undefined : vence(ronda)
+      if (cierre.pausada && hasta !== undefined) $.ui.toast(x.aviso(x.nombre[i], fechaCorta(hasta, vivo.idioma), cierre.comparacion.testigos.tareas), { timeoutMs: 10_000 })
+    }
+  } catch {
+    // Es solo medición.
+  }
+}
+
+/** Para /toki-por-que: lo que miden los testigos de cada ayuda. */
+async function textoAyudas($: $): Promise<string[]> {
+  try {
+    const lineas = textoTestigos(leerTestigos(await $.store.get(CLAVE_TESTIGOS), await $.clock.now()), { idioma: vivo.idioma })
+    return lineas.length === 0 ? [] : ['', ...lineas]
+  } catch {
+    return []
+  }
+}
+
+/** /toki-por-que reanudar: las ayudas en pausa vuelven ya, y se miden de nuevo. */
+async function reanudarPausadas($: $): Promise<string> {
+  const x = txTestigos(vivo.idioma)
+  try {
+    const r = await enFilaTestigos(async () => {
+      const hecho = reanudarAyudas(leerTestigos(await $.store.get(CLAVE_TESTIGOS), await $.clock.now()))
+      if (hecho.reanudadas.length > 0) await $.store.set(CLAVE_TESTIGOS, hecho.testigos)
+      return hecho
+    })
+    if (r.reanudadas.length === 0) return x.nadaEnPausa
+    for (const i of r.reanudadas) ayudas.decidido.delete(i)
+    void anotarDiagnostico($, `testigos: ${r.reanudadas.join(', ')} reanudada${r.reanudadas.length === 1 ? '' : 's'} con /toki-por-que reanudar`)
+    return x.reanudadas(r.reanudadas.map(i => x.nombre[i]))
+  } catch {
+    return x.nadaEnPausa
+  }
 }
 
 // ---------- Registro ----------
@@ -4972,7 +5118,7 @@ async function entrevistaYConsejos($: $, textoCrudo: string, yaSePregunto = fals
   let instruccion: string | undefined
   if ('omitido' in ev && ev.omitido === 'sin-preguntas') {
     contarSalto($)
-  } else if (ev.entrevistar && !(e.modo === 'preguntar' && yaPregunto())) {
+  } else if (ev.entrevistar && !(e.modo === 'preguntar' && yaPregunto()) && (await decidirAyuda($, 'entrevista', empiezaTarea(texto))) === 'si') {
     let acepta = true
     if (e.modo === 'preguntar') {
       pregunto = true
@@ -5078,6 +5224,11 @@ export const register: Register = (on, options) => {
   ttlSub.agentes.clear()
   ttlSub.grupos.clear()
   ttlSub.tipos.clear()
+  // Lo que miden los testigos es de la tarea en curso: con el plugin recién cargado no hay ninguna.
+  tareaAbierta = undefined
+  ayudas.decidido.clear()
+  ayudas.casos.clear()
+  ayudas.pendientes.clear()
   // Si el guardia de empresa se salta prompt.compose se decide de nuevo, con un turno visto entero.
   vivo.composeVisto = false
   vivo.turnoVisto = undefined
@@ -5107,7 +5258,7 @@ export const register: Register = (on, options) => {
     const x = tx()
     await $.command.register({ name: 'toki', description: x.cmdPanel })
     await $.command.register({ name: 'toki-mapa', description: x.cmdMapa })
-    await $.command.register({ name: 'toki-por-que', description: x.cmdPorQue, argumentHint: xf().pista })
+    await $.command.register({ name: 'toki-por-que', description: x.cmdPorQue, argumentHint: `${xf().pista} | ${txTestigos(vivo.idioma).pista}` })
     await $.command.register({ name: 'toki-modelo', description: xr().cmd, argumentHint: `preguntar | siempre | automatico | no | ${vivo.idioma === 'en' ? 'undo' : 'deshacer'}` })
     await $.command.register({ name: 'toki-sonnet', description: xr().sonnet.cmd, argumentHint: xr().sonnet.pista })
     await $.command.register({ name: 'toki-dieta', description: cmdDieta(vivo.idioma), argumentHint: txDieta(vivo.idioma).pista })
@@ -5296,6 +5447,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     const deLaPersona = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
     if (e.command !== undefined || e.isMeta === true || e.turnId !== undefined || !deLaPersona) return next(e)
+    ayudas.pendientes.clear()
     // Antes de las guardias: si sale frío pese a todo, la tarjeta lo cuenta.
     let frio: number | undefined
     try {
@@ -5711,19 +5863,23 @@ export const register: Register = (on, options) => {
       vivo.memoria.archivosEditados = recordar(vivo.memoria.archivosEditados, entrada.file_path, LIMITES_MEMORIA.archivos)
     }
     // Archivos generados (lockfiles, minificados, build): la primera lectura completa se frena; repetirla la deja pasar.
+    // En una tarea de testigo (o con la guardia en pausa) pasan enteras, sin contar.
     if (config.guardiaGenerados && herramienta === 'Read' && typeof entrada.file_path === 'string' && entrada.offset === undefined && entrada.limit === undefined) {
       const tipo = tipoGenerado(entrada.file_path)
-      const veces = tipo === undefined ? 0 : (vivo.generadosFrenados.get(entrada.file_path) ?? 0) + 1
-      if (tipo !== undefined) vivo.generadosFrenados.set(entrada.file_path, veces)
-      if (tipo !== undefined && veces === 1) {
-        const nombre = entrada.file_path.split(/[\\/]/).pop() ?? entrada.file_path
-        const tg = textosGenerados[vivo.idioma === 'en' ? 'en' : 'es']
-        $.ui.toast(tg.toast(nombre), { timeoutMs: 6000 })
-        await alaSemana($, { frenos: 1 })
-        return { deny: tg.frenado(nombre, tipo) }
+      const previas = tipo === undefined ? 0 : (vivo.generadosFrenados.get(entrada.file_path) ?? 0)
+      if (tipo !== undefined && previas < 2 && (await ayudar($, 'generados')) === 'si') {
+        const veces = previas + 1
+        vivo.generadosFrenados.set(entrada.file_path, veces)
+        if (veces === 1) {
+          const nombre = entrada.file_path.split(/[\\/]/).pop() ?? entrada.file_path
+          const tg = textosGenerados[vivo.idioma === 'en' ? 'en' : 'es']
+          $.ui.toast(tg.toast(nombre), { timeoutMs: 6000 })
+          await alaSemana($, { frenos: 1 })
+          return { deny: tg.frenado(nombre, tipo) }
+        }
+        // En vivo, Claude repetía la lectura entera de inmediato: la segunda trae solo un tramo; la tercera, todo.
+        return next({ ...e, limit: TRAMO_GENERADO } as typeof e)
       }
-      // En vivo, Claude repetía la lectura entera de inmediato: la segunda trae solo un tramo; la tercera, todo.
-      if (tipo !== undefined && veces === 2) return next({ ...e, limit: TRAMO_GENERADO } as typeof e)
     }
     let nudgeLectura: string | undefined
     if (herramienta === 'Read' && typeof entrada.file_path === 'string' && entrada.offset === undefined && entrada.limit === undefined) {
@@ -5804,7 +5960,8 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const comando = e.command
     await cargarAprendizaje($)
-    const compactable = prepararComando(comando, e.agentId)
+    // Un testigo va como sin Toki: ni límite ampliado ni compactación.
+    const compactable = prepararComando(comando, e.agentId) && (await conCompactacion($, comando))
     const busqueda = !compactable && config.compresion && config.busquedas && !vivo.sinCompactar.has(comando.trim()) ? tipoBusqueda(comando) : undefined
     // En segundo plano, Claude lee la salida después y por otro lado: ahí el corte queda como está.
     const corte = !compactable && busqueda === undefined && config.compresion && e.run_in_background !== true ? await planearCorte($, 'Bash', comando) : undefined
@@ -5852,7 +6009,7 @@ export const register: Register = (on, options) => {
     const comando = (e as { command?: unknown }).command
     if (typeof comando !== 'string') return next(e)
     await cargarAprendizaje($)
-    const compactable = prepararComando(comando, e.agentId)
+    const compactable = prepararComando(comando, e.agentId) && (await conCompactacion($, comando))
     const enFondo = (e as { run_in_background?: unknown }).run_in_background === true
     const corte = !compactable && config.compresion && !enFondo ? await planearCorte($, 'PowerShell', comando) : undefined
     const ran = await next(corte ? ({ ...e, command: corte.comando } as typeof e) : e)
@@ -5949,6 +6106,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'toki-por-que' }, async ($, e) => {
     const olvido = /^(olvidar|forget)\b\s*(.*)$/i.exec(e.args.trim())
     if (olvido !== null) return { text: await olvidarFamilias($, olvido[2] ?? '') }
+    if (/^(reanudar|resume)\b/i.test(e.args.trim())) return { text: await reanudarPausadas($) }
     const texto = await textoDecisiones($)
     const propuestas = mejoresOportunidades(await oportunidadesGuardadas($), config.compactarTambien)
     if (propuestas.length > 0 && (await hayAlguien($))) $.clock.after(DEMORA_DIETA, () => void ofrecerFamilias($, propuestas))
