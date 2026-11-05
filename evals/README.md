@@ -29,7 +29,7 @@ python3 evals/benchmark.py evals/results/sin-bash.json evals/results/bash.json
 |---|---|---|---|
 | `test-con-fallo` | 421 tests, uno falla a la mitad de una salida larga. Claude suele cortarla con `\| tail` (o Claude Code la recorta) y el fallo queda fuera; con Toki llega el error. | Bash | smoke, compactador |
 | `tail-esconde-error` | La misma suite con `npm test 2>&1 \| tail -n 40`: el fallo queda fuera del corte. Toki agrega el error que el `tail` escondió. | Bash | smoke, rescate |
-| `salida-enorme` | 1,6 MB de salida con el error en la última línea. Sin Toki, Claude ve solo una vista previa y necesita otra llamada. | Bash | compactador, rescate |
+| `salida-enorme` | 1,6 MB de salida con el error en la última línea; el pedido dice que corra el comando sin pipes ni redirecciones. Con Toki, el error llega en la salida compactada; sin Toki, Claude ve los primeros 2 KB y necesita otra llamada. | Bash | compactador, rescate |
 | `busqueda-enorme` | `grep -rn` sobre 60 archivos (~250 KB). Toki entrega el conteo por archivo; la pregunta es cuál tiene más coincidencias. | Bash | busquedas, benchmark |
 | `lockfile-version` | Una versión dentro de un `package-lock.json` de 200 KB. Si Claude intenta leerlo entero, Toki le sugiere Grep. | Read, Grep | generados, benchmark |
 | `ruta-trivial` | "Renombra la función sumar a add" con Opus. Toki debería mandarlo en un modelo o esfuerzo más barato sin perder el resultado. | Read, Edit | ruta-modelo, benchmark |
@@ -49,7 +49,7 @@ python3 evals/benchmark.py evals/results/sin-bash.json evals/results/bash.json
 
 ## Última corrida (3 nov 2026: Toki 0.17.6, Claude Code 2.1.316, Opus 5.5 y Sonnet 5.5, 5 corridas por caso y brazo, `-j 1`)
 
-`bash evals/correr.sh`: 220 corridas, ninguna perdida. Costó $15.33 ($9.95 en Opus y $5.38 en Sonnet); las corridas de diagnóstico de abajo, $1.13 más.
+`bash evals/correr.sh`: 220 corridas, ninguna perdida. Costó $15.33 ($9.95 en Opus y $5.38 en Sonnet); las corridas de diagnóstico de abajo, $1.13 más. `salida-enorme` se volvió a medir el 5 nov con otro pedido (20 corridas, $1.43): sus filas y los totales son de esa corrida.
 
 ### claude-opus-5-5
 
@@ -61,11 +61,11 @@ python3 evals/benchmark.py evals/results/sin-bash.json evals/results/bash.json
 | lockfile-version | 5/5 · 1.00 | $0.0831 | $0.0832 | 2.0 | 5/5 · 1.00 | $0.0812 | $0.0819 | 2.0 | +2% [-2%, +3%] |
 | ruta-compleja | 5/5 · 1.00 | $0.0897 | $0.0911 | 2.4 | 5/5 · 1.00 | $0.0895 | $0.0889 | 2.0 | 0% [-4%, +8%] |
 | ruta-trivial | 5/5 · 1.00 | $0.0547 | $0.0531 | 5.6 | 5/5 · 1.00 | $0.0960 | $0.0991 | 4.6 | -43% [-51%, -42%] |
-| salida-enorme | 0/5 · 0.40 | $0.0871 | — | 2.2 | 0/5 · 0.33 | $0.0849 | — | 2.0 | +3% [+1%, +14%] |
+| salida-enorme (5 nov) | 5/5 · 1.00 | $0.0858 | $0.0859 | 2.0 | 2/5 · 0.67 | $0.1070 | $0.2663 | 3.8 | -20% [-22%, -14%] |
 | tail-esconde-error | 5/5 · 1.00 | $0.0485 | $0.0486 | 2.0 | 0/5 · 0.75 | $0.1147 | — | 4.0 | -58% [-59%, +11%] |
 | test-con-fallo | 2/5 · 0.88 | $0.1042 | $0.2573 | 2.8 | 0/5 · 0.80 | $0.1000 | — | 3.2 | +4% [-6%, +7%] |
 
-**Total por corrida:** $0.7538 con Toki vs $0.8465 sin Toki (-11%).
+**Total por corrida:** $0.7525 con Toki vs $0.8686 sin Toki (-13%).
 
 **Respuestas breves, tres brazos.** Tokens de salida = mediana por corrida (— si la eval no se corrió con --keep-temp y --anotar).
 
@@ -90,11 +90,11 @@ python3 evals/benchmark.py evals/results/sin-bash.json evals/results/bash.json
 | lockfile-version | 5/5 · 1.00 | $0.0416 | $0.0418 | 2.0 | 5/5 · 1.00 | $0.0409 | $0.0407 | 2.0 | +2% [+2%, +4%] |
 | ruta-compleja | 5/5 · 1.00 | $0.0445 | $0.0446 | 3.0 | 5/5 · 1.00 | $0.0434 | $0.0435 | 3.0 | +2% [+1%, +4%] |
 | ruta-trivial | 5/5 · 1.00 | $0.0536 | $0.0528 | 5.6 | 5/5 · 1.00 | $0.0530 | $0.0503 | 5.2 | +1% [-5%, +19%] |
-| salida-enorme | 4/5 · 0.93 | $0.0664 | $0.0776 | 2.2 | 5/5 · 1.00 | $0.0645 | $0.0663 | 2.0 | +3% [-22%, +11%] |
+| salida-enorme (5 nov) | 5/5 · 1.00 | $0.0423 | $0.0420 | 2.0 | 0/5 · 0.20 | $0.0505 | — | 3.6 | -16% [-23%, -15%] |
 | tail-esconde-error | 5/5 · 1.00 | $0.0482 | $0.0483 | 2.0 | 0/5 · 0.75 | $0.0498 | — | 3.0 | -3% [-4%, -1%] |
 | test-con-fallo | 5/5 · 1.00 | $0.0478 | $0.0480 | 2.0 | 0/5 · 0.80 | $0.0488 | — | 3.0 | -2% [-5%, 0%] |
 
-**Total por corrida:** $0.4414 con Toki vs $0.4365 sin Toki (+1%).
+**Total por corrida:** $0.4174 con Toki vs $0.4225 sin Toki (-1%).
 
 **Respuestas breves, tres brazos.** Tokens de salida = mediana por corrida (— si la eval no se corrió con --keep-temp y --anotar).
 
@@ -121,9 +121,10 @@ Corridas de diagnóstico con `--keep-temp`, después de la eval:
 
 - En `tail-esconde-error` y `test-con-fallo`, los dos modelos cortan con `npm test 2>&1 | tail -40` (o `-n 40`). Toki agranda el corte a `tail -n 10000`, con el mismo permiso, y agrega las 2 líneas del fallo. Sin Toki, Claude vuelve a correr los tests para encontrarlo.
 - Opus a veces vuelve a correr aunque ya tenga el error: en una corrida, con `npm test 2>&1 | grep -n -A3 …`, para sacar números de línea.
-- En `salida-enorme`, Opus arma comandos compuestos (`npm run enorme > "$TMPDIR/enorme.log" 2>&1; echo "exit=$?"; wc -l …`) que `Bash(npm *)` y `Bash(grep *)` no cubren. En modo `dontAsk`, Claude Code los niega y Opus se rinde, en los dos brazos: el caso no mide a Toki en Opus hasta que la eval le dé permisos más amplios o el pedido nombre un comando simple. Sonnet usa `tail -c 6000` (bytes), que Toki deja como está, o `tail -n 200`.
+- En `salida-enorme`, con el pedido anterior, Opus armaba comandos compuestos (`npm run enorme > "$TMPDIR/enorme.log" 2>&1; echo "exit=$?"; wc -l …`) que `Bash(npm *)` y `Bash(grep *)` no cubren: en modo `dontAsk`, Claude Code los negaba y Opus se rendía, en los dos brazos. Sonnet usaba `tail -c 6000` (bytes), que Toki deja como está, o `tail -n 200`. El caso no medía el compactador en ningún modelo. El pedido ahora dice «sin agregarle pipes ni redirecciones»; con «tal cual, sin filtrar ni cortar», Opus desconfiaba de la salida compactada y volvía a buscar.
+- Con el pedido nuevo (5 nov), los dos modelos corren `npm run enorme` solo. Con Toki contestan con esa única llamada en las 10 corridas. Sin Toki ven los primeros 2 KB y buscan con Grep en el archivo donde Claude Code guardó la salida, que la eval no deja leer (está en su carpeta de configuración). Así que sin Toki falla, salvo 2 corridas de Opus que leyeron `big.js`, el script que genera la salida: un atajo que un proyecto real no tiene. Fuera de la eval, con `claude -p` y sin Toki, Sonnet encontró el error en ese archivo con un Grep más. Lo que mide el caso es el costo de esas llamadas (−20 % en Opus, −16 % en Sonnet), no las aprobadas sin Toki.
 - Toki suma ~230 tokens al primer pedido (17 067 frente a 16 838). No son sus 9 comandos: Claude Code no se los muestra al modelo, y la lista de skills sale igual en los dos brazos. Es el aviso que Claude Code le deja a Claude cuando el guardia de abajo se salta un hook de Toki: un plugin de prueba con solo `prompt.compose` suma lo mismo (+214 a +218 tokens), una vez por hook y otra vez tras cada compactación.
 - `cc-plugin-sec-default`, el guardia de las cuentas de empresa, se salta el `prompt.compose` y el `session.compact` de Toki. Las respuestas breves van como nota desde el segundo mensaje, así que los casos `breve-*`, de un solo mensaje, miden lo que cuesta Toki y lo que logra "Answer concisely.", no la sección de Toki.
 - La opción **Guardia de empresa**, posterior a esta corrida, deja de registrar esos hooks y quita el aviso. Toki solo la prende en sesiones con alguien mirando (la terminal o la app), así que `claude plugin eval` sigue corriendo sin ella: con el guardia, el brazo con Toki paga el aviso.
 
-Los totales por modelo suman todos los casos, incluido `salida-enorme` en Opus, que falla en los dos brazos.
+Los totales por modelo suman todos los casos, con `salida-enorme` del 5 nov.
