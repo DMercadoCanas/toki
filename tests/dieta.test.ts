@@ -454,7 +454,7 @@ describe('dieta que arregla con el motor', () => {
     await dieta($)
     await reloj.advance(1_000)
     expect(m.preguntas).toEqual([])
-    expect(await dieta($, 'restaurar')).toBe('Nada que restaurar: Toki no tiene MCP bajo demanda ni respaldos de memoria.')
+    expect(await dieta($, 'restaurar')).toBe('Nada que restaurar: Toki no tiene MCP bajo demanda, respaldos de memoria ni caché de 1 hora en los subagentes.')
   })
 
   test('una skill usada por Claude o con /nombre queda anotada por su nombre; los comandos de Toki no', async ($, on) => {

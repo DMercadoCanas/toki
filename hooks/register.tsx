@@ -178,6 +178,8 @@ import {
   txDieta,
 } from './dieta'
 import type { ArchivoMemoria, Arreglos, Dieta, OpcionesDieta } from './dieta'
+import { activarTtl, anotarPaso, fueraTtl, juntarDias, leerEstadoTtl, medirPaso, prendida, quitarTtl, revisarTtl, textoTtl, txTtl, veredicto as veredictoTtl } from './subagentes'
+import type { Capa, DiasTtl, EstadoTtl, Fuera, Regimen } from './subagentes'
 import { avisoSemana, CONTEXTO_LARGO, fecha as fechaCorta, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
@@ -277,6 +279,8 @@ const CLAVE_EMPRESA = 'guardiaEmpresa'
 /** Lo aprendido por familia de comando (Aprendizaje) y las salidas largas que Toki no compactó (Oportunidades). */
 const CLAVE_FAMILIAS = 'familiasAprendidas'
 const CLAVE_OPORTUNIDADES = 'oportunidadesPerdidas'
+/** La caché de los subagentes: lo medido por día, si Toki la tiene en 1 hora y si ya avisó (EstadoTtl). */
+const CLAVE_TTL = 'cacheSubagentes'
 /** La opción «Compactar también»: familias que Toki compacta aunque no sean de su lista. */
 const OPCION_TAMBIEN = 'compactarTambien'
 const RANURAS = 40
@@ -1270,13 +1274,26 @@ function usoDe(r: unknown): UsoMedido | undefined {
  * Cada pedido contra el mismo pedido sin Toki: tu modelo, tu esfuerzo y el caché
  * que tu modelo habría tenido. Va a la cuenta del mensaje, que se acredita al terminarlo.
  * `reescritoPorToki`: lo que un cambio de esfuerzo de Toki hizo reescribir; sin Toki se habría leído.
+ * `releidoPorToki`: en un subagente con la caché de 1 hora de Toki, lo que ella dejó leer.
  */
-function medirPedido(e: TurnStepInput, pedido: TurnStepInput, u: TurnUsage, sin: Familia, ahora: number, reescritoPorToki = 0): { real: number; sin: number } {
+function medirPedido(
+  e: TurnStepInput,
+  pedido: TurnStepInput,
+  u: TurnUsage,
+  sin: Familia,
+  ahora: number,
+  reescritoPorToki = 0,
+  releidoPorToki?: number,
+): { real: number; sin: number } {
   const familia = familiaDe(u.model) ?? familiaDe(pedido.model) ?? 'opus'
   const uso: UsoMedido = { entrada: u.input_tokens, leido: u.cache_read_input_tokens, escrito: u.cache_creation_input_tokens, salida: u.output_tokens }
   if (e.agentId !== undefined) {
-    // Un subagente empieza de cero con o sin Toki: mismo caché, otro modelo. A precio de 5 min, para no inflar.
-    const c = { real: costoMedido(familia, uso, false), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h: false }) }
+    // Un subagente empieza de cero con o sin Toki: mismo caché, otro modelo. A precio de 5 min, para no inflar;
+    // con la caché de 1 hora de Toki, a ese precio, y sin Toki se habría reescrito lo que ella dejó leer.
+    const c =
+      releidoPorToki === undefined
+        ? { real: costoMedido(familia, uso, false), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h: false }) }
+        : { real: costoMedido(familia, uso, true), sin: costoSinTokiPedido({ familia: sin, uso, ttl1h: false, leido: uso.leido - releidoPorToki }) }
     sumarCuenta(c.real, c.sin)
     return c
   }
@@ -1532,6 +1549,182 @@ async function ajustarVentana($: $, avisar: boolean): Promise<void> {
     }
   } catch (err) {
     anotarVentana($, `ventana: sin cambios (${String(err)})`)
+  }
+}
+
+// ---------- Caché de los subagentes ----------
+
+/**
+ * Lo que Toki lleva de la caché de los subagentes en este proceso (la variable vive en él):
+ * con qué caché se mide (nada si no la toca), si la variable es de Toki, lo medido sin
+ * guardar y lo que dejó en el caché el último pedido de cada subagente y de cada tipo.
+ */
+const ttlSub: {
+  regimen?: Regimen
+  puesta: boolean
+  fuera?: Fuera
+  porGuardar: DiasTtl
+  agentes: Map<string, Capa>
+  grupos: Map<string, { ms: number; primero?: number }>
+  tipos: Map<string, string>
+} = { puesta: false, porGuardar: {}, agentes: new Map(), grupos: new Map(), tipos: new Map() }
+
+/** Anota en un mapa que olvida lo más viejo pasado cierto tamaño. */
+function recordarEn<V>(mapa: Map<string, V>, clave: string, valor: V, maximo = 200): void {
+  mapa.delete(clave)
+  mapa.set(clave, valor)
+  if (mapa.size <= maximo) return
+  const primero = mapa.keys().next().value
+  if (primero !== undefined) mapa.delete(primero)
+}
+
+/** Qué deja tocar la caché de los subagentes: la versión, el proveedor y lo que fijaste tú. */
+async function entornoTtl($: $, e: EstadoTtl): Promise<Fuera | undefined> {
+  const env = (leer: () => Promise<string | undefined>) => leer().catch(() => undefined)
+  const version = await $.session.version().then(
+    v => v.version,
+    () => undefined,
+  )
+  const ajuste = await $.settings.read({ key: 'subagentPromptCacheTtl' }).catch(() => undefined)
+  const variable = await env(() => $.env.get('CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL'))
+  const otras = [
+    { nombre: 'FORCE_PROMPT_CACHING_5M', valor: await env(() => $.env.get('FORCE_PROMPT_CACHING_5M')) },
+    { nombre: 'ENABLE_PROMPT_CACHING_1H', valor: await env(() => $.env.get('ENABLE_PROMPT_CACHING_1H')) },
+    { nombre: 'DISABLE_PROMPT_CACHING', valor: await env(() => $.env.get('DISABLE_PROMPT_CACHING')) },
+  ]
+  const proveedores = [await env(() => $.env.get('CLAUDE_CODE_USE_BEDROCK')), await env(() => $.env.get('CLAUDE_CODE_USE_VERTEX')), await env(() => $.env.get('CLAUDE_CODE_USE_FOUNDRY'))]
+  // La de Toki: la puso en este proceso o, si se perdió la cuenta, es la que deja su activación. Con otro valor ya no es suya.
+  ttlSub.puesta = variable === '1h' && (ttlSub.puesta || e.activa !== undefined)
+  return fueraTtl({ version, ajuste, variable, puestaPorToki: ttlSub.puesta, otras, proveedor: proveedores.some(prendida) })
+}
+
+/** Pone la caché de 1 hora; devuelve por qué no se pudo, o nada. */
+async function ponerTtl($: $): Promise<string | undefined> {
+  try {
+    const r = await $.env.set('CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL', '1h')
+    if (r.deny !== undefined) return r.deny
+  } catch (err) {
+    return String(err)
+  }
+  ttlSub.puesta = true
+  return undefined
+}
+
+/** Quita la variable si es de Toki: los subagentes vuelven a 5 minutos. */
+async function soltarTtl($: $): Promise<void> {
+  if (!ttlSub.puesta) return
+  ttlSub.puesta = false
+  await $.env.set('CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL', undefined).catch(() => undefined)
+}
+
+/**
+ * Al empezar: si fijaste tú la caché, Toki no la toca ni la mide (y suelta la suya). Si no,
+ * revisa si la de Toki paga y, si la activaste y sigue, la pone otra vez (la variable dura lo
+ * que el proceso).
+ */
+async function iniciarTtl($: $, ahora: number): Promise<void> {
+  ttlSub.regimen = undefined
+  try {
+    const e = leerEstadoTtl(await $.store.get(CLAVE_TTL))
+    ttlSub.fuera = await entornoTtl($, e)
+    if (ttlSub.fuera !== undefined) {
+      await soltarTtl($)
+      if (ttlSub.fuera.motivo === 'tuya' && e.activa !== undefined) {
+        await $.store.set(CLAVE_TTL, quitarTtl(e, ahora, 'tuya'))
+        void anotarDiagnostico($, `subagentes: la caché la fija ${ttlSub.fuera.nombre}; Toki suelta la suya`)
+      }
+      return
+    }
+    ttlSub.regimen = ttlSub.puesta ? 'l' : 'c'
+    const revisado = (await guardarTtl($, ahora, false)) ?? e
+    if (revisado.activa === undefined) await soltarTtl($)
+    else {
+      const motivo = await ponerTtl($)
+      if (motivo !== undefined) void anotarDiagnostico($, `subagentes: no se pudo poner la caché de 1 h (${motivo})`)
+    }
+    ttlSub.regimen = ttlSub.puesta ? 'l' : 'c'
+  } catch {
+    // Sin store: no se mide.
+  }
+}
+
+/**
+ * Guarda lo medido y revisa: puesta por Toki y sin pagar en 14 días, la quita; sin poner y
+ * si conviene, lo avisa una vez (con alguien mirando). Devuelve cómo quedó, si se pudo leer.
+ */
+async function guardarTtl($: $, ahora: number, avisar: boolean): Promise<EstadoTtl | undefined> {
+  if (ttlSub.regimen === undefined) return undefined
+  const nuevo = ttlSub.porGuardar
+  ttlSub.porGuardar = {}
+  try {
+    const antes = leerEstadoTtl(await $.store.get(CLAVE_TTL))
+    const r = revisarTtl({ ...antes, dias: juntarDias(antes.dias, nuevo, ahora) }, ahora, avisar && (await hayAlguien($)))
+    if (Object.keys(nuevo).length > 0 || r.quitar || r.avisar) await $.store.set(CLAVE_TTL, r.estado)
+    const x = txTtl(vivo.idioma)
+    if (r.quitar) {
+      await soltarTtl($)
+      ttlSub.regimen = 'c'
+      const mas = cifraUsd(-(r.estado.quitada?.neto ?? 0))
+      void anotarDiagnostico($, `subagentes: caché de 1 h quitada, costó ${mas} más de lo que ahorró`)
+      if (await hayAlguien($)) $.ui.toast(x.avisoQuitada(mas), { timeoutMs: 12_000 })
+    }
+    if (r.avisar) {
+      const m = veredictoTtl(r.estado.dias, ahora).medida
+      void anotarDiagnostico($, `subagentes: conviene la caché de 1 h (${m.pedidos} pedidos, ahorro ${cifraUsd(m.ahorro)}, prima ${cifraUsd(m.prima)})`)
+      $.ui.toast(x.aviso(cifraUsd(m.ahorro - m.prima)), { timeoutMs: 10_000 })
+    }
+    return r.estado
+  } catch {
+    // Lo medido vuelve a la fila para la próxima.
+    ttlSub.porGuardar = juntarDias(nuevo, ttlSub.porGuardar, ahora)
+    return undefined
+  }
+}
+
+/**
+ * Un pedido de subagente medido con una y otra caché. Devuelve lo que la caché de 1 hora de
+ * Toki dejó leer en vez de reescribir; nada si no está puesta.
+ */
+function medirCacheSubagente(agente: string, u: TurnUsage, familia: Familia, ms: number): number | undefined {
+  const leido = u.cache_read_input_tokens
+  const escrito = u.cache_creation_input_tokens
+  // Los del mismo tipo y modelo comparten el comienzo (instrucciones y herramientas); sin tipo, cada uno el suyo.
+  const clave = `${ttlSub.tipos.get(agente) ?? agente}|${familia}`
+  const grupo = ttlSub.grupos.get(clave)
+  const propia = ttlSub.agentes.get(agente)
+  const regimen = ttlSub.regimen
+  const comun = grupo?.primero !== undefined ? { ms: grupo.ms, tokens: grupo.primero } : undefined
+  const r = regimen === undefined ? undefined : medirPaso({ familia, ms, leido, escrito, propia, comun, regimen })
+  // Lo común no pasa del primer pedido más chico del grupo (el resto es el encargo de cada uno).
+  const primero = propia === undefined ? Math.min(grupo?.primero ?? Infinity, leido + escrito) : grupo?.primero
+  recordarEn(ttlSub.agentes, agente, { ms, tokens: leido + escrito })
+  recordarEn(ttlSub.grupos, clave, { ms, primero }, 50)
+  if (r === undefined || regimen === undefined) return undefined
+  ttlSub.porGuardar = anotarPaso(ttlSub.porGuardar, ms, regimen, r.medida)
+  return regimen === 'l' ? r.releidos : undefined
+}
+
+/** /toki-dieta subagentes: caché de 1 hora para tus subagentes, en todas tus sesiones con Toki, mientras pague. */
+async function activarCacheSubagentes($: $): Promise<string> {
+  const x = txTtl(vivo.idioma)
+  try {
+    const ahora = await $.clock.now()
+    const e = leerEstadoTtl(await $.store.get(CLAVE_TTL))
+    const f = await entornoTtl($, e)
+    ttlSub.fuera = f
+    if (f !== undefined) {
+      ttlSub.regimen = undefined
+      return f.motivo === 'tuya' ? x.tuya(f.nombre) : f.motivo === 'version' ? x.noVersion : x.noProveedor
+    }
+    if (e.activa !== undefined && ttlSub.puesta) return x.yaPuesta
+    const motivo = await ponerTtl($)
+    if (motivo !== undefined) return x.negada(motivo)
+    ttlSub.regimen = 'l'
+    await $.store.set(CLAVE_TTL, activarTtl(e, ahora))
+    void anotarDiagnostico($, 'subagentes: caché de 1 h puesta')
+    return x.hecho
+  } catch (err) {
+    return x.negada(String(err))
   }
 }
 
@@ -2594,7 +2787,16 @@ async function oportunidadMcp($: $, desglose: Parameters<typeof armarDieta>[0], 
 // ---------- Dieta que arregla ----------
 
 /** Lo que /toki-dieta miró: el desglose, la memoria medida en disco (con su texto, para el respaldo) y lo que se puede arreglar. */
-type RevisionDieta = { dieta?: Dieta; opciones: OpcionesDieta; arreglos: Arreglos; textos: Map<string, string> }
+type RevisionDieta = {
+  dieta?: Dieta
+  opciones: OpcionesDieta
+  arreglos: Arreglos
+  textos: Map<string, string>
+  /** La caché de los subagentes, con lo medido aún sin guardar. */
+  ttl: EstadoTtl
+  /** Conviene la de 1 hora, Toki la puede poner y nunca se quitó: va en la pregunta. */
+  ofrecerTtl: boolean
+}
 
 async function revisarDieta($: $): Promise<RevisionDieta> {
   const ahora = await $.clock.now()
@@ -2635,7 +2837,10 @@ async function revisarDieta($: $): Promise<RevisionDieta> {
     guardia: config.guardiaEmpresa,
     suscripcion: vivo.usoCache?.esSuscripcion === true,
   }
-  return { dieta, opciones, arreglos: arreglos(dieta, opciones), textos }
+  const guardado = leerEstadoTtl(await $.store.get(CLAVE_TTL).catch(() => undefined))
+  const ttl = { ...guardado, dias: juntarDias(guardado.dias, ttlSub.porGuardar, ahora) }
+  const ofrecerTtl = ttlSub.regimen === 'c' && ttl.activa === undefined && ttl.quitada === undefined && veredictoTtl(ttl.dias, ahora).tipo === 'conviene'
+  return { dieta, opciones, arreglos: arreglos(dieta, opciones), textos, ttl, ofrecerTtl }
 }
 
 /** /toki-dieta mcp: los servidores sin uso quedan bajo demanda, en la opción de Toki (Claude Code recarga el plugin). */
@@ -2722,13 +2927,21 @@ async function restaurarDieta($: $): Promise<string> {
     void anotarDiagnostico($, `dieta: MCP cargados otra vez: ${config.mcpDiferidos.join(', ')}`)
     partes.push(x.restauradoMcp(config.mcpDiferidos.join(', ')))
   }
+  const ttl = leerEstadoTtl(await $.store.get(CLAVE_TTL).catch(() => undefined))
+  if (ttl.activa !== undefined || ttlSub.puesta) {
+    await soltarTtl($)
+    if (ttlSub.regimen === 'l') ttlSub.regimen = 'c'
+    await $.store.set(CLAVE_TTL, quitarTtl(ttl, await $.clock.now(), 'restaurar')).catch(() => undefined)
+    void anotarDiagnostico($, 'subagentes: caché de 1 h quitada con /toki-dieta restaurar')
+    partes.push(txTtl(vivo.idioma).restaurada)
+  }
   // Toki no copia encima: quizá cambiaste algo después. Te deja el comando.
   const ultimos = new Map(leerRespaldos(await $.store.get(CLAVE_RESPALDOS).catch(() => undefined)).map(h => [h.ruta, h]))
   if (ultimos.size > 0) partes.push(x.restaurarMemoria, ...[...ultimos.values()].map(h => `  cp ${comillas(h.respaldo)} ${comillas(h.ruta)}`))
   return partes.length > 0 ? partes.join('\n') : x.nadaQueRestaurar
 }
 
-/** Tras el informe, con alguien mirando: ¿lo arreglo ahora? Primero la memoria (llena el cuadro); al final los MCP, que recargan el plugin. */
+/** Tras el informe, con alguien mirando: ¿lo arreglo ahora? Primero la memoria (llena el cuadro), luego la caché de los subagentes; al final los MCP, que recargan el plugin. */
 async function ofrecerArreglos($: $, r: RevisionDieta): Promise<void> {
   // Ya mandaste otro mensaje: llegaría tarde.
   if (vivo.enTurno) return
@@ -2738,6 +2951,7 @@ async function ofrecerArreglos($: $, r: RevisionDieta): Promise<void> {
     const nombres = r.arreglos.memoria.map(a => a.ruta.split(/[\\/]/).pop() ?? a.ruta)
     opciones.push({ etiqueta: x.opMemoria(nombres), hacer: async () => $.ui.log(await adelgazarMemoria($, r)) })
   }
+  if (r.ofrecerTtl) opciones.push({ etiqueta: txTtl(vivo.idioma).op, hacer: async () => $.ui.log(await activarCacheSubagentes($)) })
   if (r.arreglos.mcp.length > 0) opciones.push({ etiqueta: x.opMcp(r.arreglos.mcp.map(s => s.nombre)), hacer: async () => $.ui.log(diferirMcp($, r)) })
   const [una] = opciones
   if (una === undefined) return
@@ -4857,6 +5071,13 @@ export const register: Register = (on, options) => {
   config.mcpDiferidos = leerDiferidos(options[OPCION_DIFERIDOS])
   config.compactarTambien = leerExtras(options[OPCION_TAMBIEN])
   familias.leido = false
+  // La caché de los subagentes se decide de nuevo al empezar; si Toki puso la variable, sigue puesta (vive en el proceso).
+  ttlSub.regimen = undefined
+  ttlSub.fuera = undefined
+  ttlSub.porGuardar = {}
+  ttlSub.agentes.clear()
+  ttlSub.grupos.clear()
+  ttlSub.tipos.clear()
   // Si el guardia de empresa se salta prompt.compose se decide de nuevo, con un turno visto entero.
   vivo.composeVisto = false
   vivo.turnoVisto = undefined
@@ -5006,6 +5227,8 @@ export const register: Register = (on, options) => {
     // Claude Code lee la ventana de compactación al empezar: puesta a mitad de un turno no cuenta.
     ultimaVentana = ''
     await ajustarVentana($, e.isInteractive === true)
+    // La variable de la caché de los subagentes dura lo que el proceso: si la activaste, otra vez.
+    await iniciarTtl($, ahora)
     // Sesión reanudada: recupera su último punto de control si es reciente (nunca el de otra sesión).
     const base = config.memoria ? await rutaMemoria($) : undefined
     if (base !== undefined) {
@@ -5038,6 +5261,7 @@ export const register: Register = (on, options) => {
     planHecho.listo = false
     planHecho.ofrecido = false
     await guardarUltimoPedido($)
+    await guardarTtl($, await $.clock.now(), false)
     await terminarLimpio($, 'terminó la conversación')
     reiniciarSeguimiento()
     if (e.reason === 'clear') {
@@ -5136,12 +5360,13 @@ export const register: Register = (on, options) => {
 
   // Subagentes con encargos simples: Sonnet. Empiezan sin contexto, no se pierde caché.
   on('agent.spawn', async ($, e, next) => {
-    if (!ruta.subagentes || ruta.modo === 'no' || e.model !== undefined) return next(e)
-    const modelo = modeloSubagente(e.subagentType, e.prompt, e.parentModel, sonnetActivo())
-    if (modelo === undefined) return next(e)
-    const r = await next({ ...e, model: modelo })
-    // Sin Toki habría ido en el modelo de la conversación: contra ese se mide.
+    const modelo = ruta.subagentes && ruta.modo !== 'no' && e.model === undefined ? modeloSubagente(e.subagentType, e.prompt, e.parentModel, sonnetActivo()) : undefined
+    const r = await next(modelo === undefined ? e : { ...e, model: modelo })
     const id = (r as { agentId?: string }).agentId
+    // Los del mismo tipo comparten el comienzo del caché.
+    if (id !== undefined) recordarEn(ttlSub.tipos, id, e.subagentType)
+    if (modelo === undefined) return r
+    // Sin Toki habría ido en el modelo de la conversación: contra ese se mide.
     if (id !== undefined) recordarAgente(id, familiaDe(e.parentModel) ?? familiaDe(vivo.modelo) ?? 'opus')
     if (familiaDe((r as { model?: string }).model) === 'sonnet') {
       ruta.subagentesEnSonnet += 1
@@ -5202,6 +5427,13 @@ export const register: Register = (on, options) => {
       }
       void revisarModelo($)
       if (vivo.ventanaFuente === undefined) void ajustarVentana($, false)
+      // Tras recargar el plugin no hay session.start: la caché de los subagentes se decide aquí.
+      if (ttlSub.regimen === undefined && ttlSub.fuera === undefined) {
+        void $.clock.now().then(
+          ahora => iniciarTtl($, ahora),
+          () => undefined,
+        )
+      }
     }
     return next(e)
   })
@@ -5243,7 +5475,7 @@ export const register: Register = (on, options) => {
       }
     }
     // Desde que sale corre el plazo del caché: contra esta hora se mide la pausa del siguiente.
-    const salida = e.agentId === undefined ? await $.clock.now() : 0
+    const salida = await $.clock.now()
     const respuesta = yield* next(pedido)
     if (e.agentId === undefined && e.index === 0 && e.turnId === modeloPorContar.turno) {
       modeloPorContar.turno = undefined
@@ -5275,6 +5507,15 @@ export const register: Register = (on, options) => {
       } catch {
         // Sin cifras de este pedido: no cambia nada para Claude.
       }
+      // Un subagente: ¿le convendría (o le conviene) la caché de 1 hora?
+      let releido: number | undefined
+      if (e.agentId !== undefined) {
+        try {
+          releido = medirCacheSubagente(e.agentId, u, familiaDe(u.model) ?? familiaDe(pedido.model) ?? 'opus', salida)
+        } catch {
+          // Solo estadística.
+        }
+      }
       // Entre alPedido (que anota la compactación) y medirPedido (que la da por pasada).
       let reescritoPorToki = 0
       if (e.agentId === undefined) {
@@ -5286,7 +5527,7 @@ export const register: Register = (on, options) => {
       }
       try {
         // Después de alPedido: si este pedido trae la compactación, ya quedó anotada.
-        const c = medirPedido(e, pedido, u, sin, await $.clock.now(), reescritoPorToki)
+        const c = medirPedido(e, pedido, u, sin, await $.clock.now(), reescritoPorToki, releido)
         const m = ruta.medicion
         if (e.agentId === undefined && m !== undefined && m.turno === e.turnId) {
           m.pedidos += 1
@@ -5350,6 +5591,8 @@ export const register: Register = (on, options) => {
       if (vivo.breve === 'agregar') await avisarBreve($)
       await guardarUltimoPedido($)
       await guardarCacheSesion($)
+      // La caché de los subagentes: si conviene la de 1 hora, o si la de Toki no paga.
+      await guardarTtl($, ahora, terminado)
       if (config.memoria) await guardarMemoria($)
       await refrescarUso($, true)
       const uso = vivo.usoCache
@@ -5871,11 +6114,13 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'toki-dieta' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     if (/^(restaurar|restore|deshacer|undo)$/.test(arg)) return { text: await restaurarDieta($) }
+    if (/^(subagentes|subagents)$/.test(arg)) return { text: await activarCacheSubagentes($) }
     const r = await revisarDieta($)
     if (arg === 'mcp') return { text: diferirMcp($, r) }
     if (/^(memoria|memory)$/.test(arg)) return { text: await adelgazarMemoria($, r) }
-    if ((r.arreglos.mcp.length > 0 || r.arreglos.memoria.length > 0) && (await hayAlguien($))) $.clock.after(DEMORA_DIETA, () => void ofrecerArreglos($, r))
-    return { text: textoDieta(r.dieta, r.opciones) }
+    if ((r.arreglos.mcp.length > 0 || r.arreglos.memoria.length > 0 || r.ofrecerTtl) && (await hayAlguien($))) $.clock.after(DEMORA_DIETA, () => void ofrecerArreglos($, r))
+    const ttl = textoTtl(r.ttl, { ahora: r.opciones.ahora, idioma: vivo.idioma, fuera: ttlSub.fuera })
+    return { text: [textoDieta(r.dieta, r.opciones), ...(ttl.length > 0 ? ['', ...ttl] : [])].join('\n') }
   })
 
   on('command.run', { command: 'toki-mapa' }, async $ => {

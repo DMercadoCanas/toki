@@ -268,7 +268,7 @@ const TEXTOS = {
     skillsPlugin: (p: string, n: number, t: string) =>
       `${p}: ${n === 1 ? 'su skill' : `sus ${n} skills`} sin usar en ${DIAS_SIN_USO} días (~${t} en cada pedido). Si tampoco usas lo demás que trae, desactívalo en /plugin.`,
     yMas: (n: number) => `y ${n} más`,
-    pista: 'mcp | memoria | restaurar',
+    pista: 'mcp | memoria | subagentes | restaurar',
     pregunta: '¿Lo arreglo ahora, de forma reversible?',
     preguntaVarios: '¿Qué arreglo ahora, de forma reversible?',
     opMcp: (s: readonly string[]) => (s.length === 1 ? `${s[0]} bajo demanda` : `${s.length} MCP bajo demanda`),
@@ -287,7 +287,7 @@ const TEXTOS = {
     sinRespaldo: 'No pude guardar un respaldo, así que no toco nada.',
     restauradoMcp: (s: string) => `Listo: ${s} vuelve a cargarse desde tu próximo mensaje (reescribe el caché una vez).`,
     restaurarMemoria: 'Para volver a la memoria de antes, copia su respaldo encima:',
-    nadaQueRestaurar: 'Nada que restaurar: Toki no tiene MCP bajo demanda ni respaldos de memoria.',
+    nadaQueRestaurar: 'Nada que restaurar: Toki no tiene MCP bajo demanda, respaldos de memoria ni caché de 1 hora en los subagentes.',
     pedido: 'Adelgaza estos archivos de memoria de Claude Code sin perder lo importante. Muéstrame cada cambio antes de hacerlo.',
     pedidoClaude: (r: string, n: number) =>
       `- ${r} (${n} líneas): deja lo esencial en menos de 200 líneas. Lo que solo aplica a ciertas carpetas o tareas, muévelo a \`.claude/rules/\` con \`paths:\` o a una skill; quita lo repetido y lo que ya se deduce del código.`,
@@ -338,7 +338,7 @@ const TEXTOS = {
     skillsPlugin: (p: string, n: number, t: string) =>
       `${p}: ${n === 1 ? 'its skill' : `its ${n} skills`} unused for ${DIAS_SIN_USO} days (~${t} on every request). If you don't use the rest it brings either, disable it in /plugin.`,
     yMas: (n: number) => `and ${n} more`,
-    pista: 'mcp | memory | restore',
+    pista: 'mcp | memory | subagents | restore',
     pregunta: 'Fix it now, reversibly?',
     preguntaVarios: 'What should I fix now, reversibly?',
     opMcp: (s: readonly string[]) => (s.length === 1 ? `${s[0]} on demand` : `${s.length} MCP on demand`),
@@ -357,7 +357,7 @@ const TEXTOS = {
     sinRespaldo: "I couldn't save a backup, so I'm not touching anything.",
     restauradoMcp: (s: string) => `Done: ${s} loads again from your next message (it rewrites the cache once).`,
     restaurarMemoria: 'To go back to the earlier memory, copy its backup over it:',
-    nadaQueRestaurar: 'Nothing to restore: Toki has no on-demand MCP or memory backups.',
+    nadaQueRestaurar: 'Nothing to restore: Toki has no on-demand MCP, memory backups or 1-hour subagent cache.',
     pedido: 'Slim down these Claude Code memory files without losing what matters. Show me each change before making it.',
     pedidoClaude: (r: string, n: number) =>
       `- ${r} (${n} lines): keep the essentials under 200 lines. Move what only applies to certain folders or tasks into \`.claude/rules/\` with \`paths:\` or into a skill; drop repetition and anything the code already shows.`,
