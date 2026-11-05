@@ -225,6 +225,24 @@ describe('guardia de empresa con el motor', () => {
     expect(m.cambios).toEqual([])
   })
 
+  test('prendida, la nota va antes de tu primer mensaje, no después del turno, y una sola vez', PRENDIDA, async ($, on) => {
+    mock.clock(on, { now: AHORA })
+    const m = mundo(on, { guardado: PRENDIDO(AHORA - DIA) })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await $.prompt.submit({ text: 'explícame cómo funciona agendar en src/turnos.ts', wait: false, origin: { kind: 'composer' } } as never)
+    expect(m.notas.filter(n => n.startsWith(NOTA)).length).toBe(1)
+    await mensaje($, 't1', { conGuardia: true })
+    expect(m.notas.filter(n => n.startsWith(NOTA)).length).toBe(1)
+  })
+
+  test('tras recargar, aunque la app aún no se viera al empezar, la nota ya mandada en esta conversación no se repite', PRENDIDA, async ($, on) => {
+    mock.clock(on, { now: AHORA })
+    const m = mundo(on, { guardado: { guardiaEmpresa: { desde: AHORA, nota: 's1' } } })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    await mensaje($, 't0', { conGuardia: true })
+    expect(m.notas.some(n => n.startsWith(NOTA))).toBe(false)
+  })
+
   test('apagada, la sección va como siempre', SIN_RUTEO, async ($, on) => {
     mock.clock(on, { now: AHORA })
     mundo(on)

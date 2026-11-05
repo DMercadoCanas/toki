@@ -1041,10 +1041,12 @@ async function avisarBreve($: $): Promise<void> {
 }
 
 /**
- * prompt.compose no corrió (Claude Code lo administra tu organización, u otro plugin lo frenó):
- * sin la sección, lo mismo va como nota a Claude desde el primer mensaje, y otra vez tras compactar.
- * Si elegiste un estilo, se respeta. Una vez (desde siempre) sugiere el estilo de Toki, que no
- * depende de hooks. Lo que ahorre la nota no se cuenta: no se puede medir contra la sección.
+ * prompt.compose no corre (Claude Code lo administra tu organización, u otro plugin lo frenó):
+ * sin la sección, lo mismo va como nota a Claude, y otra vez tras compactar. Con «Guardia de
+ * empresa» va antes de tu primer mensaje; si Toki recién nota el guardia, después de él.
+ * Si elegiste un estilo, se respeta. Una vez (desde siempre) sugiere el estilo Concise de Claude
+ * Code, que no depende de hooks y, medido, corta tanto como la sección; la nota, mucho menos
+ * (evals/modo-breve). Lo que ahorre la nota no se cuenta: no se puede medir contra la sección.
  */
 async function respaldoBreve($: $): Promise<void> {
   vivo.nudgeConciso = true
@@ -1060,6 +1062,25 @@ async function respaldoBreve($: $): Promise<void> {
   } catch {
     // Sin store: no se avisa, para no repetirlo en cada sesión.
   }
+}
+
+/**
+ * Con «Guardia de empresa» prendida Toki ya sabe que prompt.compose no corre: la nota va antes
+ * de tu primer mensaje, no después. Si ya se mandó en esta conversación antes de recargar el
+ * plugin, no se repite.
+ */
+async function notaAntesDelMensaje($: $): Promise<void> {
+  if (!config.guardiaEmpresa || !config.conciso || vivo.nudgeConciso) return
+  try {
+    const id = await $.session.id()
+    if (id !== undefined && leerEstadoEmpresa(await $.store.get(CLAVE_EMPRESA)).nota === id) {
+      vivo.nudgeConciso = true
+      return
+    }
+  } catch {
+    // Sin id ni store: la nota va.
+  }
+  await respaldoBreve($)
 }
 
 /**
@@ -2392,8 +2413,12 @@ async function reporte($: $, anchoBarra = 24): Promise<Reporte> {
   if (!config.mantenerCache && vivo.ultimoTurnoCompleto > 0 && vivo.usoCache !== undefined && !vivo.usoCache.esSuscripcion) r.sugerencias.push(x.sugCache)
   if (!r.hayMapa) r.sugerencias.push(x.sugMapa)
   if (await $.fs.exists('.claude/ahorro-tokens').catch(() => false)) r.sugerencias.push(x.sugCarpetaVieja)
-  // Con respuestas breves ya puestas (o con un estilo tuyo) el consejo sobra.
-  if (!breveActivo(vivo.breve) && vivo.breve !== 'tuyo') r.sugerencias.push(x.sugConciso)
+  // Con respuestas breves ya puestas (o con un estilo tuyo) el consejo sobra. Sin prompt.compose, solo
+  // si Toki ya sabe que no corre (el guardia de empresa) y no elegiste un estilo en tu configuración.
+  const sugerirConciso = vivo.breve === undefined
+    ? (config.guardiaEmpresa || vivo.nudgeConciso) && (await estiloDeConfiguracion($)) === undefined
+    : !breveActivo(vivo.breve) && vivo.breve !== 'tuyo'
+  if (sugerirConciso) r.sugerencias.push(x.sugConciso)
   return r
 }
 
@@ -4477,6 +4502,7 @@ export const register: Register = (on, options) => {
     } catch {
       // Solo estadística.
     }
+    await notaAntesDelMensaje($)
     const base = texto === e.text ? e : { ...e, text: texto }
     // La instrucción va como contexto: Claude la lee junto a tu mensaje y tú no ves nada distinto.
     const r = await next(contexto === undefined ? base : { ...base, context: [...(e.context ?? []), contexto] })

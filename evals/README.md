@@ -45,7 +45,7 @@ python3 evals/benchmark.py evals/results/sin-bash.json evals/results/bash.json
 - **Tres brazos de las respuestas breves**: sin instrucción, "Answer concisely." y Toki (más Toki con "Answer concisely."), con los tokens de salida de cada uno. Salen de las trazas: `correr.sh` usa `--keep-temp`, las anota con `--anotar` y luego borra esas carpetas temporales.
 - **Corridas perdidas**: las que terminaron en error de API, en aborto o sin juez por el tope de costo, con el motivo. No entran en las cifras, y un archivo `partial` lo dice arriba de la tabla.
 
-`modo-breve/` es otra cosa: no usa `claude plugin eval`. Mide, sin Toki y con `claude -p`, cuánto baja la salida con la sección de respuestas breves (−12 % en tareas de código, −15 % en preguntas abiertas, con los tests pasando igual). De ahí sale el 12 % con que Toki cuenta ese ahorro. Su `README.md` explica cómo correrlo.
+`modo-breve/` es otra cosa: no usa `claude plugin eval`. Mide, sin Toki y con `claude -p`, cuánto baja la salida con la sección de respuestas breves (−12 % en tareas de código, −15 % a −18 % en preguntas abiertas, con los tests pasando igual), y la compara con el estilo Concise de Claude Code, con `toki:conciso` y con la nota que Toki manda cuando no puede agregar la sección. De ahí salen el 12 % con que Toki cuenta ese ahorro y que Toki se quede con su sección. Su `README.md` explica cómo correrlo.
 
 ## Última corrida (3 nov 2026: Toki 0.17.6, Claude Code 2.1.316, Opus 5.5 y Sonnet 5.5, 5 corridas por caso y brazo, `-j 1`)
 

@@ -1,5 +1,6 @@
 # Por brazo: tokens de salida, costo, caracteres de texto visible y herramientas, por corrida y en media,
-# y cuánto bajó la salida frente a base. Con -v, la salida y el texto de cada mensaje.
+# cuánto bajó la salida frente a base y cuánto pesa la instrucción (la entrada del primer pedido, frente
+# a base). Con -v, la salida y el texto de cada mensaje.
 #
 # Uso: python3 evals/modo-breve/analizar.py [-v] [carpeta]   (por defecto evals/results/modo-breve)
 import glob
@@ -40,13 +41,29 @@ def leer(f):
     return filas
 
 
+def primer_pedido(f):
+    """Tokens de entrada del primer pedido: el system prompt, las herramientas y el primer mensaje."""
+    for l in open(f, encoding="utf-8"):
+        try:
+            e = json.loads(l)
+        except ValueError:
+            continue
+        u = e.get("message", {}).get("usage") if e.get("type") == "assistant" else None
+        if u:
+            return u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+    return None
+
+
 def main():
     args = [a for a in sys.argv[1:] if a != "-v"]
     carpeta = args[0] if args else os.path.join(RAIZ, "evals", "results", "modo-breve")
-    res = {}
+    res, primeros = {}, {}
     for f in sorted(glob.glob(os.path.join(carpeta, "*.jsonl"))):
         guion, brazo, etiqueta = os.path.basename(f)[:-6].split("-")
         res.setdefault((guion, brazo), []).append((etiqueta, leer(f)))
+        p = primer_pedido(f)
+        if p is not None:
+            primeros.setdefault((guion, brazo), []).append(p)
     medias = {}
     for (guion, brazo), corridas in sorted(res.items()):
         tot = [(sum(x["salida"] for x in r), sum(x["usd"] for x in r), sum(x["texto"] for x in r), sum(x["herr"] for x in r), len(r)) for _, r in corridas]
@@ -58,6 +75,10 @@ def main():
         base = medias.get((guion, "base"))
         if brazo != "base" and base:
             print(f"{guion} {brazo}: {round((media / base - 1) * 100)} % de salida frente a base")
+    for (guion, brazo), ps in sorted(primeros.items()):
+        base = primeros.get((guion, "base"))
+        if brazo != "base" and base:
+            print(f"{guion} {brazo}: la instrucción pesa {round(st.median(ps) - st.median(base))} tokens (primer pedido, mediana)")
     if "-v" in sys.argv:
         for (guion, brazo), corridas in sorted(res.items()):
             for etiqueta, r in corridas:

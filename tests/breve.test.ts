@@ -168,7 +168,7 @@ describe('respuestas breves con el motor', () => {
     expect(m.toasts.filter(t => t.startsWith(AVISO)).length).toBe(1)
     expect(m.toasts.find(t => t.startsWith(AVISO))).toContain('~12 % menos salida, medido')
     // Ya con respuestas breves, Toki no sugiere el estilo conciso.
-    expect(toki).not.toContain('toki:conciso')
+    expect(toki).not.toContain('/output-style → Concise')
     const semana = ((await $.command.run({ command: 'toki-semana', args: '' } as never)) as { text: string }).text
     expect(semana).toContain(`Respuestas breves: ${cifraUsd(usd)} en salida que Claude no escribió (estimado con lo medido)`)
   })
@@ -192,7 +192,7 @@ describe('respuestas breves con el motor', () => {
     await mensaje($, 't0', 'explícame cómo funciona agendar en src/turnos.ts')
     const toki = await panel($)
     expect(toki).not.toContain('Respuestas breves')
-    expect(toki).not.toContain('toki:conciso')
+    expect(toki).not.toContain('/output-style → Concise')
     expect(m.toasts.some(t => t.startsWith(AVISO))).toBe(false)
   })
 
@@ -254,21 +254,25 @@ describe('respuestas breves sin prompt.compose (Claude Code administrado por tu 
     return vistas
   }
   const NOTA = '[Toki] Responde de forma concisa'
-  const SUGIERE = '/output-style → toki:conciso'
+  const SUGIERE = '/output-style → Concise'
 
-  test('sin la sección, lo mismo va como nota desde el primer mensaje, una sola vez, y sin contar ahorro', SIN_RUTEO, async ($, on) => {
+  test('sin la sección, lo mismo va como nota tras el primer mensaje, una sola vez, y sin contar ahorro', SIN_RUTEO, async ($, on) => {
     mock.clock(on, { now: 50 * H })
     const m = mundo(on, { tokens: 30_000, salida: 5_000 })
     const vistas = notas(on)
     await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    // Antes del primer mensaje Toki aún no sabe si la sección va: no sugiere el estilo.
+    expect(await panel($)).not.toContain(SUGIERE)
     await mensaje($, 't0', 'explícame cómo funciona agendar en src/turnos.ts')
     expect(vistas.filter(n => n.startsWith(NOTA)).length).toBe(1)
     expect(m.toasts.filter(t => t.includes(SUGIERE)).length).toBe(1)
     await mensaje($, 't1', 'y ahora explícame los casos borde de agendar')
     expect(vistas.filter(n => n.startsWith(NOTA)).length).toBe(1)
     expect(m.toasts.filter(t => t.includes(SUGIERE)).length).toBe(1)
-    // La nota no se puede medir contra la sección: no suma ahorro.
-    expect(await panel($)).not.toContain('  Respuestas breves: ')
+    // La nota no se puede medir contra la sección: no suma ahorro. /toki sí sugiere el estilo.
+    const toki = await panel($)
+    expect(toki).not.toContain('  Respuestas breves: ')
+    expect(toki).toContain(SUGIERE)
   })
 
   test('la sugerencia del estilo se da una vez desde siempre; la nota va en cada sesión', SIN_RUTEO, async ($, on) => {
@@ -290,6 +294,20 @@ describe('respuestas breves sin prompt.compose (Claude Code administrado por tu 
     await mensaje($, 't0', 'explícame cómo funciona agendar en src/turnos.ts')
     expect(vistas.some(n => n.startsWith(NOTA))).toBe(false)
     expect(m.toasts.some(t => t.includes(SUGIERE))).toBe(false)
+  })
+
+  test('si ya elegiste el Concise que sugiere, no va la nota, /toki no lo repite y no cuenta ahorro', SIN_RUTEO, async ($, on) => {
+    mock.clock(on, { now: 50 * H })
+    const m = mundo(on, { tokens: 30_000, salida: 5_000 })
+    const vistas = notas(on)
+    on('settings.read', ($, e) => ({ value: e.source === 'local' ? { outputStyle: 'Concise' } : {} }) as never)
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: true })
+    await mensaje($, 't0', 'explícame cómo funciona agendar en src/turnos.ts')
+    expect(vistas.some(n => n.startsWith(NOTA))).toBe(false)
+    expect(m.toasts.some(t => t.includes(SUGIERE))).toBe(false)
+    const toki = await panel($)
+    expect(toki).not.toContain(SUGIERE)
+    expect(toki).not.toContain('  Respuestas breves: ')
   })
 
   test('si prompt.compose corre, no hace falta la nota', SIN_RUTEO, async ($, on) => {

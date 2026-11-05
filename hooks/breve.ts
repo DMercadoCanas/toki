@@ -1,6 +1,7 @@
 // Respuestas breves: una sección al final del system prompt que le pide a Claude
 // las mínimas palabras que conserven todo lo técnico. Medido sin Toki en Opus 5.5:
-// ~12 % menos salida con tareas de código y ~15 % con preguntas abiertas
+// ~12 % menos salida con tareas de código y 15-18 % con preguntas abiertas, lo
+// mismo que el estilo Concise de Claude Code con menos de la mitad de tokens
 // (evals/modo-breve). Funciones puras.
 
 /** El id de la sección en el system prompt (se ve en /context). */

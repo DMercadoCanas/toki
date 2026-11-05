@@ -120,8 +120,9 @@ export function leerCalibracion(v: unknown): CalibracionEsfuerzo {
 
 /**
  * Salida con respuestas breves frente a sin ellas, medida: los mismos guiones sin
- * Toki en Opus 5.5, tres corridas por brazo (oct 2026, evals/modo-breve). Con
- * tareas de código bajó un 12 % y con preguntas abiertas un 15 %: se usa la menor.
+ * Toki en Opus 5.5, tres corridas por brazo (oct y nov 2026, evals/modo-breve). Con
+ * tareas de código bajó un 12 % las dos veces y con preguntas abiertas un 15 % y un
+ * 18 %: se usa la menor.
  */
 export const SALIDA_BREVE = 0.88
 
