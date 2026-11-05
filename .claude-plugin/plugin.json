@@ -61,8 +61,8 @@
     },
     "entrevista": {
       "type": "string",
-      "title": "Preguntas antes de un pedido grande",
-      "description": "Si empiezas algo grande o cambias de tema con un pedido amplio y vago, Toki le pide a Claude que te haga unas preguntas de opción múltiple (recomendada primero) antes de empezar, y deja el resumen en .claude/toki/spec.md. Cuesta ~1-2k tokens y suele ahorrar correcciones. auto: avisa y Claude pregunta (escribe «sin preguntas» para saltarla). preguntar: te consulta antes. no: apagado. También con /toki-entrevista. Además muestra consejos cortos para pedir mejor (una vez por tipo) y, tras dos correcciones sobre lo mismo o un cambio de tema con mucho contexto, ofrece empezar en limpio.",
+      "title": "Entrevista y preguntas justo a tiempo",
+      "description": "Si empiezas algo grande o cambias de tema con un pedido amplio y vago, Toki le pide a Claude que te haga unas preguntas de opción múltiple (recomendada primero) antes de empezar, y deja el resumen en .claude/toki/spec.md con su criterio de listo. Cuesta ~1-2k tokens y suele ahorrar correcciones. Además, cuando tu respuesta cambia lo que Claude hace, Toki te pregunta con el diálogo de Claude Code (sin tokens): dónde buscar, cómo sabremos que quedó, cómo seguir tras dos correcciones, si separar un mensaje con varias tareas, qué no olvidar al compactar y si dejar el criterio del spec como /goal. Cada pregunta se calla tras dos «no» seguidos. auto: avisa y Claude pregunta (escribe «sin preguntas» para saltarla). preguntar: te consulta antes. no: apagado, también las preguntas justo a tiempo. También con /toki-entrevista (auto devuelve las preguntas calladas). Muestra consejos cortos para pedir mejor (una vez por tipo) y, con un cambio de tema con mucho contexto, ofrece empezar en limpio.",
       "default": "auto",
       "options": [
         "auto",

@@ -170,6 +170,7 @@ import {
   consejoDe,
   esCorreccion,
   esPedidoGrande,
+  esTareaNueva,
   evaluarEntrevista,
   FRENOS_ENTREVISTA,
   frenaAntesDePreguntar,
@@ -178,8 +179,31 @@ import {
   RUTA_SPEC,
   SALTOS_PARA_CALLAR,
   textosEntrevista,
+  VECES_POR_CONSEJO,
 } from './entrevista'
 import type { Consejo, ModoEntrevista, PorQueEntrevistar, TextosEntrevista } from './entrevista'
+import {
+  ARCHIVOS_DE_COMPROBACION,
+  CARPETAS_PARA_PREGUNTAR,
+  comprobacionesDe,
+  contarRespuesta,
+  criterioDeSpec,
+  esCarpetaDeBusqueda,
+  esLaTarea,
+  esRaizDeProyecto,
+  estaCallada,
+  leerEstadoPreguntas,
+  opcionesDonde,
+  opcionesFallos,
+  opcionesListo,
+  partirTareas,
+  PCT_PARA_RECORDAR,
+  pideDonde,
+  pideListo,
+  textosPreguntas,
+  TIPOS_PREGUNTA,
+} from './preguntas'
+import type { Carpeta, EstadoPreguntas, Tarea, TextosPreguntas, TipoPregunta } from './preguntas'
 import { agregarMuestra, claveVentana, DURACION, evaluarCacheFrio, FRIO, hora, opcionesFrio, preguntaFrio, proyectar, textosGuardia, VENTANAS } from './guardia'
 import type { Muestra, OpcionLimite, Proyeccion, TextosGuardia, VentanaLimite } from './guardia'
 
@@ -1698,6 +1722,7 @@ async function registrarCompactacion($: $, origen: 'marca' | 'turno' | 'resumen'
   const desde = vivo.ultimoTurnoCompleto
   vivo.ultimaCompactacion = ahora
   vivo.compactaciones += 1
+  vivo.memoria.enfasis = undefined
   // Si las respuestas breves iban como nota, la nota se fue con lo compactado: se manda otra.
   vivo.nudgeConciso = false
   // Tras compactar, del caché solo sigue sirviendo el comienzo: cambiar de modelo ahí cuesta solo eso.
@@ -3256,10 +3281,12 @@ async function anotarCalidad($: $, plan: PlanTurno | undefined, turnId: string, 
   await cambiarCalidad($, c => {
     const sumada = sumarMensaje(c, grupo)
     // Sin nadie que conteste, o si Claude te preguntó algo: lo suyo va primero.
-    toca = ruta.interactivo && !ruta.preguntoAntes && tocaPreguntar(sumada, grupo, ahora)
+    toca = ruta.interactivo && !ruta.preguntoAntes && !preguntas.trasTurno && tocaPreguntar(sumada, grupo, ahora)
     return toca ? marcarPregunta(sumada, grupo, ahora) : sumada
   })
-  if (toca) $.clock.after(DEMORA_CALIDAD, () => void preguntarCalidad($, grupo))
+  if (!toca) return
+  preguntas.trasTurno = true
+  $.clock.after(DEMORA_CALIDAD, () => void preguntarCalidad($, grupo))
 }
 
 /** La misma pregunta para bajados y testigos: no sabes cuál es cuál. Un texto libre no cuenta. */
@@ -3891,6 +3918,7 @@ async function compactarDesdeBarra($: $): Promise<void> {
   let motivo: string | undefined
   let fallo: string | undefined
   try {
+    await preguntarQueRecordar($)
     if (config.memoria) await guardarMemoria($)
     const instrucciones = config.memoria && !estaVacia(vivo.memoria) ? instruccionesDeCompactacion(vivo.memoria, vivo.idioma) : undefined
     try {
@@ -4091,11 +4119,16 @@ async function ofrecerLimpio($: $, pregunta: string, si: string, no: string, tex
     entrevista.limpioRechazos += 1
     return false
   }
+  await pasarALimpio($, texto, contexto)
+  return true
+}
+
+/** Dijiste que sí a empezar en limpio: se anota lo que pesaba la conversación, /clear y `texto` vuelve al cuadro. */
+async function pasarALimpio($: $, texto: string, contexto: number): Promise<void> {
   const ahora = await $.clock.now()
   // Con el caché vencido (contado con el plazo largo, para no inflar), sin Toki tu mensaje la reescribía entera.
   proponerLimpio(contexto, vivo.ultimoUsoCache > 0 && ahora - vivo.ultimoUsoCache > ttlMs(), ahora)
   limpiarYDevolver($, texto)
-  return true
 }
 
 /** Entre decir que sí y el /clear: si tarda más (pulsaste Enter mucho después), ese /clear no se cuenta como de Toki. */
@@ -4135,21 +4168,302 @@ function contarSalto($: $): void {
   }
 }
 
+// ---------- Preguntas justo a tiempo ----------
+
+const CLAVE_PREGUNTAS = 'preguntasJustoATiempo'
+
+const preguntas: {
+  /** Rechazos seguidos de cada pregunta y las que callaste (se guarda entre sesiones). */
+  estado: EstadoPreguntas
+  leido: boolean
+  /** Lo que ya se preguntó para la tarea en curso: no se repite hasta que empiece otra. */
+  enTema: Set<'donde' | 'listo'>
+  /** Las tareas de un mensaje que pediste hacer una por una: las que faltan y la que Toki dejó en el cuadro. */
+  cola?: { tareas: Tarea[]; total: number; enCuadro?: Tarea; ignoradas: number }
+  /** Claude guardó el spec: al terminar el turno, Toki propone su criterio de listo como /goal. */
+  spec: boolean
+  /** La compactación (vivo.ultimaCompactacion) del tramo en que ya se preguntó qué no olvidar. */
+  recordarEn?: number
+  /** Ya hay una pregunta para después de este turno: no va otra. */
+  trasTurno: boolean
+  /** Las carpetas del proyecto, miradas una vez por sesión. */
+  carpetas?: Carpeta[]
+} = { estado: {}, leido: false, enTema: new Set(), spec: false, trasTurno: false }
+
+function xpq(): TextosPreguntas {
+  return textosPreguntas[vivo.idioma]
+}
+
+async function leerPreguntas($: $): Promise<void> {
+  if (preguntas.leido) return
+  preguntas.leido = true
+  try {
+    preguntas.estado = leerEstadoPreguntas(await $.store.get(CLAVE_PREGUNTAS))
+  } catch {
+    // Sin memoria de rechazos: se empieza de cero.
+  }
+}
+
+function callada(tipo: TipoPregunta): boolean {
+  return estaCallada(preguntas.estado, tipo)
+}
+
+/** Lo que se olvida con /clear: lo preguntado para la tarea de antes y el tramo de la compactación. */
+function reiniciarPreguntas(): void {
+  preguntas.enTema.clear()
+  preguntas.spec = false
+  preguntas.recordarEn = undefined
+}
+
+/** La pregunta en el diálogo de Claude Code (cero tokens); undefined si la cierras. */
+async function preguntar($: $, pregunta: string, opciones: string[]): Promise<string | undefined> {
+  try {
+    return (await $.ui.ask(pregunta, { header: 'Toki', options: opciones })).trim()
+  } catch {
+    return undefined
+  }
+}
+
+/** Un sí reinicia la cuenta; dos «no» seguidos callan esa pregunta, y Toki lo dice. */
+async function responder($: $, tipo: TipoPregunta, aceptada: boolean): Promise<void> {
+  const r = contarRespuesta(preguntas.estado, tipo, aceptada)
+  preguntas.estado = r.estado
+  await $.store.set(CLAVE_PREGUNTAS, r.estado).catch(() => undefined)
+  const x = xpq()
+  if (r.seCallo) $.ui.toast(x.callada(x.nombre[tipo]), { timeoutMs: 8_000 })
+  void anotarDiagnostico($, `pregunta ${tipo}: ${aceptada ? 'sí' : 'no'}${r.seCallo ? ' (se calla)' : ''}`)
+}
+
+/** Las carpetas donde puede estar lo que pides y cuánto pesan (sus entradas). Solo en la raíz de un proyecto. */
+async function carpetasDelProyecto($: $): Promise<Carpeta[]> {
+  if (preguntas.carpetas !== undefined) return preguntas.carpetas
+  const mirar = async (ruta: string): Promise<Carpeta & { adentro: string[] }> => {
+    try {
+      const entradas = await $.fs.list(ruta)
+      return { ruta, peso: entradas.length, adentro: entradas.filter(x => x.kind === 'dir' && esCarpetaDeBusqueda(x.name)).map(x => `${ruta}/${x.name}`) }
+    } catch {
+      return { ruta, peso: 0, adentro: [] }
+    }
+  }
+  let carpetas: Carpeta[] = []
+  try {
+    const raiz = await $.fs.list()
+    if (esRaizDeProyecto(raiz.map(x => x.name))) {
+      const arriba = await Promise.all(raiz.filter(x => x.kind === 'dir' && esCarpetaDeBusqueda(x.name)).slice(0, 40).map(x => mirar(x.name)))
+      carpetas = arriba.map(({ ruta, peso }) => ({ ruta, peso }))
+      // Todo en una o dos carpetas (src/, app/): se pregunta por las de adentro de la que más pesa.
+      const mayor = [...arriba].sort((a, b) => b.peso - a.peso)[0]
+      if (carpetas.length < CARPETAS_PARA_PREGUNTAR && mayor !== undefined && mayor.adentro.length >= 2) {
+        const adentro = await Promise.all(mayor.adentro.slice(0, 12).map(mirar))
+        carpetas = [...carpetas.filter(c => c.ruta !== mayor.ruta), ...adentro.map(({ ruta, peso }) => ({ ruta, peso }))]
+      }
+    }
+  } catch {
+    carpetas = []
+  }
+  preguntas.carpetas = carpetas
+  return carpetas
+}
+
+/** Lo que el proyecto ya sabe correr para comprobarse, leído de sus archivos de la raíz. */
+async function comprobacionesDelProyecto($: $): Promise<string[]> {
+  try {
+    const nombres = (await $.fs.list()).map(x => x.name)
+    const textos = new Map<string, string>()
+    for (const n of ARCHIVOS_DE_COMPROBACION) {
+      if (!nombres.includes(n)) continue
+      try {
+        textos.set(n, (await $.fs.read(n)).slice(0, 50_000))
+      } catch {
+        // Ilegible: como si no estuviera.
+      }
+    }
+    return comprobacionesDe(nombres, n => textos.get(n))
+  } catch {
+    return []
+  }
+}
+
+/** (a) ¿En qué parte del proyecto está? Las carpetas que más pesan (primero las que nombras) o lo que escribas. */
+async function preguntarDonde($: $, carpetas: readonly Carpeta[], texto: string): Promise<string | undefined> {
+  const x = xpq().donde
+  const r = await preguntar($, x.pregunta, [...opcionesDonde(carpetas, texto), x.buscaClaude])
+  const aceptada = r !== undefined && r !== '' && r !== x.buscaClaude
+  await responder($, 'donde', aceptada)
+  return aceptada ? x.nota(r) : undefined
+}
+
+/** (b) ¿Cómo sabremos que quedó? Lo que el proyecto ya sabe correr, «lo reviso yo» o lo que escribas. */
+async function preguntarListo($: $, comprobaciones: readonly string[]): Promise<string | undefined> {
+  const xp = xpq()
+  const x = xp.listo
+  const opciones = opcionesListo(comprobaciones, xp)
+  const r = await preguntar($, x.pregunta, [...opciones.map(o => o.etiqueta), x.yo])
+  const aceptada = r !== undefined && r !== '' && r !== x.yo
+  await responder($, 'listo', aceptada)
+  if (!aceptada) return undefined
+  const criterio = opciones.find(o => o.etiqueta === r)?.criterio ?? r
+  vivo.memoria.listo = criterio
+  return x.nota(criterio)
+}
+
+/** (c) Dos correcciones sobre lo mismo: empezar en limpio con el pedido mejorado, buscar la causa o seguir. */
+async function comoSeguir($: $, contexto: number): Promise<{ drop?: string; nota?: string }> {
+  const xp = xpq()
+  const x = xp.fallos
+  const e = entrevista
+  const opciones = opcionesFallos(contexto, e.tarea !== undefined)
+  const etiquetas = opciones.map((o, i) => (i === 0 ? xp.recomendado(x.opcion[o]) : x.opcion[o]))
+  const r = await preguntar($, x.pregunta(contexto >= CONTEXTO_PARA_LIMPIAR ? formatearTokens(contexto) : undefined), etiquetas)
+  const elegida = r === undefined ? undefined : opciones[etiquetas.indexOf(r)]
+  const aceptada = r !== undefined && r !== '' && elegida !== 'seguir'
+  await responder($, 'fallos', aceptada)
+  if (!aceptada) return {}
+  if (elegida === 'limpio' && e.tarea !== undefined) {
+    await pasarALimpio($, armarPedidoMejorado(e.tarea, e.correcciones, vivo.idioma), contexto)
+    return { drop: xe().limpiando }
+  }
+  return { nota: elegida === 'causa' ? x.nota : x.notaLibre(r) }
+}
+
+/** (d) Tres tareas o más en un mensaje: una por una (va la primera; cada siguiente, al cuadro al terminar) o todas juntas. */
+async function separarTareas($: $, tareas: readonly Tarea[]): Promise<{ texto?: string; nota?: string }> {
+  const xp = xpq()
+  const x = xp.tareas
+  const una = xp.recomendado(x.una)
+  const r = await preguntar($, x.pregunta(tareas.length), [una, x.todas])
+  const aceptada = r !== undefined && r !== '' && r !== x.todas
+  await responder($, 'tareas', aceptada)
+  if (!aceptada) return {}
+  if (r !== una) return { nota: x.notaLibre(tareas.length, r) }
+  const primera = tareas[0]
+  if (primera === undefined) return {}
+  preguntas.cola = { tareas: tareas.slice(1), total: tareas.length, ignoradas: 0 }
+  void anotarDiagnostico($, `tareas: ${tareas.length}, una por una`)
+  return { texto: primera.mensaje, nota: x.nota(1, tareas.length) }
+}
+
+/** ¿Llegó la tarea que Toki dejó en el cuadro? La nota para Claude. Si mandas otra cosa dos veces, la lista se deja. */
+function siguienteDeLaCola(texto: string): string | undefined {
+  const c = preguntas.cola
+  const t = c?.enCuadro
+  if (c === undefined || t === undefined) return undefined
+  c.enCuadro = undefined
+  if (!esLaTarea(texto, t.tarea)) {
+    c.ignoradas += 1
+    if (c.ignoradas >= 2) preguntas.cola = undefined
+    return undefined
+  }
+  c.ignoradas = 0
+  c.tareas = c.tareas.filter(x => x !== t)
+  if (c.tareas.length === 0) preguntas.cola = undefined
+  return xpq().tareas.nota(c.total - c.tareas.length, c.total)
+}
+
+/** Terminó una tarea de la lista: la siguiente al cuadro, si está vacío y no hay otro mensaje por devolver. */
+async function siguienteTareaAlCuadro($: $): Promise<void> {
+  const c = preguntas.cola
+  const t = c?.tareas[0]
+  if (c === undefined || t === undefined || vivo.enTurno || guardia.devolver !== undefined) return
+  try {
+    if ((await $.prompt.read()).text.trim() !== '') return
+    if (!(await $.prompt.fill({ text: t.mensaje, mode: 'replace' })).isFilled) return
+  } catch {
+    return
+  }
+  c.enCuadro = t
+  $.ui.toast(xpq().tareas.enCuadro(c.total - c.tareas.length + 1, c.total), { timeoutMs: 10_000 })
+}
+
+/**
+ * Claude guardó el spec con su criterio de listo: ¿dejarlo como /goal? Claude Code lo revisa
+ * cada vez que Claude va a detenerse. Con el guardia de empresa no: ahí los hooks van restringidos.
+ */
+async function proponerGoal($: $): Promise<void> {
+  if (vivo.enTurno || config.guardiaEmpresa || entrevista.modo === 'no' || !ruta.interactivo) return
+  await leerPreguntas($)
+  if (callada('goal')) return
+  let criterio: string | undefined
+  try {
+    criterio = criterioDeSpec(await $.fs.read(RUTA_SPEC))
+  } catch {
+    return
+  }
+  if (criterio === undefined) return
+  vivo.memoria.listo = criterio
+  const x = xpq().goal
+  const r = await preguntar($, x.pregunta(criterio), [x.si, x.no])
+  const aceptada = r !== undefined && r !== '' && r !== x.no
+  await responder($, 'goal', aceptada)
+  if (!aceptada) return
+  const alCuadro = async (texto: string, aviso: string): Promise<void> => {
+    if (await $.prompt.fill({ text: texto, mode: 'replace' }).then(f => f.isFilled, () => false)) $.ui.toast(aviso, { timeoutMs: 10_000 })
+  }
+  // Lo que escribiste en vez de elegir va al cuadro: lo revisas antes de mandarlo.
+  if (r !== x.si) return alCuadro(`/goal ${r}`, x.tuyo)
+  const condicion = x.condicion(criterio)
+  try {
+    await $.command.run({ command: 'goal', args: condicion })
+    void anotarDiagnostico($, 'goal: puesto con el criterio del spec')
+  } catch (err) {
+    void anotarDiagnostico($, `goal: no se pudo (${String(err).slice(0, 160)})`)
+    await alCuadro(`/goal ${condicion}`, x.enCuadro)
+  }
+}
+
+/**
+ * (e) Antes de compactar: ¿algo que Claude no deba olvidar? Lo que escribes va al resumen y a la
+ * nota de después; lo que eliges, a las instrucciones de este resumen. Una vez por tramo.
+ */
+async function preguntarQueRecordar($: $, pct?: number): Promise<void> {
+  if (!config.memoria || entrevista.modo === 'no' || !ruta.interactivo) return
+  // Cerca del umbral se pregunta al terminar el turno: si ya mandaste otro mensaje, llegaría tarde.
+  if (pct !== undefined && vivo.enTurno) return
+  await leerPreguntas($)
+  if (callada('recordar') || preguntas.recordarEn === vivo.ultimaCompactacion) return
+  preguntas.recordarEn = vivo.ultimaCompactacion
+  const x = xpq().recordar
+  const r = await preguntar($, x.pregunta(pct), [x.nada, x.enfasis.reglas, x.enfasis.probado])
+  const aceptada = r !== undefined && r !== '' && r !== x.nada
+  await responder($, 'recordar', aceptada)
+  if (!aceptada) return
+  const enfasis = (['reglas', 'probado'] as const).find(k => x.enfasis[k] === r)
+  if (enfasis !== undefined) vivo.memoria.enfasis = [...new Set([...(vivo.memoria.enfasis ?? []), enfasis])]
+  else vivo.memoria.fijado = recordar(vivo.memoria.fijado ?? [], r.slice(0, 300), LIMITES_MEMORIA.fijado)
+  await guardarMemoria($)
+  $.ui.toast(x.anotado, { timeoutMs: 6_000 })
+}
+
 /**
  * Lo que Toki hace con un mensaje tuyo antes de que llegue a Claude: ofrecer empezar en
- * limpio (cambio de tema con mucho contexto, o dos correcciones seguidas), pedirle a Claude
- * que te entreviste si el pedido es grande y vago, o un consejo corto para pedir mejor.
+ * limpio (cambio de tema con mucho contexto) o preguntar cómo seguir tras dos correcciones,
+ * separar un mensaje que trae varias tareas, pedirle a Claude que te entreviste si el pedido
+ * es grande y vago, preguntarte dónde buscar o cómo sabremos que quedó, o un consejo corto
+ * para pedir mejor. Una sola pregunta de Toki por mensaje: `yaSePregunto` dice si una guardia
+ * ya la hizo. Si devuelve `texto`, eso sigue en vez de tu mensaje (la primera de tus tareas).
  */
-async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto?: string; drop?: string }> {
-  const texto = quitarEtiquetasDeSistema(textoCrudo)
+async function entrevistaYConsejos($: $, textoCrudo: string, yaSePregunto = false): Promise<{ contexto?: string; drop?: string; texto?: string; pregunto?: boolean }> {
+  let texto = quitarEtiquetasDeSistema(textoCrudo)
   entrevista.pendiente = undefined
   if (texto === '' || texto.startsWith('/')) return {}
+  const notas: string[] = []
+  let reemplazo: string | undefined
+  let pregunto = false
+  const salir = (drop?: string): { contexto?: string; drop?: string; texto?: string; pregunto?: boolean } => ({
+    ...(drop !== undefined ? { drop } : {}),
+    ...(notas.length > 0 ? { contexto: notas.join('\n\n') } : {}),
+    ...(reemplazo !== undefined ? { texto: reemplazo } : {}),
+    ...(pregunto ? { pregunto } : {}),
+  })
+  // La tarea que Toki dejó en el cuadro: Claude sabe que es una de varias.
+  const deLaCola = siguienteDeLaCola(texto)
+  if (deLaCola !== undefined) notas.push(deLaCola)
   const e = entrevista
   const previos = e.mensajes
   const recientes = e.recientes
   e.mensajes += 1
   e.recientes = [...recientes, texto.slice(0, 600)].slice(-3)
-  if (e.modo === 'no' || !ruta.interactivo) return {}
+  if (e.modo === 'no' || !ruta.interactivo) return salir()
   if (!e.consejosLeidos) {
     e.consejosLeidos = true
     try {
@@ -4159,21 +4473,24 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
       // Sin memoria de consejos: se muestran de nuevo.
     }
   }
+  await leerPreguntas($)
   const x = xe()
-  const lectura = nivelHeuristico(texto, ruta.nivelPrevio, ruta.preguntoAntes)
+  let lectura = nivelHeuristico(texto, ruta.nivelPrevio, ruta.preguntoAntes)
   const contexto = vivo.usoCache?.tokens ?? vivo.tokensUltimoTurno
-  // Si el aviso de caché vencido ya preguntó por este periodo, no se pregunta dos veces.
-  const yaPregunto = vivo.ultimoUsoCache > 0 && guardia.frioVisto === vivo.ultimoUsoCache
+  // Si el aviso de caché vencido (u otra guardia) ya preguntó por este mensaje, no va otra pregunta.
+  const yaPregunto = (): boolean => pregunto || yaSePregunto || (vivo.ultimoUsoCache > 0 && guardia.frioVisto === vivo.ultimoUsoCache)
 
-  // Segunda corrección sobre lo mismo: la conversación está llena de intentos fallidos.
+  // (c) Segunda corrección sobre lo mismo: la conversación está llena de intentos fallidos. ¿Cómo seguir?
   if (esCorreccion(texto)) {
     if (e.grupo !== undefined) await contarEntrevista($, e.grupo === 'con' ? 'conCorr' : 'sinCorr')
     e.correcciones.push(texto)
-    if (e.correcciones.length === 2 && e.tarea !== undefined && contexto >= CONTEXTO_PARA_LIMPIAR && e.limpioRechazos < 2 && !yaPregunto) {
-      const pedido = armarPedidoMejorado(e.tarea, e.correcciones, vivo.idioma)
-      if (await ofrecerLimpio($, x.correccion.pregunta(formatearTokens(contexto)), x.correccion.si, x.correccion.no, pedido, contexto)) return { drop: x.limpiando }
+    if (e.correcciones.length === 2 && !yaPregunto() && !callada('fallos')) {
+      pregunto = true
+      const r = await comoSeguir($, contexto)
+      if (r.nota !== undefined) notas.push(r.nota)
+      if (r.drop !== undefined) return salir(r.drop)
     }
-    return {}
+    return salir()
   }
 
   const seguimiento = lectura.motivo === 'seguimiento'
@@ -4183,8 +4500,33 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
   // Cambio de tema con mucho contexto a cuestas: mejor empezar en limpio (y la entrevista, ya sin lastre).
   // «Esto hay que solucionarlo…» retoma lo anterior: limpiar borraría lo que necesita.
   const otroTema = !seguimiento && lectura.nivel !== 'trivial' && previos > 0 && !retomaLoAnterior(texto) && cambioDeTema(recientes, texto)
-  if (otroTema && contexto >= CONTEXTO_CAMBIO_DE_TEMA && e.limpioRechazos < 2 && !yaPregunto) {
-    if (await ofrecerLimpio($, x.tema.pregunta(formatearTokens(contexto)), x.tema.si, x.tema.no, texto, contexto)) return { drop: x.limpiando }
+  if (otroTema && contexto >= CONTEXTO_CAMBIO_DE_TEMA && e.limpioRechazos < 2 && !yaPregunto()) {
+    pregunto = true
+    if (await ofrecerLimpio($, x.tema.pregunta(formatearTokens(contexto)), x.tema.si, x.tema.no, texto, contexto)) return salir(x.limpiando)
+  }
+
+  // Otra tarea: lo preguntado y el criterio de listo eran de la anterior.
+  const nueva = !seguimiento && esTareaNueva({ mensajes: previos, recientes, texto })
+  if (nueva) {
+    preguntas.enTema.clear()
+    preguntas.spec = false
+    vivo.memoria.listo = undefined
+  }
+
+  // (d) Varias tareas en un mensaje: ¿una por una? Sobre el texto como lo escribiste, con sus saltos de línea.
+  if (!seguimiento && !yaPregunto() && !callada('tareas')) {
+    const tareas = partirTareas(textoCrudo)
+    if (tareas !== undefined) {
+      pregunto = true
+      const r = await separarTareas($, tareas)
+      if (r.nota !== undefined) notas.push(r.nota)
+      if (r.texto !== undefined) {
+        reemplazo = r.texto
+        texto = quitarEtiquetasDeSistema(r.texto)
+        lectura = nivelHeuristico(texto, ruta.nivelPrevio, ruta.preguntoAntes)
+        e.tarea = texto
+      }
+    }
   }
 
   const entrada = { texto, nivel: lectura.nivel, motivo: lectura.motivo, interactivo: ruta.interactivo, mensajes: previos, recientes }
@@ -4192,9 +4534,10 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
   let instruccion: string | undefined
   if ('omitido' in ev && ev.omitido === 'sin-preguntas') {
     contarSalto($)
-  } else if (ev.entrevistar) {
+  } else if (ev.entrevistar && !(e.modo === 'preguntar' && yaPregunto())) {
     let acepta = true
     if (e.modo === 'preguntar') {
+      pregunto = true
       try {
         acepta = (await $.ui.ask(x.pregunta, { header: 'Toki', options: [x.opcionesPregunta.si, x.opcionesPregunta.no] })) === x.opcionesPregunta.si
       } catch {
@@ -4209,6 +4552,8 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
       // Con o sin entrevista se cuenta al terminar el turno: según Claude haya preguntado o no.
       e.grupo = undefined
       e.pendiente = { porque: ev.porque }
+      // La entrevista ya pregunta cómo sabremos que quedó, y lo deja en el spec.
+      preguntas.enTema.add('listo')
       void anotarDiagnostico($, `entrevista: ${ev.porque}`)
     }
   }
@@ -4216,10 +4561,44 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
     e.grupo = 'sin'
     await contarEntrevista($, 'sin')
   }
+  if (instruccion !== undefined) notas.push(instruccion)
 
-  // Un consejo corto, solo si no hubo entrevista, y cada tipo un par de veces.
-  if (instruccion === undefined && !seguimiento) {
-    const c = consejoDe(texto, lectura.nivel, e.consejos)
+  // (a) y (b): lo que una respuesta tuya le ahorra a Claude, si no hubo entrevista ni otra pregunta.
+  if (instruccion === undefined && !seguimiento && !yaPregunto()) {
+    const l = { texto, nivel: lectura.nivel, motivo: lectura.motivo }
+    if (!callada('donde') && pideDonde({ ...l, nueva })) {
+      // Con pocas carpetas, buscar sale barato: no vale una pregunta.
+      const carpetas = await carpetasDelProyecto($)
+      if (carpetas.length >= CARPETAS_PARA_PREGUNTAR) {
+        pregunto = true
+        preguntas.enTema.add('donde')
+        const nota = await preguntarDonde($, carpetas, texto)
+        if (nota !== undefined) notas.push(nota)
+      }
+    }
+    if (!pregunto && !callada('listo') && !preguntas.enTema.has('listo') && pideListo(l)) {
+      // Solo con lo que el proyecto ya sabe correr; sin eso queda el consejo.
+      const comprobaciones = await comprobacionesDelProyecto($)
+      if (comprobaciones.length > 0) {
+        pregunto = true
+        preguntas.enTema.add('listo')
+        const nota = await preguntarListo($, comprobaciones)
+        if (nota !== undefined) notas.push(nota)
+      }
+    }
+  }
+
+  // Un consejo corto, solo si no hubo entrevista ni pregunta, y cada tipo un par de veces.
+  // Lo que Toki ya preguntó en esta tarea, o la pregunta que callaste, tampoco vuelve como consejo.
+  if (instruccion === undefined && !seguimiento && !pregunto) {
+    const agotado = (si: boolean, c: Consejo): Partial<Record<Consejo, number>> => (si ? { [c]: VECES_POR_CONSEJO } : {})
+    const vistos = {
+      ...e.consejos,
+      ...agotado(callada('donde') || preguntas.enTema.has('donde'), 'ubicar'),
+      ...agotado(callada('listo') || preguntas.enTema.has('listo'), 'verificar'),
+      ...agotado(callada('tareas'), 'mezcla'),
+    }
+    const c = consejoDe(texto, lectura.nivel, vistos)
     if (c !== undefined) {
       e.consejos[c] = (e.consejos[c] ?? 0) + 1
       void $.store.set(CLAVE_CONSEJOS, e.consejos).catch(() => undefined)
@@ -4227,7 +4606,7 @@ async function entrevistaYConsejos($: $, textoCrudo: string): Promise<{ contexto
       await contarEntrevista($, 'consejos')
     }
   }
-  return instruccion === undefined ? {} : { contexto: instruccion }
+  return salir()
 }
 
 export const register: Register = (on, options) => {
@@ -4263,6 +4642,12 @@ export const register: Register = (on, options) => {
   ruta.subagentes = options['subagentesSonnet'] !== false
   ruta.sonnetPrimero = options['sonnetPrimero'] === true
   entrevista.modo = leerModoEntrevista(options['entrevista'])
+  preguntas.leido = false
+  preguntas.estado = {}
+  preguntas.carpetas = undefined
+  preguntas.cola = undefined
+  preguntas.trasTurno = false
+  reiniciarPreguntas()
   if (config.idioma === 'es' || config.idioma === 'en') {
     vivo.idioma = config.idioma
     vivo.idiomaFijo = true
@@ -4438,12 +4823,17 @@ export const register: Register = (on, options) => {
       reiniciarConversacion()
       reiniciarRuta()
       reiniciarEntrevista()
+      reiniciarPreguntas()
       await update($, sesion, () => SESION_VACIA)
       await update($, gasto, () => GASTO_VACIO)
       await update($, fallos, () => ({}))
       await update($, avisoMapaDado, () => false)
       empezarLimpio($, await $.clock.now())
+      // ¿Tareas por hacer una por una? El /clear borró el cuadro: la siguiente vuelve (si no vuelve otro mensaje).
+      if (preguntas.cola !== undefined && guardia.devolver === undefined) $.clock.after(300, () => void siguienteTareaAlCuadro($))
       devolverMensaje($)
+    } else {
+      preguntas.cola = undefined
     }
     // Otro final (salir, reanudar otra): lo propuesto ya no aplica.
     vivo.limpioPropuesto = undefined
@@ -4480,20 +4870,23 @@ export const register: Register = (on, options) => {
       $.ui.log(`Toki, guardias: ${String(err)}`, { to: 'debug' })
     }
     let contexto: string | undefined
+    let pregunto = false
     try {
-      const r = await entrevistaYConsejos($, texto)
+      const r = await entrevistaYConsejos($, texto, silenciar)
       if (r.drop !== undefined) return { drop: r.drop }
       contexto = r.contexto
+      texto = r.texto ?? texto
+      pregunto = r.pregunto === true
     } catch (err) {
       $.ui.log(`Toki, entrevista: ${String(err)}`, { to: 'debug' })
     }
     try {
-      await ofrecerSonnetTrasPlan($, texto)
+      if (!pregunto) await ofrecerSonnetTrasPlan($, texto)
     } catch (err) {
       $.ui.log(`Toki, plan en Sonnet: ${String(err)}`, { to: 'debug' })
     }
     try {
-      await planearTurno($, texto, silenciar)
+      await planearTurno($, texto, silenciar || pregunto)
     } catch (err) {
       $.ui.log(`Toki, modelo y esfuerzo: ${String(err)}`, { to: 'debug' })
     }
@@ -4509,6 +4902,7 @@ export const register: Register = (on, options) => {
     // Otro hook lo frenó: no hay turno, y ni la entrevista ni el plan pueden quedar para el de otro mensaje.
     if ('drop' in r) {
       entrevista.pendiente = undefined
+      preguntas.cola = undefined
       descartarPlan()
     }
     return r
@@ -4703,6 +5097,12 @@ export const register: Register = (on, options) => {
       if (vivo.ultimoAhorro !== undefined) sonar($, 'listo')
       for (const d of extraerDecisiones(e.answer)) vivo.memoria.decisiones = recordar(vivo.memoria.decisiones, d, LIMITES_MEMORIA.decisiones)
       ruta.preguntoAntes = terminaEnPregunta(e.answer)
+      // Si Claude te preguntó algo, lo suyo va primero: ni /goal, ni la siguiente tarea, ni otras preguntas.
+      const terminado = !e.isAborted && e.reason === 'answer' && !ruta.preguntoAntes
+      // Claude guardó el spec en este turno (o en uno que terminó preguntando): ¿su criterio como /goal?
+      const goal = preguntas.spec && terminado
+      if (goal) preguntas.spec = false
+      preguntas.trasTurno = goal
       try {
         await cerrarEntrevista($, e.turnId, e.answer, e.isAborted ? 'aborted' : e.reason)
       } catch (err) {
@@ -4729,6 +5129,14 @@ export const register: Register = (on, options) => {
       const uso = vivo.usoCache
       vivo.tokensUltimoTurno = uso?.tokens ?? vivo.tokensUltimoTurno
       vivo.ultimoTurnoCompleto = ahora
+      if (goal) $.clock.after(DEMORA_CALIDAD, () => void proponerGoal($))
+      if (terminado && preguntas.cola !== undefined) $.clock.after(500, () => void siguienteTareaAlCuadro($))
+      // Cerca de donde Claude Code compacta: ¿algo que Claude no deba olvidar? Una vez por tramo.
+      const pct = uso?.pct
+      if (terminado && !preguntas.trasTurno && config.memoria && pct !== undefined && pct >= PCT_PARA_RECORDAR && preguntas.recordarEn !== vivo.ultimaCompactacion) {
+        preguntas.trasTurno = true
+        $.clock.after(DEMORA_CALIDAD, () => void preguntarQueRecordar($, pct))
+      }
       try {
         vivo.modeloUltimoTurno = await $.session.model()
         vivo.modelo = vivo.modelo ?? vivo.modeloUltimoTurno
@@ -4825,8 +5233,11 @@ export const register: Register = (on, options) => {
     vivo.actividad = actividadDeHerramienta(herramienta)
     await update($, sesion, s => ({ ...s, llamadas: s.llamadas + 1 }))
     const entrada = e as { file_path?: unknown; offset?: unknown; limit?: unknown }
+    const escribeSpec = (herramienta === 'Write' || herramienta === 'Edit') && typeof entrada.file_path === 'string' && entrada.file_path.replace(/\\/g, '/').endsWith(RUTA_SPEC)
     // Claude cerró el plan (o guardó el spec de la entrevista): el próximo mensaje puede ir a ejecutarlo.
-    if (herramienta === 'ExitPlanMode' || ((herramienta === 'Write' || herramienta === 'Edit') && typeof entrada.file_path === 'string' && entrada.file_path.replace(/\\/g, '/').endsWith(RUTA_SPEC))) planHecho.listo = true
+    if (herramienta === 'ExitPlanMode' || escribeSpec) planHecho.listo = true
+    // Y el criterio de listo del spec, al terminar el turno, se propone como /goal.
+    if (escribeSpec) preguntas.spec = true
     if ((herramienta === 'Edit' || herramienta === 'Write' || herramienta === 'MultiEdit') && typeof entrada.file_path === 'string') {
       vivo.memoria.archivosEditados = recordar(vivo.memoria.archivosEditados, entrada.file_path, LIMITES_MEMORIA.archivos)
     }
@@ -4900,6 +5311,8 @@ export const register: Register = (on, options) => {
       vivo.actividad = 'compactando'
       $.ui.invalidate('ui.render')
       let entrada = e
+      // Un /compact tuyo sin instrucciones: ¿algo que Claude no deba olvidar?
+      if (e.trigger === 'manual' && (e.instructions ?? '').trim() === '') await preguntarQueRecordar($)
       if (config.memoria) {
         await guardarMemoria($)
         if (!estaVacia(vivo.memoria)) {
@@ -5150,10 +5563,20 @@ export const register: Register = (on, options) => {
       entrevista.silenciada = false
       entrevista.saltos = 0
       await $.store.set(CLAVE_ENTREVISTA, entrevista.modo).catch(() => undefined)
+      // Prenderla de nuevo también devuelve las preguntas que callaste.
+      if (entrevista.modo !== 'no') {
+        preguntas.estado = {}
+        preguntas.leido = true
+        await $.store.set(CLAVE_PREGUNTAS, {}).catch(() => undefined)
+      }
       return { text: x.modoCambiado(x.modos[entrevista.modo]) }
     }
     const s = (await read($, sesion)).entrevista ?? { con: 0, conCorr: 0, sin: 0, sinCorr: 0, consejos: 0 }
-    return { text: [...x.estado(entrevista.modo, s), '', x.uso].join('\n') }
+    await leerPreguntas($)
+    const xp = xpq()
+    const activas = entrevista.modo === 'no' ? [] : TIPOS_PREGUNTA.filter(t => !callada(t)).map(t => xp.nombre[t])
+    const calladas = TIPOS_PREGUNTA.filter(t => callada(t)).map(t => xp.nombre[t])
+    return { text: [...x.estado(entrevista.modo, s), xp.estado(activas, calladas), '', x.uso].join('\n') }
   })
 
   // MCP bajo demanda (/toki-dieta mcp): las herramientas de esos servidores quedan tras ToolSearch.

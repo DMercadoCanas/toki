@@ -59,9 +59,29 @@ const REFERENCIA =
   conAcentos(/\b((esto|eso|aquello)(?!\s*:)(?!\s+es\s+lo\s+que)|lo (anterior|de antes|de arriba|mismo)|lo que (me )?(dijiste|propusiste|sugeriste|encontraste|explicaste|mencionaste|hiciste|recomendaste|planteaste)|tu (respuesta|propuesta|diagn[oó]stico|soluci[oó]n|plan|an[aá]lisis|recomendaci[oó]n|idea|explicaci[oó]n)|(ese|esa|este|esta|esos|esas|estos|estas) (error|errores|problema|problemas|caso|casos|bug|bugs|fallo|fallos|tema|asunto|cambio|cambios|diagn[oó]stico)|the (above|previous|same) (issue|problem|error|bug|case|one)|what you (said|found|proposed|suggested|did|wrote)|your (answer|proposal|diagnosis|fix|plan|analysis|suggestion|idea)|(this|that|these|those) (issue|problem|error|bug|case|fix|change)s?)\b/i)
 const REFERENCIA_EN = /^(?:so |ok,? |and |but )?(?:this|that|it) (?:is|was|has|needs?|should|must|can'?t|cannot|won'?t|keeps?|happens?|still)\b/i
 
-function palabrasDe(texto: string): number {
+export function palabrasDe(texto: string): number {
   const l = limpiarPrompt(texto)
   return l === '' ? 0 : l.split(' ').length
+}
+
+/** Nombra un archivo, una ruta o algo entre comillas invertidas: Claude sabe dónde mirar. */
+export function nombraLugar(texto: string): boolean {
+  return RUTA.test(texto) || /`[^`\n]+`/.test(texto)
+}
+
+/** Pide cambiar algo (arreglar, agregar, quitar…). */
+export function pideCambio(texto: string): boolean {
+  return ACCION.test(texto)
+}
+
+/** Ya dice cómo se comprueba (una prueba, un comando, lo que debería pasar). */
+export function diceComoComprobar(texto: string): boolean {
+  return VERIFICA.test(texto)
+}
+
+/** Un proyecto nuevo («quiero construir una app…»): lo suyo es la entrevista. */
+export function esProyectoNuevo(texto: string): boolean {
+  return PROYECTO.test(limpiarPrompt(texto))
 }
 
 /** El pedido ya trae todo lo que la entrevista iba a preguntar. */
@@ -137,7 +157,7 @@ export type Entrada = {
 }
 
 /** ¿Es el primer mensaje de la conversación, o habla de otra cosa que los últimos? */
-function esTareaNueva(e: Pick<Entrada, 'mensajes' | 'recientes' | 'texto'>): boolean {
+export function esTareaNueva(e: Pick<Entrada, 'mensajes' | 'recientes' | 'texto'>): boolean {
   return e.mensajes === 0 || cambioDeTema(e.recientes, e.texto)
 }
 
@@ -202,8 +222,6 @@ export type TextosEntrevista = {
   modos: Record<ModoEntrevista, string>
   /** Empezar en limpio por cambio de tema. */
   tema: { pregunta: (tokens: string) => string; si: string; no: string }
-  /** Empezar en limpio con un pedido mejor, después de dos correcciones. */
-  correccion: { pregunta: (tokens: string) => string; si: string; no: string }
   limpiando: string
   pulsaEnter: string
   consejos: Record<Consejo, string>
@@ -222,7 +240,7 @@ export const textosEntrevista: Record<Idioma, TextosEntrevista> = {
         `2 a 4 preguntas de opción múltiple${porque === 'proyecto' ? ' (una segunda ronda solo si hace falta)' : ''}, con la opción recomendada primero y marcada "(Recomendado)".`,
         'Pregunta lo que más cambia el resultado: alcance, enfoque o tecnología, datos y casos límite, y qué cuenta como "listo" (cómo se comprueba). Si ya lo ves todo claro, haz una sola pregunta para confirmar el plan.',
         'Hasta tener las respuestas no edites ni crees archivos, no ejecutes comandos que cambien algo y no lances subagentes (Toki los frena). Para preparar las preguntas, como mucho mira la estructura del proyecto (ls, README) o el archivo que nombra el pedido.',
-        `Con las respuestas, guarda un resumen del pedido (máx. 15 líneas, con el criterio de "listo") en ${RUTA_SPEC} y sigue con el trabajo.`,
+        `Con las respuestas, guarda un resumen del pedido (máx. 15 líneas) en ${RUTA_SPEC}, con una línea «Listo cuando: …» que diga cómo se comprueba, y sigue con el trabajo.`,
       ].join(' '),
     frenada:
       '[Toki] Todavía no: la persona pidió que, en los pedidos grandes, Claude pregunte antes de cambiar nada. Llama primero a AskUserQuestion (2 a 4 preguntas con la recomendada primero; si todo está claro, una sola para confirmar el plan) y después sigue.',
@@ -248,12 +266,6 @@ export const textosEntrevista: Record<Idioma, TextosEntrevista> = {
       si: 'Empezar en limpio (Recomendado)',
       no: 'Seguir aquí',
     },
-    correccion: {
-      pregunta: t =>
-        `Ya corregiste dos veces lo mismo y la conversación (~${t} tokens) está llena de intentos fallidos. Lo que mejor funciona es empezar en limpio con un pedido mejor: armé uno con tus correcciones. ¿Empiezo?`,
-      si: 'Empezar en limpio con el pedido mejorado (Recomendado)',
-      no: 'Seguir aquí',
-    },
     limpiando: 'Toki: empezando en limpio…',
     pulsaEnter: 'Toki: pulsa Enter para limpiar la conversación; tu mensaje vuelve después.',
     consejos: {
@@ -275,7 +287,7 @@ export const textosEntrevista: Record<Idioma, TextosEntrevista> = {
         `2 to 4 multiple-choice questions${porque === 'proyecto' ? ' (a second round only if needed)' : ''}, recommended option first and marked "(Recommended)".`,
         'Ask what changes the result most: scope, approach or technology, data and edge cases, and what counts as "done" (how it is checked). If everything already looks clear, ask a single question to confirm the plan.',
         'Until you have the answers, do not edit or create files, do not run commands that change anything and do not launch subagents (Toki blocks them). To prepare the questions, at most look at the project structure (ls, README) or the file the request names.',
-        `With the answers, save a summary of the request (max 15 lines, including the "done" criterion) to ${RUTA_SPEC} and carry on.`,
+        `With the answers, save a summary of the request (max 15 lines) to ${RUTA_SPEC}, with a line "Done when: …" saying how it is checked, and carry on.`,
       ].join(' '),
     frenada:
       '[Toki] Not yet: the person asked that, on big requests, Claude asks before changing anything. Call AskUserQuestion first (2 to 4 questions, recommended option first; if everything is clear, a single one to confirm the plan), then carry on.',
@@ -299,12 +311,6 @@ export const textosEntrevista: Record<Idioma, TextosEntrevista> = {
     tema: {
       pregunta: t => `This looks like a different topic and the conversation already carries ~${t} tokens that are re-read on every message. Start clean? Your message goes back to the box.`,
       si: 'Start clean (Recommended)',
-      no: 'Stay here',
-    },
-    correccion: {
-      pregunta: t =>
-        `You have corrected the same thing twice and the conversation (~${t} tokens) is full of failed attempts. What works best is starting clean with a better request: I built one from your corrections. Start?`,
-      si: 'Start clean with the improved request (Recommended)',
       no: 'Stay here',
     },
     limpiando: 'Toki: starting clean…',

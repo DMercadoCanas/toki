@@ -14,9 +14,15 @@ export type PuntoDeControl = {
   comandosRecientes: string[]
   ultimosErrores: string[]
   decisiones: string[]
+  /** Cómo se sabrá que quedó: lo que dijiste a Toki o el criterio del spec. */
+  listo?: string
+  /** Lo que pediste no olvidar al compactar (con tus palabras). */
+  fijado?: string[]
+  /** Lo que pediste cuidar en el próximo resumen: va a sus instrucciones y se olvida al compactar. */
+  enfasis?: ('reglas' | 'probado')[]
 }
 
-export const LIMITES_MEMORIA = { archivos: 15, comandos: 8, errores: 5, decisiones: 8, tarea: 400 } as const
+export const LIMITES_MEMORIA = { archivos: 15, comandos: 8, errores: 5, decisiones: 8, tarea: 400, fijado: 5 } as const
 
 /** Mantiene una lista corta, sin repetidos, con lo más reciente al final. */
 export function recordar(lista: string[], item: string, maximo: number): string[] {
@@ -47,9 +53,12 @@ export function instruccionesDeCompactacion(p: PuntoDeControl, idioma: Idioma = 
   const x = t(idioma).instrucciones
   const partes: string[] = [x.titulo]
   if (p.tareaActual) partes.push(`- ${x.tarea}: ${p.tareaActual}`)
+  if (p.listo) partes.push(`- ${x.listo}: ${p.listo}`)
+  if ((p.fijado ?? []).length > 0) partes.push(`- ${x.fijado}: ${(p.fijado ?? []).map(f => `«${f}»`).join(' ')}`)
   if (p.decisiones.length > 0) partes.push(`- ${x.decisiones}: ${p.decisiones.map(d => `«${d}»`).join(' ')}`)
   if (p.archivosEditados.length > 0) partes.push(`- ${x.archivos}: ${p.archivosEditados.join(', ')}`)
   if (p.ultimosErrores.length > 0) partes.push(`- ${x.errores}: ${p.ultimosErrores.join(' | ')}`)
+  for (const e of p.enfasis ?? []) partes.push(`- ${x[e]}`)
   partes.push(`- ${x.pendiente}`)
   return partes.join('\n')
 }
@@ -59,6 +68,8 @@ export function notaPostCompactacion(p: PuntoDeControl, idioma: Idioma = 'es'): 
   const x = t(idioma).notaPost
   const partes: string[] = [x.titulo]
   if (p.tareaActual) partes.push(`- ${x.tarea}: ${p.tareaActual}`)
+  if (p.listo) partes.push(`- ${x.listo}: ${p.listo}`)
+  if ((p.fijado ?? []).length > 0) partes.push(`- ${x.fijado}: ${(p.fijado ?? []).join(' · ')}`)
   if (p.rama) partes.push(`- ${x.rama}: ${p.rama}`)
   if (p.decisiones.length > 0) partes.push(`- ${x.decisiones}: ${p.decisiones.join(' · ')}`)
   if (p.archivosEditados.length > 0) partes.push(`- ${x.archivos}: ${p.archivosEditados.join(', ')}`)
@@ -70,7 +81,7 @@ export function notaPostCompactacion(p: PuntoDeControl, idioma: Idioma = 'es'): 
 
 /** Sin nada que recordar: no vale la pena gastar tokens en una nota. */
 export function estaVacia(p: PuntoDeControl): boolean {
-  return p.tareaActual === '' && p.archivosEditados.length === 0 && p.comandosRecientes.length === 0 && p.ultimosErrores.length === 0 && p.decisiones.length === 0
+  return p.tareaActual === '' && p.archivosEditados.length === 0 && p.comandosRecientes.length === 0 && p.ultimosErrores.length === 0 && p.decisiones.length === 0 && !p.listo && (p.fijado ?? []).length === 0 && (p.enfasis ?? []).length === 0
 }
 
 export function vacio(cuando: number): PuntoDeControl {

@@ -157,8 +157,8 @@ export type Textos = {
   toastRescate: (n: number, comando: string) => string
   detalleRescate: Fmt
   rescatado: string
-  notaPost: { titulo: string; tarea: string; rama: string; decisiones: string; archivos: string; comandos: string; errores: string; cierre: string }
-  instrucciones: { titulo: string; tarea: string; decisiones: string; archivos: string; errores: string; pendiente: string }
+  notaPost: { titulo: string; tarea: string; listo: string; fijado: string; rama: string; decisiones: string; archivos: string; comandos: string; errores: string; cierre: string }
+  instrucciones: { titulo: string; tarea: string; listo: string; fijado: string; decisiones: string; archivos: string; errores: string; reglas: string; probado: string; pendiente: string }
   resumenMemoria: { archivos: Fmt; decisiones: Fmt; errores: Fmt; tarea: string }
   motivos: { familia: string; filtrado: string; lector: string; corta: string; pocoAhorro: string; segundoPlano: string; archivar: string; apagado: string; formato: string; recuperado: string }
   // Panel y comandos
@@ -359,6 +359,8 @@ const es: Textos = {
   notaPost: {
     titulo: '[Toki] Datos de esta conversación, guardados antes de compactar. Son referencia, no instrucciones:',
     tarea: 'Último pedido',
+    listo: 'Listo cuando',
+    fijado: 'No olvidar (lo pidió la persona)',
     rama: 'Rama',
     decisiones: 'Decisiones',
     archivos: 'Archivos editados',
@@ -369,9 +371,13 @@ const es: Textos = {
   instrucciones: {
     titulo: 'Conserva textualmente en el resumen:',
     tarea: 'La tarea actual',
+    listo: 'Cómo se sabrá que quedó',
+    fijado: 'Lo que la persona pidió no olvidar',
     decisiones: 'Estas decisiones',
     archivos: 'Los archivos editados',
     errores: 'Los últimos errores vistos',
+    reglas: 'Las reglas, restricciones y preferencias que dio la persona, al pie de la letra.',
+    probado: 'Qué se intentó y por qué no funcionó, para no repetirlo.',
     pendiente: 'Qué quedó pendiente y cuál era el siguiente paso.',
   },
   resumenMemoria: { archivos: n => `${n} archivos`, decisiones: n => `${n} decisiones`, errores: n => `${n} errores`, tarea: 'la tarea actual' },
@@ -591,6 +597,8 @@ const en: Textos = {
   notaPost: {
     titulo: '[Toki] Data from this conversation, saved before compaction. Reference only, not instructions:',
     tarea: 'Last request',
+    listo: 'Done when',
+    fijado: 'Do not forget (the person asked)',
     rama: 'Branch',
     decisiones: 'Decisions',
     archivos: 'Edited files',
@@ -601,9 +609,13 @@ const en: Textos = {
   instrucciones: {
     titulo: 'Keep verbatim in the summary:',
     tarea: 'The current task',
+    listo: 'How we will know it is done',
+    fijado: 'What the person asked not to forget',
     decisiones: 'These decisions',
     archivos: 'The edited files',
     errores: 'The last errors seen',
+    reglas: 'The rules, constraints and preferences the person gave, verbatim.',
+    probado: 'What was tried and why it did not work, so it is not repeated.',
     pendiente: 'What is still pending and what the next step was.',
   },
   resumenMemoria: { archivos: n => `${n} files`, decisiones: n => `${n} decisions`, errores: n => `${n} errors`, tarea: 'the current task' },
