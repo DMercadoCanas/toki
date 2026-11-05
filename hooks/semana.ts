@@ -484,7 +484,7 @@ const EN: Textos = {
 
 const TEXTOS: Record<Idioma, Textos> = { es: ES, en: EN }
 
-function fecha(ms: number, idioma: Idioma): string {
+export function fecha(ms: number, idioma: Idioma): string {
   const d = new Date(ms)
   return idioma === 'en' ? `${MESES.en[d.getMonth()]} ${d.getDate()}` : `${d.getDate()} ${MESES.es[d.getMonth()]}`
 }

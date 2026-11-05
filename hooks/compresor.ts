@@ -19,6 +19,19 @@ export const LIMITES = {
   fraccionMaxima: 0.7,
 } as const
 
+/** Qué conserva una compactación: cabeza, cola, contexto de cada error y cuánto en total. */
+export type LimitesCompactacion = { cabeza: number; cola: number; contextoAntes: number; contextoDespues: number; maxLineasConservadas: number; fraccionMaxima: number }
+
+/** Para una familia cuya copia Claude ya abrió: el triple de cabeza, cola y contexto. */
+export const LIMITES_CUIDADO: LimitesCompactacion = {
+  cabeza: 45,
+  cola: 120,
+  contextoAntes: 6,
+  contextoDespues: 18,
+  maxLineasConservadas: 660,
+  fraccionMaxima: LIMITES.fraccionMaxima,
+}
+
 const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g
 
 /** Quita colores ANSI y deja solo el último estado de las barras de progreso (\r). */
@@ -187,11 +200,11 @@ export type Compactado = {
 }
 
 /** Elige qué conservar: cabeza, cola y cada línea importante con su contexto. */
-function seleccionar(items: Item[]): Set<number> {
+function seleccionar(items: Item[], l: LimitesCompactacion): Set<number> {
   const conservar = new Set<number>()
   const n = items.length
-  for (let i = 0; i < Math.min(LIMITES.cabeza, n); i++) conservar.add(i)
-  for (let i = Math.max(0, n - LIMITES.cola); i < n; i++) conservar.add(i)
+  for (let i = 0; i < Math.min(l.cabeza, n); i++) conservar.add(i)
+  for (let i = Math.max(0, n - l.cola); i < n; i++) conservar.add(i)
 
   const importantes: number[] = []
   items.forEach((item, i) => {
@@ -200,18 +213,18 @@ function seleccionar(items: Item[]): Set<number> {
 
   let conContexto = new Set<number>(conservar)
   for (const i of importantes) {
-    for (let j = Math.max(0, i - LIMITES.contextoAntes); j <= Math.min(n - 1, i + LIMITES.contextoDespues); j++) {
+    for (let j = Math.max(0, i - l.contextoAntes); j <= Math.min(n - 1, i + l.contextoDespues); j++) {
       conContexto.add(j)
     }
   }
-  if (conContexto.size <= LIMITES.maxLineasConservadas) return conContexto
+  if (conContexto.size <= l.maxLineasConservadas) return conContexto
 
   // Demasiados errores: primero sin contexto, y si aún sobra, los primeros y los últimos.
   conContexto = new Set<number>(conservar)
   importantes.forEach(i => conContexto.add(i))
-  if (conContexto.size <= LIMITES.maxLineasConservadas) return conContexto
+  if (conContexto.size <= l.maxLineasConservadas) return conContexto
 
-  const cupo = Math.max(0, LIMITES.maxLineasConservadas - conservar.size)
+  const cupo = Math.max(0, l.maxLineasConservadas - conservar.size)
   const primeros = importantes.slice(0, Math.ceil(cupo / 2))
   const ultimos = importantes.slice(importantes.length - Math.floor(cupo / 2))
   const recorte = new Set<number>(conservar)
@@ -223,13 +236,13 @@ function seleccionar(items: Item[]): Set<number> {
  * Compacta una salida larga. Devuelve null si no vale la pena
  * (salida corta, o el ahorro sería menor al 30%).
  */
-export function compactar(salida: string, idioma: Idioma = 'es'): Compactado | null {
+export function compactar(salida: string, idioma: Idioma = 'es', limites: LimitesCompactacion = LIMITES): Compactado | null {
   const lineas = limpiar(salida)
   while (lineas.length > 0 && lineas[lineas.length - 1] === '') lineas.pop()
   if (esCorta(salida)) return null
 
   const items = agrupar(lineas)
-  const elegidos = seleccionar(items)
+  const elegidos = seleccionar(items, limites)
 
   const salidaLineas: string[] = []
   let omitidas = 0
@@ -247,7 +260,7 @@ export function compactar(salida: string, idioma: Idioma = 'es'): Compactado | n
   if (omitidas > 0) salidaLineas.push(t(idioma).lineasOmitidas(omitidas))
 
   const texto = salidaLineas.join('\n')
-  if (texto.length > salida.length * LIMITES.fraccionMaxima) return null
+  if (texto.length > salida.length * limites.fraccionMaxima) return null
   const importantesOmitidas = items.filter((item, i) => !elegidos.has(i) && (esImportante(item.texto) || (item.ultima !== undefined && esImportante(item.ultima)))).length
   return {
     texto,

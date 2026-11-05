@@ -154,6 +154,12 @@
       "description": "Servidores MCP, separados por coma, cuyas herramientas Toki deja tras ToolSearch: no van en cada pedido y Claude las carga si las busca. /toki-dieta mcp agrega los que no usas hace 7 días; /toki-dieta restaurar vacía la lista. / Comma-separated MCP servers whose tools Toki keeps behind ToolSearch; /toki-dieta mcp adds the ones unused for 7 days, /toki-dieta restore clears it.",
       "default": ""
     },
+    "compactarTambien": {
+      "type": "string",
+      "title": "Compactar también / Also compact",
+      "description": "Familias de comandos, separadas por coma, que Toki compacta aunque no las reconozca como ruidosas (p. ej. terraform plan). /toki-por-que las propone; /toki-por-que olvidar <familia> quita una. / Comma-separated command families Toki compacts even if it doesn't recognize them as noisy (e.g. terraform plan); /toki-por-que suggests them, /toki-por-que forget <family> removes one.",
+      "default": ""
+    },
     "idioma": {
       "type": "string",
       "title": "Idioma / Language",

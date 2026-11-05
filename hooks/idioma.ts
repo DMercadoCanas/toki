@@ -160,7 +160,7 @@ export type Textos = {
   notaPost: { titulo: string; tarea: string; listo: string; fijado: string; rama: string; decisiones: string; archivos: string; comandos: string; errores: string; cierre: string }
   instrucciones: { titulo: string; tarea: string; listo: string; fijado: string; decisiones: string; archivos: string; errores: string; reglas: string; probado: string; pendiente: string }
   resumenMemoria: { archivos: Fmt; decisiones: Fmt; errores: Fmt; tarea: string }
-  motivos: { familia: string; filtrado: string; lector: string; corta: string; pocoAhorro: string; segundoPlano: string; archivar: string; apagado: string; formato: string; recuperado: string }
+  motivos: { familia: string; filtrado: string; lector: string; corta: string; pocoAhorro: string; segundoPlano: string; archivar: string; apagado: string; formato: string; recuperado: string; aprendido: string }
   // Panel y comandos
   cmdPanel: string
   cmdMapa: string
@@ -392,6 +392,7 @@ const es: Textos = {
     apagado: 'la compactación está apagada en la configuración',
     formato: 'la herramienta devolvió un formato que Toki no reconoce, así que no la tocó',
     recuperado: 'Claude leyó el original de una compactación anterior, así que en esta sesión va entero',
+    aprendido: 'Claude leyó entera la copia de esta familia aun con más contexto: Toki la deja entera un mes',
   },
   cmdPanel: 'Toki: cuánto has ahorrado, tu racha, tus logros y qué ocupa tu contexto',
   cmdMapa: 'Toki: crear o actualizar el mapa del proyecto',
@@ -630,6 +631,7 @@ const en: Textos = {
     apagado: 'compaction is turned off in the settings',
     formato: 'the tool returned a format Toki does not recognize, so it was left untouched',
     recuperado: 'Claude read the original of an earlier compaction, so it goes through whole this session',
+    aprendido: 'Claude read this family’s full copy even with more context: Toki leaves it whole for a month',
   },
   cmdPanel: 'Toki: how much you saved, your streak, achievements and what fills your context',
   cmdMapa: 'Toki: create or refresh the project map',

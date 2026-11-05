@@ -51,11 +51,31 @@ import {
   separarCorte,
   agrandarCorte,
   caracteresRecortados,
+  LIMITES,
+  LIMITES_CUIDADO,
   TOPE_CORTE,
   tokensAprox,
   ultimasLineas,
 } from './compresor'
-import type { Compactado } from './compresor'
+import type { Compactado, LimitesCompactacion } from './compresor'
+import {
+  anotarOportunidad,
+  aprendidas,
+  enteraHasta,
+  familiaDeComando,
+  leerAprendizaje,
+  leerExtras,
+  leerOportunidades,
+  mejoresOportunidades,
+  nivelDe,
+  normalizarFamilia,
+  olvidar,
+  textosFamilias,
+  trasAbrir,
+  trasCompactar,
+  trasLeerEntera,
+} from './familias'
+import type { Aprendizaje, CambioFamilia, NivelFamilia, Oportunidad, Oportunidades, TextosFamilias } from './familias'
 import { detectarEmpresa, DIAS_REVISION_EMPRESA, leerEstadoEmpresa, OPCION_EMPRESA, revisarEmpresa, terminarRevision } from './empresa'
 import type { EstadoEmpresa } from './empresa'
 import { anotar as anotarReescritura, clasificarEscritura, conSesion, costoReescritura, leerCachePorSesion, leerLibro, lineaReescritura, porCausa, totalLibro } from './escrituras'
@@ -158,7 +178,7 @@ import {
   txDieta,
 } from './dieta'
 import type { ArchivoMemoria, Arreglos, Dieta, OpcionesDieta } from './dieta'
-import { avisoSemana, CONTEXTO_LARGO, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
+import { avisoSemana, CONTEXTO_LARGO, fecha as fechaCorta, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
 import type { Presupuesto, TipoOpcionPresupuesto } from './presupuesto'
@@ -254,6 +274,11 @@ const CLAVE_AVISO_BREVE = 'avisoBreveDado'
 const CLAVE_AVISO_SIN_SECCION = 'avisoSinSeccionDado'
 /** Lo que Toki recuerda del guardia de empresa (EstadoEmpresa). */
 const CLAVE_EMPRESA = 'guardiaEmpresa'
+/** Lo aprendido por familia de comando (Aprendizaje) y las salidas largas que Toki no compactó (Oportunidades). */
+const CLAVE_FAMILIAS = 'familiasAprendidas'
+const CLAVE_OPORTUNIDADES = 'oportunidadesPerdidas'
+/** La opción «Compactar también»: familias que Toki compacta aunque no sean de su lista. */
+const OPCION_TAMBIEN = 'compactarTambien'
 const RANURAS = 40
 /** Lo que Claude Code entrega de una salida exitosa sin ayuda: 30 KB. */
 const LIMITE_CLAUDE_CODE = 30_000
@@ -286,6 +311,8 @@ const config = {
   guardiaEmpresa: false,
   /** Servidores MCP que Toki deja tras ToolSearch (/toki-dieta mcp). */
   mcpDiferidos: [] as string[],
+  /** Familias de comandos que Toki compacta aunque no sean de su lista (/toki-por-que las propone). */
+  compactarTambien: [] as string[],
 }
 
 // Estado vivo del acompañante (se pierde al recargar el plugin; es efímero a propósito).
@@ -649,7 +676,7 @@ type Corte = { comando: string; lineas: number; programa: string }
 async function planearCorte($: $, herramienta: 'Bash' | 'PowerShell', comando: string): Promise<Corte | undefined> {
   const powershell = herramienta === 'PowerShell'
   const partes = separarCorte(comando, powershell)
-  if (partes === undefined || partes.lineas >= TOPE_CORTE || !esRuidoso(partes.base)) return undefined
+  if (partes === undefined || partes.lineas >= TOPE_CORTE || !(esRuidoso(partes.base) || config.compactarTambien.includes(familiaDeComando(partes.base)))) return undefined
   try {
     const original = await decisionDePermiso($, herramienta, comando)
     if (original === 'deny') return undefined
@@ -965,10 +992,10 @@ async function sumarAhorro(
   comando: string,
   agente: string | undefined,
   tipo: TipoAhorro = 'salida',
-  archivo?: { ruta: string; caracteres: number },
+  archivo?: { ruta: string; caracteres: number; familia?: string; nivel?: NivelFamilia },
 ): Promise<void> {
   // Si después Claude lee el original archivado, lo leído se descuenta (contarRecuperacion).
-  if (archivo !== undefined) vivo.archivados.set(archivo.ruta, { origen: comando.trim(), tipo, caracteres: archivo.caracteres, leidos: 0 })
+  if (archivo !== undefined) vivo.archivados.set(archivo.ruta, { origen: comando.trim(), tipo, caracteres: archivo.caracteres, leidos: 0, familia: archivo.familia, nivel: archivo.nivel })
   const tokens = tokensAprox(caracteres)
   const principal = agente === undefined
   // Un subagente, a precio de 5 min: no se sabe cuánto dura su caché, y así no se infla.
@@ -1927,15 +1954,98 @@ function comoSalidaShell(r: unknown): SalidaShell | undefined {
   return typeof o.stdout === 'string' && typeof o.stderr === 'string' ? (r as SalidaShell) : undefined
 }
 
+// ---------- Familias: lo que Toki aprende de las copias que Claude abre ----------
+
+/** Lo aprendido por familia de comando: se lee una vez por carga del plugin y se guarda en cada cambio. */
+const familias: { leido: boolean; aprendizaje: Aprendizaje } = { leido: false, aprendizaje: {} }
+
+function xf(): TextosFamilias {
+  return textosFamilias[vivo.idioma]
+}
+
+async function cargarAprendizaje($: $): Promise<void> {
+  if (familias.leido) return
+  familias.leido = true
+  try {
+    familias.aprendizaje = leerAprendizaje(await $.store.get(CLAVE_FAMILIAS), await $.clock.now())
+  } catch {
+    // Sin store: se aprende desde cero.
+  }
+}
+
+/** Un evento de la familia: lo aprendido se relee (otra sesión pudo cambiarlo), cambia y se guarda. Si cambió de nivel, avisa. */
+async function aprender($: $, familia: string, cambiar: (a: Aprendizaje, ahora: number) => CambioFamilia): Promise<void> {
+  try {
+    const ahora = await $.clock.now()
+    const r = cambiar(leerAprendizaje(await $.store.get(CLAVE_FAMILIAS), ahora), ahora)
+    familias.aprendizaje = r.aprendizaje
+    familias.leido = true
+    await $.store.set(CLAVE_FAMILIAS, r.aprendizaje)
+    if (r.nivel === undefined) return
+    void anotarDiagnostico($, `aprendizaje: ${familia} → ${['normal', 'con más contexto', 'entera un mes'][r.nivel]}`)
+    $.ui.toast(xf().aviso[r.nivel](familia), { timeoutMs: 8000 })
+  } catch {
+    // Es solo aprendizaje.
+  }
+}
+
+/** Una familia cuya copia Claude ya abrió se compacta con más contexto. */
+function limitesDe(nivel: NivelFamilia): LimitesCompactacion {
+  return nivel === 1 ? LIMITES_CUIDADO : LIMITES
+}
+
+/** El detalle de /toki-por-que, con la nota si se compactó con más contexto. */
+function detalleDe(nivel: NivelFamilia, detalle: string): string {
+  return nivel === 1 ? `${detalle}${xf().detalleCuidado}` : detalle
+}
+
+/**
+ * Un comando que Toki no conoce dejó una salida larga: cuánto habría ahorrado compactarla, con la
+ * misma cuenta que una compactación de verdad. /toki-por-que lo lista y propone compactarlo.
+ */
+async function anotarOportunidadSalida($: $, comando: string, texto: string, sinToki: number): Promise<void> {
+  if (!config.compresion || porQueNoCompactable(comando) !== 'familia') return
+  const familia = familiaDeComando(comando)
+  if (familia === '' || config.compactarTambien.includes(familia)) return
+  const c = compactar(texto, vivo.idioma)
+  if (c === null) return
+  const tokens = tokensAprox(sinToki - c.caracteresDespues - 300)
+  if (tokens <= 0) return
+  try {
+    const ahora = await $.clock.now()
+    await $.store.set(CLAVE_OPORTUNIDADES, anotarOportunidad(leerOportunidades(await $.store.get(CLAVE_OPORTUNIDADES), ahora), familia, tokens, ahora))
+  } catch {
+    // Es solo estadística.
+  }
+}
+
+/** La salida de un comando de terminal que Toki no compactó: ¿era una oportunidad? */
+async function anotarOportunidadShell($: $, comando: string, fallo: boolean, texto: string | undefined, r: SalidaShell | undefined): Promise<void> {
+  if (fallo) {
+    const cuerpo = (texto ?? '').replace(/^Exit code \d+\n?/, '')
+    return anotarOportunidadSalida($, comando, cuerpo, Math.min(cuerpo.length, LIMITE_CLAUDE_CODE))
+  }
+  if (r === undefined || r.backgroundTaskId !== undefined || r.interrupted === true || r.isImage === true) return
+  // Sin Toki, Claude Code entrega hasta 30 KB; si es más, una vista previa de ~2 KB.
+  const total = r.stdout.length + r.stderr.length
+  return anotarOportunidadSalida($, comando, r.stdout, r.persistedOutputPath !== undefined || total > LIMITE_CLAUDE_CODE ? VISTA_PREVIA_CLAUDE_CODE : total)
+}
+
 /** Anota por qué no se compacta (si aplica) y recuerda el comando del hilo principal. ¿Se intenta compactar? */
 function prepararComando(comando: string, agente: string | undefined): boolean {
-  const motivoNo = porQueNoCompactable(comando)
+  const familia = familiaDeComando(comando)
+  const base = porQueNoCompactable(comando)
+  // Una familia que no es de la lista, pero que pediste compactar también.
+  const motivoNo = base === 'familia' && config.compactarTambien.includes(familia) ? undefined : base
   const recuperado = vivo.sinCompactar.has(comando.trim())
+  // Claude leyó entera su copia aun con más contexto: la familia va entera un tiempo.
+  const aprendido = nivelDe(familias.aprendizaje, familia) === 2
   if (!config.compresion) anotarMotivo(comando, 'apagado')
   else if (motivoNo !== undefined) anotarMotivo(comando, motivoNo)
   else if (recuperado) anotarMotivo(comando, 'recuperado')
+  else if (aprendido) anotarMotivo(comando, 'aprendido')
   if (agente === undefined) vivo.memoria.comandosRecientes = recordar(vivo.memoria.comandosRecientes, recortar(comando, 80), LIMITES_MEMORIA.comandos)
-  return config.compresion && motivoNo === undefined && !recuperado
+  return config.compresion && motivoNo === undefined && !recuperado && !aprendido
 }
 
 /** Recuerda el primer error y vigila bucles. Devuelve el aviso de bucle si toca. */
@@ -1962,9 +2072,11 @@ async function despuesDeEjecutar($: $, comando: string, fallo: boolean, texto: s
  */
 async function compactarFallo($: $, comando: string, texto: string, agente: string | undefined): Promise<string | undefined> {
   const idioma = vivo.idioma
+  const familia = familiaDeComando(comando)
+  const nivel = nivelDe(familias.aprendizaje, familia)
   const salida = texto.match(/^(Exit code \d+)\n?/)
   const cuerpo = salida ? texto.slice(salida[0].length) : texto
-  const c = compactar(cuerpo, idioma)
+  const c = compactar(cuerpo, idioma, limitesDe(nivel))
   if (c === null) {
     anotarMotivo(comando, esCorta(cuerpo) ? 'corta' : 'pocoAhorro')
     return undefined
@@ -1977,8 +2089,9 @@ async function compactarFallo($: $, comando: string, texto: string, agente: stri
   const entera = c.recortadoAntes === 0
   // Contrafactual honesto: sin Toki (y sin el límite ampliado), Claude habría leído lo que entrega Claude Code.
   const ahorrado = Math.max(0, Math.min(texto.length, LIMITE_CLAUDE_CODE) - c.caracteresDespues - 200)
-  await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: cuerpo.length })
-  anotar(comando, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), entera), tokensAprox(ahorrado))
+  await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: cuerpo.length, familia, nivel })
+  await aprender($, familia, (a, ahora) => trasCompactar(a, familia, ahora))
+  anotar(comando, 'compactado', detalleDe(nivel, tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), entera)), tokensAprox(ahorrado))
   registrarSalidaGrande($, cuerpo.length)
   return [salida?.[1], encabezado(c, ruta, entera, tokensAprox(ahorrado), idioma), c.texto].filter(Boolean).join('\n')
 }
@@ -1990,8 +2103,10 @@ async function compactarExito($: $, comando: string, r: SalidaShell, agente: str
     anotarMotivo(comando, 'segundoPlano')
     return undefined
   }
-  const cOut = compactar(r.stdout, idioma)
-  const cErr = r.stderr ? compactar(r.stderr, idioma) : null
+  const familia = familiaDeComando(comando)
+  const nivel = nivelDe(familias.aprendizaje, familia)
+  const cOut = compactar(r.stdout, idioma, limitesDe(nivel))
+  const cErr = r.stderr ? compactar(r.stderr, idioma, limitesDe(nivel)) : null
   const principal: Compactado | null = cOut ?? cErr
   if (principal === null) {
     anotarMotivo(comando, esCorta(r.stdout) ? 'corta' : 'pocoAhorro')
@@ -2008,8 +2123,9 @@ async function compactarExito($: $, comando: string, r: SalidaShell, agente: str
   const leidoSinToki = r.persistedOutputPath !== undefined || total > LIMITE_CLAUDE_CODE ? VISTA_PREVIA_CLAUDE_CODE : total
   const leidoConToki = (cOut?.caracteresDespues ?? 0) + (cErr?.caracteresDespues ?? 0) + 300
   const ahorrado = Math.max(0, leidoSinToki - leidoConToki)
-  await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: r.stdout.length })
-  anotar(comando, 'compactado', tx().detalleCompactado(kb(principal.caracteresAntes), kb(principal.caracteresDespues), true), tokensAprox(ahorrado))
+  await sumarAhorro($, ahorrado, comando, agente, 'salida', { ruta, caracteres: r.stdout.length, familia, nivel })
+  await aprender($, familia, (a, ahora) => trasCompactar(a, familia, ahora))
+  anotar(comando, 'compactado', detalleDe(nivel, tx().detalleCompactado(kb(principal.caracteresAntes), kb(principal.caracteresDespues), true)), tokensAprox(ahorrado))
   registrarSalidaGrande($, r.stdout.length)
   const cabecera = encabezado(principal, ruta, true, tokensAprox(ahorrado), idioma)
   return {
@@ -2028,22 +2144,29 @@ const LIMITE_MCP = 100_000
  */
 async function compactarMcp($: $, herramienta: string, resultado: unknown, agente: string | undefined): Promise<unknown> {
   if (!esMcpRuidosa(herramienta) || vivo.sinCompactar.has(herramienta)) return undefined
+  await cargarAprendizaje($)
+  const nivel = nivelDe(familias.aprendizaje, herramienta)
+  if (nivel === 2) return undefined
   const salida = salidaMcp(resultado)
   if (salida === undefined) return undefined
   const idioma = vivo.idioma
-  const c = compactar(salida.texto, idioma)
+  const c = compactar(salida.texto, idioma, limitesDe(nivel))
   if (c === null) return undefined
   const ruta = await archivar($, salida.texto)
   if (ruta === undefined) return undefined
   const ahorrado = Math.max(0, Math.min(salida.texto.length, LIMITE_MCP) - c.caracteresDespues - 300)
-  await sumarAhorro($, ahorrado, herramienta, agente, 'salida', { ruta, caracteres: salida.texto.length })
-  anotar(herramienta, 'compactado', tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), true), tokensAprox(ahorrado))
+  await sumarAhorro($, ahorrado, herramienta, agente, 'salida', { ruta, caracteres: salida.texto.length, familia: herramienta, nivel })
+  await aprender($, herramienta, (a, ahora) => trasCompactar(a, herramienta, ahora))
+  anotar(herramienta, 'compactado', detalleDe(nivel, tx().detalleCompactado(kb(c.caracteresAntes), kb(c.caracteresDespues), true)), tokensAprox(ahorrado))
   registrarSalidaGrande($, salida.texto.length)
   return salida.con(`${encabezado(c, ruta, true, tokensAprox(ahorrado), idioma)}\n${c.texto}`)
 }
 
-/** Un original que Toki archivó al compactar: de qué herramienta o comando, cuánto pesaba y cuánto leyó Claude después. */
-type Archivado = { origen: string; tipo: TipoAhorro; caracteres: number; leidos: number }
+/**
+ * Un original que Toki archivó al compactar: de qué herramienta o comando, cuánto pesaba y cuánto
+ * leyó Claude después. Las salidas compactadas llevan su familia y con qué nivel se compactaron.
+ */
+type Archivado = { origen: string; tipo: TipoAhorro; caracteres: number; leidos: number; familia?: string; nivel?: NivelFamilia }
 
 /** `.claude/toki/salidas/salida-NN.txt`, con la ruta relativa o absoluta, también con barras de Windows. */
 const RUTA_ARCHIVADA = /\.claude[\\/]toki[\\/]salidas[\\/]salida-\d+\.txt/
@@ -2067,6 +2190,7 @@ async function descontarAhorro($: $, tokens: number, tipo: TipoAhorro, agente: s
  * Claude leyó (con Read, Grep o la terminal) un original que Toki archivó al compactar: lo
  * leído se resta del ahorro, porque es lo que costó compactar. Si ya leyó la mitad o más, la
  * compactación no le sirvió: esa herramienta o ese comando va entero el resto de la sesión.
+ * Y Toki aprende: la familia que Claude abrió va con más contexto la próxima vez.
  */
 async function contarRecuperacion($: $, e: object, ran: ToolCallResult, agente: string | undefined): Promise<void> {
   const entrada = e as { file_path?: unknown; path?: unknown; command?: unknown }
@@ -2075,6 +2199,9 @@ async function contarRecuperacion($: $, e: object, ran: ToolCallResult, agente: 
   const a = ruta === undefined ? undefined : vivo.archivados.get(ruta)
   if (a === undefined) return
   const leidos = tamanoResultado(ran)
+  const primera = a.leidos === 0 && leidos > 0
+  const mitad = a.caracteres * 0.5
+  const cruzo = a.leidos < mitad && a.leidos + leidos >= mitad
   a.leidos += leidos
   const tokens = tokensAprox(leidos)
   await descontarAhorro($, tokens, a.tipo, agente)
@@ -2084,6 +2211,10 @@ async function contarRecuperacion($: $, e: object, ran: ToolCallResult, agente: 
     reanotar(a.origen, 'sin-cambio', motivo('recuperado', vivo.idioma))
   }
   await anotarDiagnostico($, `recuperación: Claude leyó ${kb(leidos)} del original de ${recortar(a.origen, 60)} (−~${formatearTokens(tokens)} tokens del ahorro)${vetar ? '; ya no se compacta en esta sesión' : ''}`)
+  const familia = a.familia
+  if (familia === undefined) return
+  if (primera) await aprender($, familia, (ap, ahora) => trasAbrir(ap, familia, ahora))
+  if (cruzo) await aprender($, familia, (ap, ahora) => trasLeerEntera(ap, familia, a.nivel ?? 0, ahora))
 }
 
 /** Una búsqueda que pasó de 30 KB: resumen por archivo o carpeta, con la salida completa en la copia. */
@@ -2648,15 +2779,108 @@ async function textoDecisiones($: $): Promise<string> {
   const cero = explicarCero(x, s, g)
   const pie = [...(cero !== undefined ? ['', cero] : []), ...(cuentas.length > 0 ? ['', `${x.gastoTitulo}:`, ...cuentas.map(l => `  ${l}`)] : [])]
   pie.push('', ...textoRuta(xr(), s))
-  if (vivo.decisiones.length === 0) return [x.sinComandos, ...pie].join('\n')
+  const aprendido = await textoFamilias($)
+  if (vivo.decisiones.length === 0) return [x.sinComandos, ...aprendido, ...pie].join('\n')
   const lineas = [x.decisionesTitulo]
   for (const d of [...vivo.decisiones].reverse()) {
     const extra = d.ahorro !== undefined ? ` (${x.tokensAhorradosCorto(formatearTokens(d.ahorro))})` : ''
     const estado = d.resultado === 'compactado' ? x.compactado : d.resultado === 'rescatado' ? x.rescatado : x.sinCambio
     lineas.push(`  ${marcaDecision(d)} ${d.comando}`, `      ${estado}: ${d.motivo}${extra}`)
   }
-  lineas.push('', x.decisionesPie, ...pie)
+  lineas.push('', x.decisionesPie, ...aprendido, ...pie)
   return lineas.join('\n')
+}
+
+async function oportunidadesGuardadas($: $): Promise<Oportunidades> {
+  try {
+    return leerOportunidades(await $.store.get(CLAVE_OPORTUNIDADES), await $.clock.now())
+  } catch {
+    return {}
+  }
+}
+
+/** Para /toki-por-que: las familias que Toki trata distinto y las salidas largas que no compactó. */
+async function textoFamilias($: $): Promise<string[]> {
+  const x = xf()
+  await cargarAprendizaje($)
+  const lineas: string[] = []
+  const lista = aprendidas(familias.aprendizaje)
+  if (lista.length > 0) {
+    lineas.push('', x.aprendidoTitulo)
+    for (const [f, a] of lista) lineas.push(x.aprendida(f, a.nivel === 2 ? x.entera(fechaCorta(enteraHasta(a), vivo.idioma)) : x.conCuidado, a.abiertas, a.compactadas))
+  }
+  const mejores = mejoresOportunidades(await oportunidadesGuardadas($), config.compactarTambien, 5)
+  if (mejores.length > 0) {
+    lineas.push('', x.oportunidadesTitulo)
+    for (const [f, o] of mejores) lineas.push(x.oportunidad(f, o.veces, formatearTokens(o.tokens), fechaCorta(o.desde, vivo.idioma)))
+  }
+  if (config.compactarTambien.length > 0) lineas.push('', x.tambien(config.compactarTambien.join(', ')))
+  if (lineas.length > 0) lineas.push(x.pistaOlvidar)
+  return lineas
+}
+
+/** Tras /toki-por-que, con alguien mirando: ¿compacto también las familias que más habrían ahorrado? */
+async function ofrecerFamilias($: $, propuestas: readonly [string, Oportunidad][]): Promise<void> {
+  // Ya mandaste otro mensaje: llegaría tarde.
+  if (vivo.enTurno) return
+  const x = xf()
+  const [una] = propuestas
+  if (una === undefined) return
+  const etiquetas = new Map(propuestas.map(([f, o]) => [x.etiqueta(f, formatearTokens(o.tokens)), f]))
+  let respuesta: string
+  try {
+    respuesta =
+      propuestas.length === 1
+        ? await $.ui.ask(x.pregunta(una[0], formatearTokens(una[1].tokens)), { header: 'Toki', options: [...etiquetas.keys(), x.ahoraNo] })
+        : await $.ui.ask(x.preguntaVarias, { header: 'Toki', options: [...etiquetas.keys()], multiSelect: true })
+  } catch {
+    return
+  }
+  // Varias elegidas llegan separadas por comas; las etiquetas no llevan comas.
+  const elegidas = respuesta.split(',').flatMap(r => etiquetas.get(r.trim()) ?? [])
+  if (elegidas.length === 0) return
+  $.ui.log(x.agregadas(elegidas.join(', ')))
+  // Cambiar la opción recarga el plugin: después de responder.
+  const lista = leerExtras([...config.compactarTambien, ...elegidas])
+  $.clock.after(100, () => void cambiarExtras($, lista))
+}
+
+/** Escribe «Compactar también»; si Claude Code no deja, lo dice. */
+async function cambiarExtras($: $, lista: readonly string[]): Promise<void> {
+  const motivo = await cambiarOpcion($, OPCION_TAMBIEN, lista.join(', '))
+  if (motivo === undefined) return
+  void anotarDiagnostico($, `familias: Claude Code no dejó cambiar ${OPCION_TAMBIEN} (${motivo})`)
+  $.ui.toast(xf().negado(motivo), { timeoutMs: 12_000 })
+}
+
+/** /toki-por-que olvidar [familia]: Toki olvida lo aprendido y, si la agregaste, deja de compactarla. */
+async function olvidarFamilias($: $, argumento: string): Promise<string> {
+  const x = xf()
+  const familia = argumento.trim() === '' ? undefined : normalizarFamilia(argumento)
+  let aprendizaje: Aprendizaje = {}
+  try {
+    aprendizaje = leerAprendizaje(await $.store.get(CLAVE_FAMILIAS), await $.clock.now())
+  } catch {
+    // Sin store: nada guardado.
+  }
+  const oportunidades = await oportunidadesGuardadas($)
+  const quitada = familia !== undefined && config.compactarTambien.includes(familia)
+  const habia =
+    familia === undefined
+      ? Object.keys(aprendizaje).length + Object.keys(oportunidades).length > 0
+      : aprendizaje[familia] !== undefined || oportunidades[familia] !== undefined || quitada
+  if (!habia) return x.nadaQueOlvidar(familia)
+  familias.aprendizaje = olvidar(aprendizaje, familia)
+  familias.leido = true
+  try {
+    await $.store.set(CLAVE_FAMILIAS, familias.aprendizaje)
+    await $.store.set(CLAVE_OPORTUNIDADES, olvidar(oportunidades, familia))
+  } catch {
+    // Sin store: queda olvidado en esta sesión.
+  }
+  void anotarDiagnostico($, `aprendizaje: olvidado ${familia ?? 'todo'}`)
+  if (quitada) $.clock.after(100, () => void cambiarExtras($, config.compactarTambien.filter(f => f !== familia)))
+  return familia === undefined ? x.olvidadoTodo : x.olvidada(familia, quitada)
 }
 
 function marcaDecision(d: Decision): string {
@@ -4631,6 +4855,8 @@ export const register: Register = (on, options) => {
   config.busquedas = options['resumirBusquedas'] !== false
   config.guardiaEmpresa = options[OPCION_EMPRESA] === true
   config.mcpDiferidos = leerDiferidos(options[OPCION_DIFERIDOS])
+  config.compactarTambien = leerExtras(options[OPCION_TAMBIEN])
+  familias.leido = false
   // Si el guardia de empresa se salta prompt.compose se decide de nuevo, con un turno visto entero.
   vivo.composeVisto = false
   vivo.turnoVisto = undefined
@@ -4660,7 +4886,7 @@ export const register: Register = (on, options) => {
     const x = tx()
     await $.command.register({ name: 'toki', description: x.cmdPanel })
     await $.command.register({ name: 'toki-mapa', description: x.cmdMapa })
-    await $.command.register({ name: 'toki-por-que', description: x.cmdPorQue })
+    await $.command.register({ name: 'toki-por-que', description: x.cmdPorQue, argumentHint: xf().pista })
     await $.command.register({ name: 'toki-modelo', description: xr().cmd, argumentHint: `preguntar | siempre | automatico | no | ${vivo.idioma === 'en' ? 'undo' : 'deshacer'}` })
     await $.command.register({ name: 'toki-sonnet', description: xr().sonnet.cmd, argumentHint: xr().sonnet.pista })
     await $.command.register({ name: 'toki-dieta', description: cmdDieta(vivo.idioma), argumentHint: txDieta(vivo.idioma).pista })
@@ -5334,6 +5560,7 @@ export const register: Register = (on, options) => {
   // Motor (Bash): compactar salidas ruidosas, rescatar el error del final y detectar bucles.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const comando = e.command
+    await cargarAprendizaje($)
     const compactable = prepararComando(comando, e.agentId)
     const busqueda = !compactable && config.compresion && config.busquedas && !vivo.sinCompactar.has(comando.trim()) ? tipoBusqueda(comando) : undefined
     // En segundo plano, Claude lee la salida después y por otro lado: ahí el corte queda como está.
@@ -5357,6 +5584,7 @@ export const register: Register = (on, options) => {
       const repetida = await revisarRepetida($, 'Bash', comando, e.agentId, entera)
       if (repetida !== undefined) return { result: { ...entera, ...repetida, persistedOutputPath: undefined, persistedOutputSize: undefined } }
     }
+    if (!compactable && busqueda === undefined && corte === undefined) await anotarOportunidadShell($, comando, ran.isError === true, ran.text, entera)
     if (compactable) {
       if (ran.isError === true) {
         const texto = await compactarFallo($, comando, ran.text ?? '', e.agentId)
@@ -5380,6 +5608,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: /^PowerShell$/ }, async ($, e, next) => {
     const comando = (e as { command?: unknown }).command
     if (typeof comando !== 'string') return next(e)
+    await cargarAprendizaje($)
     const compactable = prepararComando(comando, e.agentId)
     const enFondo = (e as { run_in_background?: unknown }).run_in_background === true
     const corte = !compactable && config.compresion && !enFondo ? await planearCorte($, 'PowerShell', comando) : undefined
@@ -5400,6 +5629,7 @@ export const register: Register = (on, options) => {
         const repetida = await revisarRepetida($, 'PowerShell', comando, e.agentId, r)
         if (repetida !== undefined) return conSalida(repetida)
       }
+      if (!compactable && corte === undefined) await anotarOportunidadShell($, comando, ran.isError === true, ran.text, r)
       if (compactable) {
         if (ran.isError === true) {
           const texto = await compactarFallo($, comando, ran.text ?? '', e.agentId)
@@ -5473,7 +5703,14 @@ export const register: Register = (on, options) => {
     return { text: tarjetaGuardada(donde, vivo.idioma) }
   })
 
-  on('command.run', { command: 'toki-por-que' }, async $ => ({ text: await textoDecisiones($) }))
+  on('command.run', { command: 'toki-por-que' }, async ($, e) => {
+    const olvido = /^(olvidar|forget)\b\s*(.*)$/i.exec(e.args.trim())
+    if (olvido !== null) return { text: await olvidarFamilias($, olvido[2] ?? '') }
+    const texto = await textoDecisiones($)
+    const propuestas = mejoresOportunidades(await oportunidadesGuardadas($), config.compactarTambien)
+    if (propuestas.length > 0 && (await hayAlguien($))) $.clock.after(DEMORA_DIETA, () => void ofrecerFamilias($, propuestas))
+    return { text: texto }
+  })
 
   on('command.run', { command: 'toki-modelo' }, async ($, e) => {
     const x = xr()

@@ -106,7 +106,7 @@ export type Decision = {
   ahorro?: number
 }
 
-export type Motivo = 'familia' | 'filtrado' | 'lector' | 'corta' | 'pocoAhorro' | 'segundoPlano' | 'archivar' | 'apagado' | 'formato' | 'recuperado'
+export type Motivo = 'familia' | 'filtrado' | 'lector' | 'corta' | 'pocoAhorro' | 'segundoPlano' | 'archivar' | 'apagado' | 'formato' | 'recuperado' | 'aprendido'
 
 export function motivo(clave: Motivo, idioma: Idioma = 'es'): string {
   return t(idioma).motivos[clave]
