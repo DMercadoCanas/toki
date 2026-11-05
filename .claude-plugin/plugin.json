@@ -112,6 +112,12 @@
       "description": "Si un comando devuelve exactamente lo mismo que hace un rato (git status, un build sin cambios), Claude recibe una línea con la ruta de la copia en vez de la salida repetida.",
       "default": true
     },
+    "guardarScripts": {
+      "type": "boolean",
+      "title": "Guardar scripts repetidos / Save repeated scripts",
+      "description": "Si Claude corre igual por segunda vez un comando largo (un script en línea, un heredoc), Toki lo guarda tal cual en .claude/toki/scripts/ y le dice que lo repita con source en vez de escribirlo entero. Solo si Claude Code le da a source el mismo permiso que al comando. / When Claude runs the same long command a second time, Toki saves it in .claude/toki/scripts/ and tells Claude to repeat it with source, only if source gets the same permission.",
+      "default": true
+    },
     "mapaAutomatico": {
       "type": "boolean",
       "title": "Mapa del proyecto automático",

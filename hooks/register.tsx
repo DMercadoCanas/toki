@@ -182,6 +182,8 @@ import { activarTtl, anotarPaso, fueraTtl, juntarDias, leerEstadoTtl, medirPaso,
 import type { Capa, DiasTtl, EstadoTtl, Fuera, Regimen } from './subagentes'
 import { anotarTarea, CADA, elegir as elegirAyuda, leerTestigos, lineaCierre, reanudar as reanudarAyudas, textoTestigos, txTestigos, vence } from './testigos'
 import type { Ayuda, Brazo, Cierre, Intervencion } from './testigos'
+import { comandoScript, contarScript, contenidoScript, marcarGuardado, nombreScript, rutaScript, scriptCorrido, SCRIPTS_VACIO, txScripts } from './scripts'
+import type { Scripts } from './scripts'
 import { avisoSemana, CONTEXTO_LARGO, fecha as fechaCorta, leerSemanas, lunesDe, sumarSemana, tarjetaGuardada, tarjetaNoGuardada, tarjetaPendiente, tarjetaSemana } from './semana'
 import type { Delta, Semanas, TipoAhorro } from './semana'
 import { formatear as formatearPresupuesto, gastado, leerOrden, marcarAvisado, nuevoPresupuesto, porcentaje, subir, textosPresupuesto, umbralCruzado } from './presupuesto'
@@ -308,6 +310,7 @@ const config = {
   /** Tokens a los que Claude Code compacta; 0 = no tocar la de Claude Code. */
   ventana: 300_000,
   repetidas: true,
+  guardarScripts: true,
   avisoCacheFrio: true,
   guardiaLimites: true,
   guardiaGenerados: true,
@@ -379,6 +382,8 @@ const vivo: {
   avisoExploracion?: 'dado' | 'seguido'
   /** Lecturas enteras pedidas por archivo generado: 1 = frenada, 2 = tramo, 3+ = entera. */
   generadosFrenados: Map<string, number>
+  /** Comandos largos que corrieron igual más de una vez, y los que Toki guardó como archivo. */
+  scripts: Scripts
   /** Los originales que Toki archivó al compactar, por ruta: si Claude los lee, se descuenta. */
   archivados: Map<string, Archivado>
   /** Herramientas MCP y comandos cuyo original Claude tuvo que leer: ya no se compactan en esta sesión. */
@@ -493,6 +498,7 @@ const vivo: {
   nudgeLecturas: false,
   exploracion: EXPLORACION_VACIA,
   generadosFrenados: new Map<string, number>(),
+  scripts: SCRIPTS_VACIO,
   archivados: new Map<string, Archivado>(),
   sinCompactar: new Set<string>(),
   salidasGrandesEnTurno: 0,
@@ -2468,6 +2474,53 @@ async function rehacerCorteFallido($: $, comando: string, corte: Corte, texto: s
   return salida ? `${salida[1]}\n${visto}` : visto
 }
 
+/**
+ * Un comando de Bash del hilo principal: si corre un script que Toki guardó, lo anota; si es largo y
+ * ya corrió igual, lo devuelve para guardarlo cuando termine bien.
+ */
+function revisarScript($: $, comando: unknown): { comando: string; veces: number } | undefined {
+  if (typeof comando !== 'string') return undefined
+  const guardado = scriptCorrido(comando)
+  if (guardado !== undefined) {
+    const largo = vivo.scripts.guardados[guardado]
+    void anotarDiagnostico($, `scripts: Claude corrió ${guardado} desde su archivo${largo === undefined ? '' : ` (~${tokensAprox(largo - comando.trim().length)} tokens menos que escribirlo)`}`)
+    return undefined
+  }
+  const c = contarScript(vivo.scripts, comando, vivo.compactaciones)
+  vivo.scripts = c.s
+  if (c.yaAvisado) void anotarDiagnostico($, `scripts: Claude volvió a escribir entero ${nombreScript(comando)} (${comando.trim().length} caracteres)`)
+  return c.toca ? { comando, veces: c.veces } : undefined
+}
+
+/**
+ * Un comando largo que ya corrió igual: Toki lo guarda tal cual y le dice a Claude cómo correrlo desde
+ * el archivo. Solo si `source` recibe el mismo permiso que el original: nunca uno nuevo.
+ */
+async function guardarScript($: $, comando: string, veces: number): Promise<string | undefined> {
+  try {
+    const ruta = rutaScript(comando)
+    const correr = comandoScript(`${(await $.session.cwd()).replace(/[\\/]$/, '')}/${ruta}`)
+    const original = await decisionDePermiso($, 'Bash', comando)
+    const permiso = await decisionDePermiso($, 'Bash', correr)
+    if (original === 'deny' || permiso !== original) {
+      void anotarDiagnostico($, `scripts: ${nombreScript(comando)} no se guardó: source pide otro permiso (original=${original}, source=${permiso})`)
+      return undefined
+    }
+    // De testigo, el aviso queda para otra tarea.
+    if ((await ayudar($, 'scripts')) !== 'si') return undefined
+    const contenido = contenidoScript(comando)
+    if (!(await $.fs.exists(ruta))) {
+      await asegurarCarpeta($)
+      await $.fs.write(ruta, contenido)
+    } else if ((await $.fs.read(ruta)) !== contenido) return undefined // Otro comando con ese nombre, o alguien lo editó: no se toca.
+    vivo.scripts = marcarGuardado(vivo.scripts, comando, vivo.compactaciones)
+    void anotarDiagnostico($, `scripts: Toki guardó ${nombreScript(comando)} (${comando.trim().length} caracteres, corrió igual ${veces} veces)`)
+    return txScripts(vivo.idioma).aviso(veces, comando.trim().length, correr)
+  } catch {
+    return undefined // Es una ayuda: si falla, Claude sigue como siempre.
+  }
+}
+
 async function conAvisoMapa($: $, herramienta: string, comando: string | undefined, ran: ToolCallResult): Promise<ToolCallResult> {
   if (ran.deny !== undefined || ran.isError === true || !esBusqueda(herramienta, comando)) return ran
   if (await read($, avisoMapaDado)) return ran
@@ -3174,6 +3227,7 @@ function reiniciarConversacion(): void {
   vivo.exploracion = EXPLORACION_VACIA
   vivo.avisoExploracion = undefined
   vivo.generadosFrenados = new Map<string, number>()
+  vivo.scripts = SCRIPTS_VACIO
   vivo.ultimoAhorro = undefined
   vivo.mensaje = undefined
   vivo.aprovechado = undefined
@@ -5208,6 +5262,7 @@ export const register: Register = (on, options) => {
   config.idioma = typeof options['idioma'] === 'string' ? options['idioma'] : 'auto'
   config.ventana = leerVentana(options['ventanaCompactacion'])
   config.repetidas = options['salidasRepetidas'] !== false
+  config.guardarScripts = options['guardarScripts'] !== false
   config.avisoCacheFrio = options['avisoCacheFrio'] !== false
   config.guardiaLimites = options['guardiaLimites'] !== false
   config.guardiaGenerados = options['guardiaGenerados'] !== false
@@ -5893,10 +5948,14 @@ export const register: Register = (on, options) => {
         nudgeLectura = x.nudgeLectura(nombre, n)
       }
     }
+    // Un comando largo que corre igual otra vez: si corre bien, Toki lo guarda y le dice a Claude cómo repetirlo.
+    const repetido = herramienta === 'Bash' && config.guardarScripts ? revisarScript($, (e as { command?: unknown }).command) : undefined
     try {
       const ran = await next(e)
       if (ran.deny !== undefined || ran.isError === true) return ran
-      const notas = [nudgeLectura, await seguirExploracion($, herramienta, e, ran)].filter((n): n is string => n !== undefined)
+      const notas = [nudgeLectura, await seguirExploracion($, herramienta, e, ran), repetido === undefined ? undefined : await guardarScript($, repetido.comando, repetido.veces)].filter(
+        (n): n is string => n !== undefined,
+      )
       return notas.length > 0 ? { ...ran, context: [...(ran.context ?? []), ...notas] } : ran
     } finally {
       vivo.actividad = 'pensando'

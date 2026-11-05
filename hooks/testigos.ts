@@ -1,17 +1,17 @@
 // Testigos de cada ayuda: 1 de cada tantas tareas va sin una de las ayudas de Toki (compactar
 // salidas, frenar archivos generados, la nota del mapa, el aviso de delegar a Explore, la
-// entrevista) y Toki compara lo que costaron esas tareas y cuánto las corregiste contra las
+// entrevista, guardar scripts repetidos) y Toki compara lo que costaron esas tareas y cuánto las corregiste contra las
 // que sí la tuvieron. Si una ayuda sale claramente peor, se pausa. Funciones puras.
 
 import { CENTAVO } from './ahorro'
 import type { Idioma } from './idioma'
 import { fecha } from './semana'
 
-export type Intervencion = 'compactacion' | 'generados' | 'mapa' | 'explore' | 'entrevista'
-export const INTERVENCIONES: readonly Intervencion[] = ['compactacion', 'generados', 'mapa', 'explore', 'entrevista']
+export type Intervencion = 'compactacion' | 'generados' | 'mapa' | 'explore' | 'entrevista' | 'scripts'
+export const INTERVENCIONES: readonly Intervencion[] = ['compactacion', 'generados', 'mapa', 'explore', 'entrevista', 'scripts']
 
 /** 1 de cada tantas tareas elegibles va sin la ayuda: la que pasa en casi todas, de a 10; las que pasan poco, de a 4. */
-export const CADA: Record<Intervencion, number> = { compactacion: 10, generados: 4, mapa: 4, explore: 4, entrevista: 4 }
+export const CADA: Record<Intervencion, number> = { compactacion: 10, generados: 4, mapa: 4, explore: 4, entrevista: 4, scripts: 4 }
 /** Con menos testigos que estos, Toki no compara: el azar pesa más que la ayuda. */
 export const TESTIGOS_MINIMOS = 10
 /** Con estos testigos la ronda cierra: Toki deja de apartar tareas y decide si la ayuda sigue. */
@@ -240,6 +240,7 @@ const TEXTOS: Record<Idioma, TextosTestigos> = {
       mapa: 'Nota del mapa',
       explore: 'Aviso de delegar a Explore',
       entrevista: 'Entrevista antes de pedidos grandes',
+      scripts: 'Guardar scripts repetidos',
     },
     pocos: (t, c, cada) => `${t} ${t === 1 ? 'testigo' : 'testigos'} y ${c} ${c === 1 ? 'tarea' : 'tareas'} con ella (1 de cada ${cada} va sin ella); compara desde ${TESTIGOS_MINIMOS} testigos.`,
     medias: (c, s) => `con ella ${usd(c.usd)} por tarea y ${veces(c.correcciones)} correcciones; sin ella ${usd(s.usd)} y ${veces(s.correcciones)} (${s.tareas} testigos).`,
@@ -268,6 +269,7 @@ const TEXTOS: Record<Idioma, TextosTestigos> = {
       mapa: 'Map note',
       explore: 'Nudge to delegate to Explore',
       entrevista: 'Interview before big requests',
+      scripts: 'Saving repeated scripts',
     },
     pocos: (t, c, cada) => `${t} ${t === 1 ? 'control' : 'controls'} and ${c} ${c === 1 ? 'task' : 'tasks'} with it (1 in ${cada} goes without it); compares from ${TESTIGOS_MINIMOS} controls on.`,
     medias: (c, s) => `with it ${usd(c.usd)} per task and ${veces(c.correcciones)} corrections; without it ${usd(s.usd)} and ${veces(s.correcciones)} (${s.tareas} controls).`,

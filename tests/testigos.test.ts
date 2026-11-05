@@ -5,6 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 import { textosEntrevista } from '../hooks/entrevista'
 import { textosGenerados } from '../hooks/generados'
 import { avisoMapa, RUTA_MAPA } from '../hooks/mapa'
+import { comandoScript, rutaScript, txScripts } from '../hooks/scripts'
 import { fecha } from '../hooks/semana'
 import {
   anotarTarea,
@@ -53,7 +54,7 @@ function cierre(r: { cierre?: Cierre }): Cierre {
 
 describe('elegir los testigos', () => {
   test('a 1 de cada CADA tareas elegibles le toca ir sin la ayuda: de a 10 compactar, de a 4 las demás', () => {
-    expect(CADA).toEqual({ compactacion: 10, generados: 4, mapa: 4, explore: 4, entrevista: 4 })
+    expect(CADA).toEqual({ compactacion: 10, generados: 4, mapa: 4, explore: 4, entrevista: 4, scripts: 4 })
     const testigos = (i: 'compactacion' | 'generados', n: number): { t: Testigos; cuales: number[] } => {
       let t: Testigos = {}
       const cuales: number[] = []
@@ -315,6 +316,7 @@ function mundo(on: On, o: { guardado?: Record<string, unknown>; archivos?: Recor
   on('settings.read', () => ({ value: {} }) as never)
   on('session.version', () => ({ value: { version: '2.1.316' } }) as never)
   on('session.id', () => ({ value: 's1' }))
+  on('session.cwd', () => ({ value: '/p' }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.surfaces', () => ({ value: [] }) as never)
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: contexto, window: 1_000_000, percent: 10 }, rateLimits: [] } }) as never)
@@ -404,6 +406,14 @@ const COLUMNA = 'agrega una columna con la fecha de nacimiento en la tabla de pa
 const CORRECCION = 'no, eso no funciona, sigue fallando'
 const PROYECTO = 'quiero construir una app para gestionar las citas de mi clínica con recordatorios por WhatsApp'
 const GIMNASIO = 'crea una aplicación de reservas para un gimnasio con pagos mensuales y clases grupales'
+const SCRIPT = `python3 - <<'EOF'
+import json, pathlib
+datos = json.loads(pathlib.Path('reporte.json').read_text())
+total = sum(f['monto'] for f in datos['facturas'] if f['estado'] == 'pagada')
+pendientes = [f['id'] for f in datos['facturas'] if f['estado'] != 'pagada']
+print(f'total pagado: {total:.2f}')
+print(f'pendientes: {len(pendientes)}', *pendientes[:10], sep='\\n  ')
+EOF`
 
 describe('testigos con el motor', () => {
   test('compactar: la tarea de testigo ve la salida entera; al cerrarla, lo que costó desde ahí y sus correcciones van a la ronda', OPCIONES, async ($, on) => {
@@ -539,6 +549,27 @@ describe('testigos con el motor', () => {
     await mensaje($, 't0', 'crea una app de citas con recordatorios')
     expect(m.contextos[0]?.join('\n')).toContain('AskUserQuestion')
     expect(testigosDe(m).entrevista?.elegibles).toBe(3)
+  })
+
+  test('guardar scripts: de testigo el comando repetido no se guarda; en la tarea siguiente, sí', OPCIONES, async ($, on) => {
+    mock.clock(on, { now: AHORA })
+    const m = mundo(on, { guardado: { testigos: { scripts: tocaTestigo('scripts') } } })
+    await $.session.start({ cwd: '/p', surface: null, isInteractive: false })
+    const notas: string[] = []
+    const correr = async (): Promise<void> => {
+      notas.push(((await $.tool.call({ tool: 'Bash', command: SCRIPT } as never)).context ?? []).join('\n'))
+    }
+    await mensaje($, 't0', BOTON, async () => {
+      await correr()
+      await correr()
+    })
+    expect(notas).toEqual(['', ''])
+    expect([...m.archivos.keys()].some(k => k.endsWith(rutaScript(SCRIPT)))).toBe(false)
+    expect(m.diagnostico).toContain('testigos: scripts sin tocar en esta tarea (1 de cada 4)')
+    expect(testigosDe(m).scripts?.elegibles).toBe(4)
+    await mensaje($, 't1', COLUMNA, correr)
+    expect(notas[2]).toBe(txScripts('es').aviso(3, SCRIPT.length, comandoScript(`/p/${rutaScript(SCRIPT)}`)))
+    expect(testigosDe(m).scripts?.testigos.tareas).toBe(1)
   })
 
   test('una ronda que cierra con la ayuda peor la pausa y lo avisa; en pausa la salida va entera; reanudar la devuelve', OPCIONES, async ($, on) => {
